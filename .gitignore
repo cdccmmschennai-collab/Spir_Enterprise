@@ -1,0 +1,27 @@
+# Python
+venv/
+venv311/
+__pycache__/
+*.pyc
+
+# Env
+.env
+
+# Logs
+*.log
+
+# Node
+node_modules/
+build/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
+
+# Output files
+*.xlsx
+temp/ 
