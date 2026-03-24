@@ -19,16 +19,19 @@ SPIR TYPE values (exactly 4 allowed):
   3. Commissioning Spare Parts
   4. Life Cycle Spare Parts
 
-OLD MATERIAL NUMBER rules:
+OLD MATERIAL NUMBER rules (REQUIREMENT 1 — v2):
   - Always exactly 18 characters
-  - Base = numeric segments of SPIR_NO (after removing VEN- prefix and alpha codes)
-  - Suffix = '-L' + zero-padded item number (within 18-char budget)
-  - If budget exceeded: use '-{first_digit}L{rest}' format
-  - If still exceeded: remove second hyphen from base and retry
+  - Base = numeric segments of SPIR_NO (after removing VEN- prefix,
+    (REV.x) suffixes, and all non-digit-leading segments)
+  - Suffix = '-<sheet_index>l<line_index>'
+    e.g. sheet 1, line 1  → '-1l1'
+         sheet 2, line 17 → '-2l17'
+  - If base + suffix > 18: progressively remove second segment from base
+    until it fits, then zero-pad / truncate to exactly 18.
+  - Max 24 spare lines per sheet (line_index 1..N only, never fabricated).
 
 POSITION NUMBER:
   - Always 4-digit zero-padded: item_num * 10 → '0010', '0020', etc.
-  - For items > 999: str(item_num * 10).zfill(4)
 
 EQPT MAKE:
   - Taken from MANUFACTURER field in the SPIR header (row 3, right-side label)
@@ -75,16 +78,10 @@ OUTPUT_COLS = [
 ]
 
 # ── SPIR TYPE normalisation ───────────────────────────────────────────────────
-_SPIR_TYPES = {
-    'normal': 'Normal Operating Spares',
-    'initial': 'Initial Spare Parts',
-    'commission': 'Commissioning Spare Parts',
-    'life': 'Life Cycle Spare Parts',
-}
 
 def _normalise_spir_type(raw: str) -> str:
     """Normalise any SPIR type string to one of the 4 allowed values."""
-    lower = raw.lower().strip()
+    lower = (raw or '').lower().strip()
     if 'commission' in lower:
         return 'Commissioning Spare Parts'
     if 'initial' in lower:
@@ -92,6 +89,7 @@ def _normalise_spir_type(raw: str) -> str:
     if 'life' in lower or 'lifecycle' in lower:
         return 'Life Cycle Spare Parts'
     return 'Normal Operating Spares'   # default
+
 
 # ── Column label → field name (row 7 numeric labels) ─────────────────────────
 _COL_LABEL_TO_FIELD = {
@@ -184,13 +182,37 @@ def _expand_tags(raw: str) -> list[str]:
     return [raw]
 
 
+def _expand_serials(raw: str) -> list[str]:
+    """
+    Expand serial number cell value into a list of individual serials.
+    Supports: single, slash-separated, comma-separated, 'X to Y' ranges.
+    Returns empty list if raw is empty/None/placeholder.
+    """
+    if not raw:
+        return []
+    raw = str(raw).strip()
+    if not raw or raw.lower() in ('na', 'n/a', 'tba', 'tbd', '-', '--', 'none', 'nil', '_'):
+        return []
+    # Range: "X to Y"
+    m = re.match(r'^(.+?)\s+to\s+(.+)$', raw, re.IGNORECASE)
+    if m:
+        try:
+            a, b = int(m.group(1).strip()), int(m.group(2).strip())
+            return [str(i) for i in range(a, b + 1)]
+        except ValueError:
+            pass
+    # Slash or comma separated
+    if '/' in raw or ',' in raw:
+        return [p.strip() for p in re.split(r'[/,]', raw) if p.strip()]
+    return [raw]
+
+
 def _detect_spir_type(ws) -> str:
     """
     Detect the SPIR type from the sheet headers.
     Scans ALL rows 1-11 and collects all type mentions.
-    If BOTH Initial and Normal are mentioned (e.g. col 17 = Initial, col 19 = Normal),
-    we prefer 'Normal Operating Spares' as the sheet-level default because the
-    per-item logic will override with 'Initial' for specific items when col 17 > 0.
+    If BOTH Initial and Normal are mentioned, prefer Normal Operating Spares
+    as sheet-level default (per-item logic overrides with Initial when col 17 > 0).
     """
     found_types: list[str] = []
     for r in range(1, 12):
@@ -206,7 +228,6 @@ def _detect_spir_type(ws) -> str:
                 found_types.append("Life Cycle Spare Parts")
     if not found_types:
         return "Normal Operating Spares"
-    # If Normal appears anywhere → use it as default (Initial will be set per-item via flags)
     if "Normal Operating Spares" in found_types:
         return "Normal Operating Spares"
     return found_types[0]
@@ -228,63 +249,82 @@ def _detect_spir_no(wb) -> str:
     return ""
 
 
-# ── OLD MATERIAL NUMBER builder ───────────────────────────────────────────────
+# ── Sheet index tracker (for OLD MATERIAL NUMBER sheet_index) ─────────────────
+# Maps sheet_name → 1-based sheet index (main sheets only, in encounter order)
+_sheet_index_registry: dict[str, int] = {}
+_sheet_index_counter: list[int] = [0]   # mutable counter in closure-safe list
 
-def build_old_material_number(spir_no: str, item_num: int) -> str:
-    """
-    Build OLD MATERIAL NUMBER exactly 18 characters from SPIR_NO + item_num.
 
-    Steps:
-    1. Extract numeric base from SPIR_NO:
-       remove 'VEN-' prefix, keep only segments starting with a digit
-       e.g. VEN-4460-KAHS-5-43-1002 → 4460-5-43-1002 (14 chars)
-    2. Budget = 18 - len(base)
-    3. Try '-L' + zero_padded(item_num) to fill budget
-    4. If item_num too large: use '-{first_digit}L{rest}' format
-    5. If still too large: shorten base by removing second segment,
-       prefix with '0', and retry
-    6. Hard cap at 18 chars
+def _reset_sheet_registry():
+    _sheet_index_registry.clear()
+    _sheet_index_counter[0] = 0
+
+
+def _get_sheet_index(sheet_name: str) -> int:
+    """Return the 1-based index for a sheet, registering it on first encounter."""
+    key = sheet_name.strip().upper()
+    if key not in _sheet_index_registry:
+        _sheet_index_counter[0] += 1
+        _sheet_index_registry[key] = _sheet_index_counter[0]
+    return _sheet_index_registry[key]
+
+
+# ── OLD MATERIAL NUMBER builder (REQUIREMENT 1 — v2) ─────────────────────────
+
+def build_old_material_number(spir_no: str, sheet_index: int, line_index: int) -> str:
     """
-    s = spir_no.strip()
+    Build OLD MATERIAL NUMBER exactly 18 characters.
+
+    Algorithm:
+    1. Strip (REV.x) suffixes and VEN- prefix from spir_no.
+    2. Split by '-', keep only segments that START with a digit.
+    3. Form base = those segments joined by '-'.
+    4. Suffix = '-<sheet_index>l<line_index>'  (e.g. '-1l1', '-2l17')
+    5. While base+suffix > 18 chars: remove the second segment from base
+       (progressively shorten from the left interior).
+    6. Zero-pad or hard-truncate to exactly 18 chars.
+    """
+    s = str(spir_no).strip()
+    # Remove parenthetical suffixes like (REV.2)
+    s = re.sub(r'\(.*?\)', '', s).strip()
+    # Remove VEN- prefix
     s = re.sub(r'^VEN-', '', s, flags=re.IGNORECASE)
+    # Split and keep digit-leading segments only
     parts = s.split('-')
     kept = [p.strip() for p in parts if p.strip() and re.match(r'^\d', p.strip())]
-    base = '-'.join(kept)  # e.g. '4460-5-43-1002' = 14 chars
 
-    budget = 18 - len(base)
-    item_str = str(item_num)
+    suffix = f'-{sheet_index}l{line_index}'
+    suffix_len = len(suffix)
+    base_budget = 18 - suffix_len
 
-    # Attempt 1: '-L' + zero_padded (needs budget-2 chars for the number)
-    num_width = budget - 2  # e.g. 4-2 = 2
-    if num_width > 0 and len(item_str) <= num_width:
-        result = base + '-L' + item_str.zfill(num_width)
-        if len(result) <= 18:
-            return result
-
-    # Attempt 2: '-{d1}L{rest}' — first digit before L, rest after
-    if len(item_str) >= 2:
-        suffix = '-' + item_str[0] + 'L' + item_str[1:]
-        result = base + suffix
-        if len(result) <= 18:
-            return result
-
-    # Attempt 3: Shorten base — remove second hyphen-segment, add leading '0'
-    base_parts = base.split('-')
-    if len(base_parts) >= 4:
-        # e.g. ['4391','5','43','0006'] → '04391-43-0006' (12 chars)
-        short_base = '0' + base_parts[0] + '-' + '-'.join(base_parts[2:])
-        budget3 = 18 - len(short_base)
-        item_str3 = item_str
-        if len(item_str3) >= 2:
-            suffix3 = '-' + item_str3[0] + 'L' + item_str3[1:]
+    candidate = kept[:]
+    while candidate:
+        base = '-'.join(candidate)
+        if len(base) <= base_budget:
+            result = base + suffix
+            # Pad with zeros if shorter than 18
+            if len(result) < 18:
+                result = result + '0' * (18 - len(result))
+            return result[:18]
+        # Remove second segment to shorten
+        if len(candidate) >= 3:
+            candidate = [candidate[0]] + candidate[2:]
+        elif len(candidate) == 2:
+            candidate = [candidate[0]]
         else:
-            suffix3 = '-L' + item_str3.zfill(budget3 - 2)
-        result = short_base + suffix3
-        if len(result) <= 18:
-            return result
+            break
 
-    # Fallback: hard truncate
-    return (base + '-L' + item_str)[:18]
+    # Absolute fallback: truncate
+    base = '-'.join(kept)
+    result = (base + suffix)[:18]
+    return result.ljust(18)[:18]
+
+
+# Legacy wrapper kept for backward compatibility with existing callers
+# that pass (spir_no, item_num) — maps to sheet_index=1, line_index=item_num
+def _build_old_material_number_legacy(spir_no: str, item_num: int) -> str:
+    """Legacy 2-arg wrapper: sheet_index=1, line_index=item_num."""
+    return build_old_material_number(spir_no, 1, item_num)
 
 
 def build_position_number(item_num: int) -> str:
@@ -300,7 +340,7 @@ def build_position_number(item_num: int) -> str:
 def _read_metadata(ws) -> dict:
     """
     Read equipment metadata from header rows (1-7).
-    EQPT MAKE = MANUFACTURER (the equipment maker, from row 3 right-side)
+    EQPT MAKE = MANUFACTURER (the equipment maker, from row 3 right-side).
     """
     meta = {
         "equipment_desc": "",
@@ -310,7 +350,6 @@ def _read_metadata(ws) -> dict:
         "spir_type":      _detect_spir_type(ws),
     }
 
-    # Primary positions
     v = _v(ws, 2, 24)
     if v: meta["project_name"] = v
     v = _v(ws, 3, 25)
@@ -318,7 +357,6 @@ def _read_metadata(ws) -> dict:
     v = _v(ws, 4, 23)
     if v and not meta["supplier"]: meta["supplier"] = v
 
-    # Scan for labels if primary positions empty
     for ri in range(2, 5):
         for ci in range(1, min(ws.max_column + 1, 30)):
             label = _v(ws, ri, ci).lower()
@@ -363,9 +401,8 @@ def _build_col_map(ws, item_col: int) -> dict[int, str]:
                 col_map[c] = field
                 break
 
-    # Ensure unit_price is always mapped (col 22 in standard layout)
+    # Ensure unit_price is always mapped
     if not any(f == "unit_price" for f in col_map.values()):
-        # Find col 22 or the col after CURRENCY
         currency_col = None
         for c, f in col_map.items():
             if f == "currency":
@@ -418,7 +455,6 @@ def _read_item_data(ws, r: int, col_map: dict[int, str],
     supp_part   = _clean(data.get("supplier_part_no", ""))
     supplier_nm = _clean(data.get("supplier_name", ""))
 
-    # MANUFACTURER PART NUMBER: col 11 (10A) when real, else col 12 (10B)
     if mfr_part:
         data["mfr_part_no"] = mfr_part
     elif supp_part:
@@ -428,14 +464,12 @@ def _read_item_data(ws, r: int, col_map: dict[int, str],
 
     final_mfr = data.get("mfr_part_no", "")
 
-    # NEW DESCRIPTION = desc + mfr_part_no + supplier_name
     if desc:
         parts = [desc]
         if final_mfr:   parts.append(str(final_mfr).strip())
         if supplier_nm: parts.append(supplier_nm)
         data["new_desc"] = ", ".join(parts)
 
-    # QAR price
     unit_price = data.get("unit_price")
     currency   = data.get("currency", "")
     if unit_price is not None and currency:
@@ -470,17 +504,12 @@ def _classify_sheet(sn: str, ws) -> str:
     if "annexure" in lower:
         return "main"
 
-    # Detect truly empty continuation sheets (blank templates).
-    # These have sequential numbers in col 3 (row labels) but no actual
-    # tag headers (cols 4+) and no flag data in data rows.
-    # Such sheets must be skipped entirely to avoid spurious item linkage.
     if "continuation" in lower:
         has_tags = any(
             _is_tag(_v(ws, 1, c))
             for c in range(4, min(ws.max_column + 1, 50))
         )
         if not has_tags:
-            # Check for any real flag data in data rows (cols 4-40, excluding col 41 remarks)
             has_real_data = False
             for r in range(8, min(ws.max_row + 1, 20)):
                 for c in range(4, min(ws.max_column + 1, 41)):
@@ -496,7 +525,7 @@ def _classify_sheet(sn: str, ws) -> str:
                 if has_real_data:
                     break
             if not has_real_data:
-                return "skip"   # blank template — ignore completely
+                return "skip"
 
     if has_desc:
         return "cont_full"
@@ -513,17 +542,22 @@ def _classify_sheet(sn: str, ws) -> str:
 # ── Row builder ───────────────────────────────────────────────────────────────
 
 def _build_output_row(row_data: dict, is_header: bool, spir_no: str,
-                      item_num: Optional[int] = None) -> dict:
+                      item_num: Optional[int] = None,
+                      sheet_index: int = 1,
+                      line_index: int = 1) -> dict:
     """
     Build a standardised output row dict with all 27 columns.
     is_header=True  → summary row (EQPT_QTY filled, ITEM NUMBER empty)
-    is_header=False → detail row (ITEM NUMBER filled, EQPT_QTY empty)
+    is_header=False → detail row (ITEM NUMBER + POSITION NUMBER + OLD MAT NUM filled)
+
+    sheet_index : 1-based index of the source sheet (for OLD MATERIAL NUMBER)
+    line_index  : 1-based line counter within this sheet (for OLD MATERIAL NUMBER)
     """
     out = {col: None for col in OUTPUT_COLS}
 
     out['SPIR NO']    = row_data.get('spir_no', spir_no)
     out['TAG NO']     = row_data.get('tag_no')
-    out['EQPT MAKE']  = row_data.get('manufacturer', '')   # ← manufacturer = EQPT MAKE
+    out['EQPT MAKE']  = row_data.get('manufacturer', '')
     out['EQPT MODEL'] = row_data.get('model', '')
     out['EQPT SR NO'] = row_data.get('serial', '')
     out['SPIR ERROR'] = 0
@@ -531,18 +565,15 @@ def _build_output_row(row_data: dict, is_header: bool, spir_no: str,
     out['SPIR TYPE']  = _normalise_spir_type(row_data.get('spir_type', ''))
 
     if is_header:
-        # Summary row: equipment-level info
-        out['EQPT QTY']           = row_data.get('eqpt_qty', 1)
+        out['EQPT QTY']             = row_data.get('eqpt_qty', 1)
         out['DESCRIPTION OF PARTS'] = row_data.get('desc', '')
-        # POSITION NUMBER on header = '0010' (default first position)
-        out['POSITION NUMBER']    = '0010'
+        out['POSITION NUMBER']      = '0010'
     else:
-        # Detail row: spare part info
         if item_num is not None:
-            out['ITEM NUMBER']                   = item_num
-            out['POSITION NUMBER']               = build_position_number(item_num)
+            out['ITEM NUMBER']                    = item_num
+            out['POSITION NUMBER']                = build_position_number(item_num)
             out['OLD MATERIAL NUMBER/SPF NUMBER'] = build_old_material_number(
-                spir_no, item_num)
+                spir_no, sheet_index, line_index)
         out['QUANTITY IDENTICAL PARTS FITTED'] = row_data.get('qty_identical', 1)
         out['DESCRIPTION OF PARTS']            = row_data.get('desc', '')
         out['NEW DESCRIPTION OF PARTS']        = row_data.get('new_desc', '')
@@ -612,10 +643,10 @@ def _extract_main(ws, sheet_name: str, spir_no: str):
     for c in range(item_col, min(ws.max_column + 1, item_col + 20)):
         for r in [5, 6]:
             v = _v(ws, r, c).lower()
-            if "initial spare" in v:       spir_type_cols[c] = "Initial Spare Parts"
-            elif "normal" in v and "spare" in v: spir_type_cols[c] = "Normal Operating Spares"
-            elif "commissioning" in v:     spir_type_cols[c] = "Commissioning Spare Parts"
-            elif "life cycle" in v:        spir_type_cols[c] = "Life Cycle Spare Parts"
+            if "initial spare" in v:                spir_type_cols[c] = "Initial Spare Parts"
+            elif "normal" in v and "spare" in v:    spir_type_cols[c] = "Normal Operating Spares"
+            elif "commissioning" in v:              spir_type_cols[c] = "Commissioning Spare Parts"
+            elif "life cycle" in v:                 spir_type_cols[c] = "Life Cycle Spare Parts"
 
     tag_meta: dict[str, dict] = {}
     for i, tag_raw in enumerate(tags_raw):
@@ -643,7 +674,6 @@ def _extract_main(ws, sheet_name: str, spir_no: str):
         key = (sheet_name, item_num)
 
         row_spir_type = spir_type
-        # Check each SPIR type column — only override if cell value is genuinely > 0
         for tc, type_label in spir_type_cols.items():
             cell_val = _raw(ws, r, tc)
             if cell_val is not None and cell_val not in (0, "0", "", "."):
@@ -779,10 +809,7 @@ def _extract_cont_overflow_notag(ws, main_sheets: list[str],
                                   existing_tags: dict) -> dict[str, list[tuple]]:
     """
     Handles continuation sheets that have no explicit tag headers but list
-    item numbers in col 3. Only adds items that GENUINELY exist in master_items
-    AND are NOT already linked to the tag. Empty/template continuation sheets
-    (whose col-3 numbers are just row-index labels with no real item data)
-    are automatically skipped because no matches will be found.
+    item numbers in col 3. Only adds items genuinely in master_items.
     """
     item_nums: list[int] = []
     for r in range(8, ws.max_row + 1):
@@ -793,8 +820,6 @@ def _extract_cont_overflow_notag(ws, main_sheets: list[str],
             if n > 0: item_nums.append(n)
         except: pass
 
-    # Guard: if NONE of the col-3 values match any master_item, this sheet
-    # is a blank template (row-index labels only) — skip entirely
     any_real_item = any(
         (ms, n) in master_items
         for n in item_nums
@@ -831,7 +856,6 @@ def _extract_annexure_style(wb, spir_no: str) -> dict:
     """
     Annexure format: single MAIN SHEET + Annexure sheets.
     Tags live in Annexure sheets (rows), not as column headers.
-    Output follows same 27-column structure as other formats.
     """
     main_ws, main_name = None, ""
     for sn in wb.sheetnames:
@@ -840,28 +864,27 @@ def _extract_annexure_style(wb, spir_no: str) -> dict:
     if main_ws is None:
         return _empty_result(spir_no)
 
-    # Detect item col
     item_col = None
     for c in range(1, main_ws.max_column + 1):
         if "item number" in _v(main_ws, 6, c).lower():
             item_col = c; break
     if item_col is None: item_col = 9
 
-    # Annexure column flags in main sheet
     annexure_cols: list[tuple[int, str]] = []
     for c in range(1, item_col):
         v = _v(main_ws, 1, c)
         if "annexure" in v.lower():
             annexure_cols.append((c, v.strip()))
 
-    col_map   = _build_col_map(main_ws, item_col)
-    spir_type = _detect_spir_type(main_ws)
-    meta      = _read_metadata(main_ws)
+    col_map      = _build_col_map(main_ws, item_col)
+    spir_type    = _detect_spir_type(main_ws)
+    meta         = _read_metadata(main_ws)
     manufacturer = meta["manufacturer"]
+    sheet_idx    = _get_sheet_index(main_name)
 
-    # Read items from main sheet
     items: dict[int, dict] = {}
     item_to_annexures: dict[int, list[str]] = {}
+    line_counter = 0
 
     for r in range(8, main_ws.max_row + 1):
         item_val = _raw(main_ws, r, item_col)
@@ -870,11 +893,12 @@ def _extract_annexure_style(wb, spir_no: str) -> dict:
         except: continue
         if item_num <= 0: continue
 
+        line_counter += 1
         data = _read_item_data(main_ws, r, col_map, main_name, spir_no, spir_type)
         if not data.get("desc"): continue
-        # Fill manufacturer from sheet meta if not in item
         if not data.get("manufacturer"):
             data["manufacturer"] = manufacturer
+        data["_line_index"] = line_counter
         items[item_num] = data
         item_to_annexures[item_num] = []
         for ac, ann_name in annexure_cols:
@@ -882,13 +906,11 @@ def _extract_annexure_style(wb, spir_no: str) -> dict:
             if cv_val is not None and str(cv_val).strip() not in ("", "0", "."):
                 item_to_annexures[item_num].append(ann_name)
 
-    # Read tags from annexure sheets
     annexure_tags: dict[str, list[dict]] = {}
     for sn in wb.sheetnames:
         if "annexure" not in sn.lower(): continue
         ws = wb[sn]
         tags = []
-        # Find header row containing 'Sr. No' or 'Sr.No'
         hdr_row = None
         for ri in range(1, min(ws.max_row + 1, 10)):
             s = '|'.join(str(ws.cell(ri, ci).value or '') for ci in range(1, 10)).lower()
@@ -896,28 +918,18 @@ def _extract_annexure_style(wb, spir_no: str) -> dict:
                 hdr_row = ri; break
         if hdr_row:
             for ri in range(hdr_row + 2, ws.max_row + 1):
-                tag = _v(ws, ri, 5)   # col 5 = valve tag
-                serial = _v(ws, ri, 23)  # col 23 = mfr serial
-                model  = _v(ws, ri, 24)  # col 24 = mfr model
+                tag    = _v(ws, ri, 5)
+                serial = _v(ws, ri, 23)
+                model  = _v(ws, ri, 24)
                 if tag and _is_tag(tag):
-                    tags.append({
-                        "tag":    tag,
-                        "serial": serial,
-                        "model":  model,
-                    })
+                    tags.append({"tag": tag, "serial": serial, "model": model})
         else:
-            # Fallback: scan for tags in col 5
             for r in range(5, ws.max_row + 1):
                 tag = _v(ws, r, 5)
                 if _is_tag(tag):
-                    tags.append({
-                        "tag":    tag,
-                        "serial": _v(ws, r, 23),
-                        "model":  _v(ws, r, 24),
-                    })
+                    tags.append({"tag": tag, "serial": _v(ws, r, 23), "model": _v(ws, r, 24)})
         if tags: annexure_tags[sn] = tags
 
-    # Build output rows (27-column format)
     output_rows: list[dict] = []
     spare_count = 0
     all_tags: set[str] = set()
@@ -927,26 +939,20 @@ def _extract_annexure_style(wb, spir_no: str) -> dict:
                             if ann_name.lower() in k.lower()), None)
         if not ann_ws_name:
             continue
-        ann_items = [n for n, anns in item_to_annexures.items()
-                     if ann_name in anns]
+        ann_items = [n for n, anns in item_to_annexures.items() if ann_name in anns]
 
-        # EQPT QTY for this annexure = unit count from main sheet row 7
-        ann_col_idx = ac
-        eqpt_qty_val = _raw(main_ws, 7, ann_col_idx)
+        eqpt_qty_val = _raw(main_ws, 7, ac)
         try:
             eqpt_qty = int(float(str(eqpt_qty_val))) if eqpt_qty_val else len(annexure_tags[ann_ws_name])
         except:
             eqpt_qty = len(annexure_tags[ann_ws_name])
 
-        # ── Global rows: one header + one detail per item, NO tag ────────────
-        # These appear once per annexure group, before all the per-tag rows.
-        # Expected structure: global_header → global_detail → (per-tag header → per-tag detail) × N
+        # Global rows (no TAG NO)
         for item_num in ann_items:
             d = items.get(item_num, {})
-            if not d:
-                continue
+            if not d: continue
+            line_idx = d.get("_line_index", item_num)
 
-            # Global summary row (no TAG NO, no EQPT MODEL, no EQPT SR NO)
             global_hdr = {col: None for col in OUTPUT_COLS}
             global_hdr['SPIR NO']              = spir_no
             global_hdr['EQPT MAKE']            = manufacturer
@@ -958,14 +964,14 @@ def _extract_annexure_style(wb, spir_no: str) -> dict:
             global_hdr['SPIR TYPE']            = _normalise_spir_type(spir_type)
             output_rows.append(global_hdr)
 
-            # Global detail row (no TAG NO)
             global_det = {col: None for col in OUTPUT_COLS}
             global_det['SPIR NO']                         = spir_no
             global_det['EQPT MAKE']                       = manufacturer
             global_det['QUANTITY IDENTICAL PARTS FITTED'] = d.get('qty_identical', 1)
             global_det['ITEM NUMBER']                     = item_num
             global_det['POSITION NUMBER']                 = build_position_number(item_num)
-            global_det['OLD MATERIAL NUMBER/SPF NUMBER']  = build_old_material_number(spir_no, item_num)
+            global_det['OLD MATERIAL NUMBER/SPF NUMBER']  = build_old_material_number(
+                spir_no, sheet_idx, line_idx)
             global_det['DESCRIPTION OF PARTS']            = d.get('desc', '')
             global_det['NEW DESCRIPTION OF PARTS']        = d.get('new_desc', '')
             global_det['DWG NO INCL POSN NO']             = d.get('dwg_no', '')
@@ -986,76 +992,76 @@ def _extract_annexure_style(wb, spir_no: str) -> dict:
                 d.get('spir_type', spir_type))
             output_rows.append(global_det)
 
-        # ── Per-tag rows: header + details for each tag in this annexure ─────
+        # Per-tag rows
         for ti in annexure_tags[ann_ws_name]:
             tag = ti["tag"]
             all_tags.add(tag)
 
-            # ── Per-tag header (summary) row ────────────────────────────────
             header_row = {col: None for col in OUTPUT_COLS}
-            header_row['SPIR NO']             = spir_no
-            header_row['TAG NO']              = tag
-            header_row['EQPT MAKE']           = manufacturer
-            header_row['EQPT MODEL']          = ti.get('model', '')
-            header_row['EQPT SR NO']          = ti.get('serial', '')
-            header_row['EQPT QTY']            = eqpt_qty
-            header_row['POSITION NUMBER']     = '0010'
+            header_row['SPIR NO']              = spir_no
+            header_row['TAG NO']               = tag
+            header_row['EQPT MAKE']            = manufacturer
+            header_row['EQPT MODEL']           = ti.get('model', '')
+            header_row['EQPT SR NO']           = ti.get('serial', '')
+            header_row['EQPT QTY']             = eqpt_qty
+            header_row['POSITION NUMBER']      = '0010'
             header_row['DESCRIPTION OF PARTS'] = meta.get('project_name', '')
-            header_row['SPIR ERROR']          = 0
-            header_row['SHEET']               = main_name.strip().upper()
-            header_row['SPIR TYPE']           = _normalise_spir_type(spir_type)
+            header_row['SPIR ERROR']           = 0
+            header_row['SHEET']                = main_name.strip().upper()
+            header_row['SPIR TYPE']            = _normalise_spir_type(spir_type)
             output_rows.append(header_row)
 
-            # ── Per-tag detail rows ───────────────────────────────────────────
             for item_num in ann_items:
                 d = items.get(item_num, {})
                 if not d: continue
+                line_idx = d.get("_line_index", item_num)
 
                 detail_row = {col: None for col in OUTPUT_COLS}
-                detail_row['SPIR NO']                          = spir_no
-                detail_row['TAG NO']                           = tag
-                detail_row['EQPT MAKE']                        = manufacturer
-                detail_row['EQPT MODEL']                       = ti.get('model', '')
-                detail_row['EQPT SR NO']                       = ti.get('serial', '')
-                detail_row['QUANTITY IDENTICAL PARTS FITTED']  = d.get('qty_identical', 1)
-                detail_row['ITEM NUMBER']                      = item_num
-                detail_row['POSITION NUMBER']                  = build_position_number(item_num)
-                detail_row['OLD MATERIAL NUMBER/SPF NUMBER']   = build_old_material_number(spir_no, item_num)
-                detail_row['DESCRIPTION OF PARTS']             = d.get('desc', '')
-                detail_row['NEW DESCRIPTION OF PARTS']         = d.get('new_desc', '')
-                detail_row['DWG NO INCL POSN NO']              = d.get('dwg_no', '')
-                detail_row['MANUFACTURER PART NUMBER']         = d.get('mfr_part_no', '')
-                detail_row['MATERIAL SPECIFICATION']           = d.get('material_spec', '')
-                detail_row['SUPPLIER OCM NAME']                = d.get('supplier_name', '')
-                detail_row['CURRENCY']                         = d.get('currency', '')
-                detail_row['UNIT PRICE']                       = d.get('unit_price')
-                detail_row['UNIT PRICE (QAR)']                 = d.get('unit_price_qar')
-                detail_row['DELIVERY TIME IN WEEKS']           = d.get('delivery')
-                detail_row['MIN MAX STOCK LVLS QTY']           = d.get('min_max')
-                detail_row['UNIT OF MEASURE']                  = d.get('uom', '')
-                detail_row['SAP NUMBER']                       = d.get('sap_no', '')
-                detail_row['CLASSIFICATION OF PARTS']          = d.get('classification', '')
-                detail_row['SPIR ERROR']                       = 0
-                detail_row['SHEET']                            = d.get('sheet', main_name).strip().upper()
-                detail_row['SPIR TYPE']                        = _normalise_spir_type(
+                detail_row['SPIR NO']                         = spir_no
+                detail_row['TAG NO']                          = tag
+                detail_row['EQPT MAKE']                       = manufacturer
+                detail_row['EQPT MODEL']                      = ti.get('model', '')
+                detail_row['EQPT SR NO']                      = ti.get('serial', '')
+                detail_row['QUANTITY IDENTICAL PARTS FITTED'] = d.get('qty_identical', 1)
+                detail_row['ITEM NUMBER']                     = item_num
+                detail_row['POSITION NUMBER']                 = build_position_number(item_num)
+                detail_row['OLD MATERIAL NUMBER/SPF NUMBER']  = build_old_material_number(
+                    spir_no, sheet_idx, line_idx)
+                detail_row['DESCRIPTION OF PARTS']            = d.get('desc', '')
+                detail_row['NEW DESCRIPTION OF PARTS']        = d.get('new_desc', '')
+                detail_row['DWG NO INCL POSN NO']             = d.get('dwg_no', '')
+                detail_row['MANUFACTURER PART NUMBER']        = d.get('mfr_part_no', '')
+                detail_row['MATERIAL SPECIFICATION']          = d.get('material_spec', '')
+                detail_row['SUPPLIER OCM NAME']               = d.get('supplier_name', '')
+                detail_row['CURRENCY']                        = d.get('currency', '')
+                detail_row['UNIT PRICE']                      = d.get('unit_price')
+                detail_row['UNIT PRICE (QAR)']                = d.get('unit_price_qar')
+                detail_row['DELIVERY TIME IN WEEKS']          = d.get('delivery')
+                detail_row['MIN MAX STOCK LVLS QTY']          = d.get('min_max')
+                detail_row['UNIT OF MEASURE']                 = d.get('uom', '')
+                detail_row['SAP NUMBER']                      = d.get('sap_no', '')
+                detail_row['CLASSIFICATION OF PARTS']         = d.get('classification', '')
+                detail_row['SPIR ERROR']                      = 0
+                detail_row['SHEET']                           = d.get('sheet', main_name).strip().upper()
+                detail_row['SPIR TYPE']                       = _normalise_spir_type(
                     d.get('spir_type', spir_type))
                 output_rows.append(detail_row)
                 spare_count += 1
 
     return {
-        "format":          "SPIR_ANNEXURE",
-        "spir_no":         spir_no,
-        "equipment":       meta["project_name"],
-        "manufacturer":    manufacturer,
-        "supplier":        meta.get("supplier", ""),
-        "spir_type":       _normalise_spir_type(spir_type),
-        "eqpt_qty":        len(all_tags),
-        "spare_items":     spare_count,
-        "total_tags":      len(all_tags),
-        "annexure_count":  len(annexure_tags),
-        "annexure_stats":  {k: len(v) for k, v in annexure_tags.items()},
-        "rows":            output_rows,
-        "output_cols":     OUTPUT_COLS,
+        "format":         "SPIR_ANNEXURE",
+        "spir_no":        spir_no,
+        "equipment":      meta["project_name"],
+        "manufacturer":   manufacturer,
+        "supplier":       meta.get("supplier", ""),
+        "spir_type":      _normalise_spir_type(spir_type),
+        "eqpt_qty":       len(all_tags),
+        "spare_items":    spare_count,
+        "total_tags":     len(all_tags),
+        "annexure_count": len(annexure_tags),
+        "annexure_stats": {k: len(v) for k, v in annexure_tags.items()},
+        "rows":           output_rows,
+        "output_cols":    OUTPUT_COLS,
     }
 
 
@@ -1077,6 +1083,9 @@ def extract_workbook(wb, spir_no: str = "", spir_filename: str = "") -> dict:
     Main entry point. Auto-detects format and extracts all SPIR data.
     Returns dict with 'rows' (list of 27-column dicts) and metadata.
     """
+    # Reset sheet index registry for each new workbook
+    _reset_sheet_registry()
+
     if not spir_no:
         spir_no = _detect_spir_no(wb)
     if not spir_no and spir_filename:
@@ -1092,12 +1101,15 @@ def extract_workbook(wb, spir_no: str = "", spir_filename: str = "") -> dict:
 
     log.info("extract_workbook: spir_no=%r  sheets=%s", spir_no, wb.sheetnames)
 
-    master_items:   dict[tuple, dict]       = {}
-    all_tag_items:  dict[str, list[tuple]]  = {}
-    all_tag_meta:   dict[str, dict]         = {}
-    main_sheets:    list[str]               = []
-    annexure_stats: dict[str, int]          = {}
+    master_items:  dict[tuple, dict]      = {}
+    all_tag_items: dict[str, list[tuple]] = {}
+    all_tag_meta:  dict[str, dict]        = {}
+    main_sheets:   list[str]              = []
+    annexure_stats: dict[str, int]        = {}
     manufacturer = supplier = spir_type = equipment = ""
+
+    # Per-sheet line counters for OLD MATERIAL NUMBER (line_index = position within sheet)
+    sheet_line_counters: dict[str, int] = {}  # sheet_name → next line_index
 
     # Pass 1: main / full sheets
     for sheet_name in wb.sheetnames:
@@ -1109,6 +1121,15 @@ def extract_workbook(wb, spir_no: str = "", spir_filename: str = "") -> dict:
 
         items, tag_items, tag_meta = _extract_main(ws, sheet_name, spir_no)
         if not items: continue
+
+        # Register sheet index and assign line indices to each item
+        sidx = _get_sheet_index(sheet_name)
+        line_counter = 0
+        for key in sorted(items.keys(), key=lambda k: k[1]):   # sort by item_num
+            line_counter += 1
+            items[key]["_sheet_index"] = sidx
+            items[key]["_line_index"]  = line_counter
+        sheet_line_counters[sheet_name] = line_counter
 
         master_items.update(items)
         main_sheets.append(sheet_name)
@@ -1188,7 +1209,7 @@ def extract_workbook(wb, spir_no: str = "", spir_filename: str = "") -> dict:
                 if ts not in tag_sheet_order:
                     tag_sheet_order.append(ts)
 
-    output_rows:  list[dict] = []
+    output_rows: list[dict] = []
     spare_count = 0
 
     def _get_item_data(key: tuple) -> Optional[dict]:
@@ -1234,7 +1255,9 @@ def extract_workbook(wb, spir_no: str = "", spir_filename: str = "") -> dict:
         for key in keys:
             d = _get_item_data(key)
             if d is None: continue
-            item_num = key[1]
+            item_num  = key[1]
+            sidx      = d.get("_sheet_index", 1)
+            line_idx  = d.get("_line_index", item_num)
 
             detail_row = {col: None for col in OUTPUT_COLS}
             detail_row['SPIR NO']                         = spir_no
@@ -1246,7 +1269,7 @@ def extract_workbook(wb, spir_no: str = "", spir_filename: str = "") -> dict:
             detail_row['ITEM NUMBER']                     = item_num
             detail_row['POSITION NUMBER']                 = build_position_number(item_num)
             detail_row['OLD MATERIAL NUMBER/SPF NUMBER']  = build_old_material_number(
-                spir_no, item_num)
+                spir_no, sidx, line_idx)
             detail_row['DESCRIPTION OF PARTS']            = d.get("desc", "")
             detail_row['NEW DESCRIPTION OF PARTS']        = d.get("new_desc", "")
             detail_row['DWG NO INCL POSN NO']             = d.get("dwg_no", "")
@@ -1271,17 +1294,17 @@ def extract_workbook(wb, spir_no: str = "", spir_filename: str = "") -> dict:
     all_tags = {ts[0] for ts in tag_sheet_items}
 
     return {
-        "format":          "SPIR_MATRIX",
-        "spir_no":         spir_no,
-        "equipment":       equipment,
-        "manufacturer":    manufacturer,
-        "supplier":        supplier,
-        "spir_type":       _normalise_spir_type(spir_type),
-        "eqpt_qty":        len(all_tags),
-        "spare_items":     spare_count,
-        "total_tags":      len(all_tags),
-        "annexure_count":  max(0, len(annexure_stats) - 1),
-        "annexure_stats":  annexure_stats,
-        "rows":            output_rows,
-        "output_cols":     OUTPUT_COLS,
+        "format":         "SPIR_MATRIX",
+        "spir_no":        spir_no,
+        "equipment":      equipment,
+        "manufacturer":   manufacturer,
+        "supplier":       supplier,
+        "spir_type":      _normalise_spir_type(spir_type),
+        "eqpt_qty":       len(all_tags),
+        "spare_items":    spare_count,
+        "total_tags":     len(all_tags),
+        "annexure_count": max(0, len(annexure_stats) - 1),
+        "annexure_stats": annexure_stats,
+        "rows":           output_rows,
+        "output_cols":    OUTPUT_COLS,
     }
