@@ -161,6 +161,9 @@ def _is_tag(val: str) -> bool:
 
 
 def _expand_tags(raw: str) -> list[str]:
+    # === UPDATED: SPIR 8 TAG SPLIT FIX ===
+    # Handles cases like '23-PM-7100 XA / XB' → ['23-PM-7100 XA', '23-PM-7100 XB']
+    # where suffix-only parts (XB, XC, etc.) must inherit the prefix from the first tag.
     raw = raw.strip()
     if not raw: return []
     m = re.match(r'^(\d+)\s+to\s+(\d+)$', raw, re.IGNORECASE)
@@ -174,8 +177,20 @@ def _expand_tags(raw: str) -> list[str]:
             result = [first]
             for part in parts[1:]:
                 if re.match(r'^\d+$', part) and len(part) < len(first):
+                    # Pure numeric suffix — attach to numeric root of first tag
+                    # e.g. '30-GV-146', '171' → '30-GV-171'
                     pm = re.match(r'^(.*\D)(\d+)$', first)
                     result.append(pm.group(1) + part if pm else part)
+                elif re.match(r'^[A-Za-z][A-Za-z0-9]*$', part):
+                    # Pure alpha-start suffix (e.g. 'XB', 'XC', 'B') with no hyphen.
+                    # These are suffix-only tag parts: '23-PM-7100 XA / XB' → XB
+                    # Inherit the space-delimited prefix from the first tag:
+                    # '23-PM-7100 XA' → prefix='23-PM-7100 ' → '23-PM-7100 XB'
+                    space_idx = first.rfind(' ')
+                    if space_idx >= 0:
+                        result.append(first[:space_idx + 1] + part)
+                    else:
+                        result.append(part)
                 else:
                     result.append(part)
             return result
@@ -269,59 +284,154 @@ def _get_sheet_index(sheet_name: str) -> int:
     return _sheet_index_registry[key]
 
 
-# ── OLD MATERIAL NUMBER builder (REQUIREMENT 1 — v2) ─────────────────────────
+# ── OLD MATERIAL NUMBER builder ───────────────────────────────────────────────
+# REQUIREMENT 1 (v3): Uppercase L, shared line numbers, max 24, zero-strip rules
+
+def _omn_extract_segments(spir_no: str) -> list[str]:
+    """
+    Extract numeric-leading segments from a SPIR number.
+
+    Steps:
+    1. Remove bracketed suffixes like (REV.2)
+    2. Remove VEN- prefix
+    3. Split on '-', keep only segments that START with a digit
+    4. Drop a trailing SINGLE-digit revision segment if 4+ segments remain
+       e.g. 'VEN-4460-KAHS-5-43-1002-2' → ['4460','5','43','1002'] (drop '2')
+    """
+    s = str(spir_no).strip()
+    s = re.sub(r'\s*\(.*?\)\s*', '', s).strip()          # remove (REV.2)
+    s = re.sub(r'^VEN-', '', s, flags=re.IGNORECASE)      # remove VEN-
+    parts = s.split('-')
+    kept = [p.strip() for p in parts
+            if p.strip() and re.match(r'^\d', p.strip())]
+    # Drop trailing single-digit revision (e.g. the '2' in 4460-KAHS-5-43-1002-2)
+    if len(kept) >= 4 and re.match(r'^\d$', kept[-1]):
+        kept = kept[:-1]
+    return kept
+
+
+def _omn_strip_leading_zeros(segments: list[str]) -> list[str]:
+    """
+    Remove leading zeros from numeric segments ONLY when the numeric VALUE
+    is unchanged and at least one character is saved.
+
+    Rule: '0610' → '610' ✓ (saves 1 char, value same)
+          '0002' → '2'   ✓ (saves 3 chars, value same)
+          '053'  → '53'  ✓ (saves 1 char, value same)
+          '6100' → keep  ✗ (trailing zero — removing would change value)
+          '0'    → keep  ✗ (single zero, can't reduce further)
+    """
+    result = []
+    for seg in segments:
+        # Only strip if seg starts with 0 AND has more than 1 digit
+        if len(seg) > 1 and seg.startswith('0') and re.match(r'^0+\d+$', seg):
+            stripped = seg.lstrip('0') or '0'
+            result.append(stripped)      # 0610→610, 0002→2, 053→53
+        else:
+            result.append(seg)           # 6100→6100 (no leading zero), 0→0
+    return result
+
 
 def build_old_material_number(spir_no: str, sheet_index: int, line_index: int) -> str:
     """
-    Build OLD MATERIAL NUMBER exactly 18 characters.
+    Build OLD MATERIAL NUMBER — always exactly 18 characters.
 
-    Algorithm:
-    1. Strip (REV.x) suffixes and VEN- prefix from spir_no.
-    2. Split by '-', keep only segments that START with a digit.
-    3. Form base = those segments joined by '-'.
-    4. Suffix = '-<sheet_index>l<line_index>'  (e.g. '-1l1', '-2l17')
-    5. While base+suffix > 18 chars: remove the second segment from base
-       (progressively shorten from the left interior).
-    6. Zero-pad or hard-truncate to exactly 18 chars.
+    FORMAT:  <numeric_base>-<suffix>  where total = 18 chars
+
+    SUFFIX RULES (uppercase L):
+      sheet_index == 1  →  '-L{line:02d}'       e.g. '-L01', '-L28'
+      sheet_index  > 1  →  '-{sheet}L{line}'    e.g. '-2L1', '-2L28'
+
+    LINE NUMBER:
+      = item_num (the actual item number from the SPIR sheet)
+      No hard cap — SPIR sheets may have up to 28 or more items per sheet.
+      Compression fires automatically when suffix+base would exceed 18.
+
+    COMPRESSION PRIORITY (when base + suffix > 18):
+      1. Original full base (no stripping, no reduction)
+      2. Zero-stripped full base (0610→610 before cutting segments)
+      3. Original base with progressive interior-segment reduction
+      4. Zero-stripped base with progressive interior reduction
+      5. Hard-truncate as absolute last resort
+
+    PADDING:
+      If result < 18 chars → right-pad with '0'
+
+    LINE NUMBERS ARE SHARED across all tags on the same sheet
+    (line_index = item_num, same for all tags referencing the same item)
     """
-    s = str(spir_no).strip()
-    # Remove parenthetical suffixes like (REV.2)
-    s = re.sub(r'\(.*?\)', '', s).strip()
-    # Remove VEN- prefix
-    s = re.sub(r'^VEN-', '', s, flags=re.IGNORECASE)
-    # Split and keep digit-leading segments only
-    parts = s.split('-')
-    kept = [p.strip() for p in parts if p.strip() and re.match(r'^\d', p.strip())]
+    line_index = int(line_index)   # no clamping — item_num is the reference
 
-    suffix = f'-{sheet_index}l{line_index}'
-    suffix_len = len(suffix)
-    base_budget = 18 - suffix_len
+    # Build suffix
+    if sheet_index == 1:
+        # Sheet 1: '-L{line:02d}' (zero-padded, always 4+ chars)
+        suffix = f'-L{line_index:02d}'           # '-L01' .. '-L28'
+    else:
+        # Sheet 2+: '-{sheet}L{line}'
+        suffix = f'-{sheet_index}L{line_index}'  # '-2L1' .. '-2L28'
 
-    candidate = kept[:]
-    while candidate:
-        base = '-'.join(candidate)
-        if len(base) <= base_budget:
-            result = base + suffix
-            # Pad with zeros if shorter than 18
-            if len(result) < 18:
-                result = result + '0' * (18 - len(result))
-            return result[:18]
-        # Remove second segment to shorten
-        if len(candidate) >= 3:
-            candidate = [candidate[0]] + candidate[2:]
-        elif len(candidate) == 2:
-            candidate = [candidate[0]]
-        else:
-            break
+    base_budget = 18 - len(suffix)
 
-    # Absolute fallback: truncate
-    base = '-'.join(kept)
-    result = (base + suffix)[:18]
-    return result.ljust(18)[:18]
+    def _try_fit(segs: list[str], budget: int) -> str | None:
+        """Progressive interior-segment reduction. Returns base string or None."""
+        candidate = segs[:]
+        while candidate:
+            base = '-'.join(candidate)
+            if len(base) <= budget:
+                return base
+            # Remove second segment to shorten (preserve first + last group)
+            if len(candidate) >= 3:
+                candidate = [candidate[0]] + candidate[2:]
+            elif len(candidate) == 2:
+                candidate = [candidate[0]]
+            else:
+                break
+        return None
+
+    segs_orig     = _omn_extract_segments(spir_no)
+    segs_stripped = _omn_strip_leading_zeros(segs_orig)
+
+    # Compression priority (per spec):
+    #   1. Original full segments (no stripping, no reduction)
+    #   2. Zero-stripped full segments (strip leading zeros before cutting segments)
+    #   3. Original segments with progressive interior reduction
+    #   4. Stripped segments with progressive interior reduction
+    #   5. Hard truncate as last resort
+    #
+    # PADDING RULE: pad the BASE (not the whole result) so zeros never land
+    # after the suffix.  base.ljust(base_budget,'0') + suffix = exactly 18 chars.
+
+    def _assemble(base: str) -> str:
+        """Pad base to base_budget then append suffix → always 18 chars."""
+        padded = base.ljust(base_budget, '0')[:base_budget]
+        return padded + suffix  # len = base_budget + len(suffix) = 18
+
+    # Priority 1: original, full
+    base = '-'.join(segs_orig)
+    if len(base) <= base_budget:
+        return _assemble(base)
+
+    # Priority 2: zero-stripped, full (strip 0610→610 before removing any segment)
+    base = '-'.join(segs_stripped)
+    if len(base) <= base_budget:
+        return _assemble(base)
+
+    # Priority 3: original with interior-segment reduction
+    base = _try_fit(segs_orig, base_budget)
+    if base is not None:
+        return _assemble(base)
+
+    # Priority 4: stripped with interior-segment reduction
+    base = _try_fit(segs_stripped, base_budget)
+    if base is not None:
+        return _assemble(base)
+
+    # --- Fallback: hard truncate ---
+    base_raw = '-'.join(segs_orig)
+    return (base_raw + suffix)[:18]
 
 
-# Legacy wrapper kept for backward compatibility with existing callers
-# that pass (spir_no, item_num) — maps to sheet_index=1, line_index=item_num
+# Legacy 2-arg shim (backward compat — maps item_num to line_index on sheet 1)
 def _build_old_material_number_legacy(spir_no: str, item_num: int) -> str:
     """Legacy 2-arg wrapper: sheet_index=1, line_index=item_num."""
     return build_old_material_number(spir_no, 1, item_num)
@@ -595,84 +705,325 @@ def _build_output_row(row_data: dict, is_header: bool, spir_no: str,
 
 # ── Main sheet extractor ──────────────────────────────────────────────────────
 
-def _extract_main(ws, sheet_name: str, spir_no: str):
-    if ws.max_row < 7: return {}, {}, {}
+# ── SPIR FORMAT TYPE DETECTION ────────────────────────────────────────────────
+# The system handles 8 distinct SPIR sheet formats.
+# Format detection is based on structural signals (tag layout, sheet names, etc.)
+# This drives separate per-format logic blocks — DO NOT merge these branches.
 
+SPIR_FORMAT_UNKNOWN      = 0
+SPIR_FORMAT_SINGLE_TAG   = 1   # One tag column per sheet
+SPIR_FORMAT_MULTI_TAG    = 2   # Multiple single-value tag columns
+SPIR_FORMAT_PACKED_TAGS  = 3   # Multiple tags packed in ONE cell (e.g. 8 GV tags)
+SPIR_FORMAT_MULTI_SHEET  = 4   # Same tags repeated across 2+ main sheets
+SPIR_FORMAT_CONTINUATION = 5   # Overflow/continuation sheet with packed tags
+SPIR_FORMAT_ANNEXURE     = 6   # Annexure-style (tag rows in separate sheet)
+SPIR_FORMAT_MIXED        = 7   # Mixed: some single-tag cols + packed-tag col(s)
+SPIR_FORMAT_LEGACY       = 8   # Legacy formats 1-5 (handled by existing code)
+
+
+def _detect_spir_format(ws, sheet_name: str, wb=None) -> int:
+    """
+    Detect the structural SPIR format for a given sheet.
+
+    Signals examined:
+    - Number of tag columns in R1
+    - Whether any tag cell contains ',' or '/' (packed tags)
+    - Whether multiple main sheets exist (wb provided)
+    - Sheet name keywords (continuation, annexure)
+    """
+    lower = sheet_name.lower()
+
+    # Format 6: Annexure style detected at workbook level (checked before calling)
+    if 'annexure' in lower:
+        return SPIR_FORMAT_ANNEXURE
+
+    # Format 5: Continuation sheet
+    if 'continuation' in lower:
+        return SPIR_FORMAT_CONTINUATION
+
+    # Scan R1 for tag columns (between col 3 and item_col)
+    tag_values = []
+    for c in range(3, min(ws.max_column + 1, 30)):
+        v = _v(ws, 1, c)
+        if _is_tag(v):
+            tag_values.append(v)
+        elif v and 'item number' in _v(ws, 6, c).lower():
+            break
+
+    if not tag_values:
+        return SPIR_FORMAT_UNKNOWN
+
+    packed_cols  = [v for v in tag_values if ',' in v or '/' in v or ' to ' in v.lower()]
+    single_cols  = [v for v in tag_values if v not in packed_cols]
+
+    # Format 3: ALL tag columns are packed (e.g. one cell = '30-GV-146, 171, 169...')
+    if packed_cols and not single_cols:
+        return SPIR_FORMAT_PACKED_TAGS
+
+    # Format 7: Mixed — some single-tag cols + at least one packed-tag col
+    if packed_cols and single_cols:
+        return SPIR_FORMAT_MIXED
+
+    # Format 4: Multi-sheet (same tags in 2+ sheets) — detected from wb
+    if wb is not None:
+        main_sheet_count = sum(
+            1 for sn in wb.sheetnames
+            if 'validation' not in sn.lower()
+            and 'continuation' not in sn.lower()
+            and 'annexure' not in sn.lower()
+        )
+        if main_sheet_count > 1:
+            return SPIR_FORMAT_MULTI_SHEET
+
+    # Format 2: Multiple single-value tag columns
+    if len(single_cols) > 1:
+        return SPIR_FORMAT_MULTI_TAG
+
+    # Format 1: Single tag column
+    return SPIR_FORMAT_SINGLE_TAG
+
+
+def _distribute_qty_per_tag(total_identical: int, num_tags: int,
+                             eqpt_qty_header: int | None) -> tuple[int, int]:
+    """
+    SPIR 6 special case: distribute identical parts and eqpt_qty per tag.
+
+    Rules (per requirements):
+    - 8 tags, eqpt_qty=EMPTY, identical=8  → each tag: eqpt_qty=1, identical=1
+    - 10 tags, qty=10                       → each tag: eqpt_qty=1, identical=1
+    - 10 tags, qty=20                       → each tag: eqpt_qty=2, identical=2
+
+    Returns: (per_tag_eqpt_qty, per_tag_identical)
+    """
+    if num_tags <= 0:
+        return (eqpt_qty_header or 1, total_identical)
+
+    # Per-tag identical = total / num_tags (floor division, minimum 1)
+    per_tag_identical = max(1, total_identical // num_tags)
+
+    # Per-tag eqpt_qty:
+    # If header eqpt_qty was None/empty → each tag gets 1
+    # If header eqpt_qty was set → divide by num_tags
+    if eqpt_qty_header is None or eqpt_qty_header == 0:
+        per_tag_eqpt_qty = 1
+    else:
+        per_tag_eqpt_qty = max(1, eqpt_qty_header // num_tags)
+
+    return (per_tag_eqpt_qty, per_tag_identical)
+
+
+# ── Main sheet extractor (dispatches per SPIR format) ─────────────────────────
+
+def _extract_main(ws, sheet_name: str, spir_no: str, wb=None):
+    """
+    Extract items, tag-item links, and tag metadata from one main sheet.
+
+    Dispatches to separate logic blocks per SPIR format type.
+    DO NOT merge these blocks — kept separate for registry extensibility.
+
+    FORMAT DISPATCH:
+      SPIR_FORMAT_SINGLE_TAG  (1) — one tag col, direct cell value → qty_identical
+      SPIR_FORMAT_MULTI_TAG   (2) — multiple independent single-tag cols
+      SPIR_FORMAT_PACKED_TAGS (3) — all tags packed in one cell (SPIR 6 GV col)
+      SPIR_FORMAT_MULTI_SHEET (4) — same tag set repeated across 2+ main sheets
+      SPIR_FORMAT_MIXED       (7) — single-tag cols + packed-tag col(s)
+
+    LINE NUMBER SHARING RULE (CRITICAL):
+      line_index = position of the item in its source sheet (1-based counter).
+      ALL tags that reference the same item SHARE the same line_index.
+      Never increment line_index per tag — only per item position.
+    """
+    if ws.max_row < 7:
+        return {}, {}, {}
+
+    # ── Detect item column ────────────────────────────────────────────────────
     item_col = None
     for c in range(1, ws.max_column + 1):
         if "item number" in _v(ws, 6, c).lower():
-            item_col = c; break
+            item_col = c
+            break
 
     if item_col is None:
         desc_col = None
         for c in range(1, ws.max_column + 1):
             if "description" in _v(ws, 7, c).lower():
-                desc_col = c; break
+                desc_col = c
+                break
         if desc_col is not None:
             for candidate in [desc_col - 1, desc_col - 2]:
-                if candidate < 1: continue
-                vals = [ws.cell(r, candidate).value for r in range(8, min(ws.max_row+1, 16))]
-                nums = [int(float(str(v))) for v in vals if v is not None
-                        and str(v).strip() not in ('', '.')]
-                if len(nums) >= 3 and nums == list(range(nums[0], nums[0]+len(nums))):
-                    item_col = candidate; break
+                if candidate < 1:
+                    continue
+                vals = [ws.cell(r, candidate).value
+                        for r in range(8, min(ws.max_row + 1, 16))]
+                nums = [int(float(str(v))) for v in vals
+                        if v is not None and str(v).strip() not in ('', '.')]
+                if (len(nums) >= 3 and
+                        nums == list(range(nums[0], nums[0] + len(nums)))):
+                    item_col = candidate
+                    break
 
-    if item_col is None: return {}, {}, {}
+    if item_col is None:
+        return {}, {}, {}
 
+    # ── Scan R1 for tag columns ───────────────────────────────────────────────
     tags_raw, tag_cols = [], []
     for c in range(3, item_col):
         val = _v(ws, 1, c)
         if _is_tag(val):
             tags_raw.append(val)
             tag_cols.append(c)
-    if not tags_raw: return {}, {}, {}
+    if not tags_raw:
+        return {}, {}, {}
 
+    # ── Classify each column as packed (multi-tag) or single ─────────────────
+    packed_col_set: set[int] = set()
+    for raw, col in zip(tags_raw, tag_cols):
+        if ',' in raw or '/' in raw or re.search(r'\bto\b', raw, re.IGNORECASE):
+            packed_col_set.add(col)
+
+    # ── Detect SPIR format for this sheet ────────────────────────────────────
+    spir_fmt = _detect_spir_format(ws, sheet_name, wb)
+
+    # ── Read header rows ──────────────────────────────────────────────────────
     models    = [_v(ws, 4, c) for c in tag_cols]
     serials   = [_v(ws, 6, c) for c in tag_cols]
-    eqpt_qtys = []
+
+    # eqpt_qty: None when cell is empty (important for packed-col distribution)
+    eqpt_qtys: list[int | None] = []
     for c in tag_cols:
         v = _raw(ws, 7, c)
-        try: eqpt_qtys.append(int(float(str(v))) if v is not None else 1)
-        except: eqpt_qtys.append(1)
+        if v is None:
+            eqpt_qtys.append(None)
+        else:
+            try:
+                iq = int(float(str(v)))
+                eqpt_qtys.append(iq if iq > 0 else None)
+            except Exception:
+                eqpt_qtys.append(None)
 
     col_map   = _build_col_map(ws, item_col)
     spir_type = _detect_spir_type(ws)
     meta      = _read_metadata(ws)
 
+    # ── SPIR type override columns ────────────────────────────────────────────
     spir_type_cols: dict[int, str] = {}
     for c in range(item_col, min(ws.max_column + 1, item_col + 20)):
         for r in [5, 6]:
             v = _v(ws, r, c).lower()
-            if "initial spare" in v:                spir_type_cols[c] = "Initial Spare Parts"
-            elif "normal" in v and "spare" in v:    spir_type_cols[c] = "Normal Operating Spares"
-            elif "commissioning" in v:              spir_type_cols[c] = "Commissioning Spare Parts"
-            elif "life cycle" in v:                 spir_type_cols[c] = "Life Cycle Spare Parts"
+            if "initial spare" in v:
+                spir_type_cols[c] = "Initial Spare Parts"
+            elif "normal" in v and "spare" in v:
+                spir_type_cols[c] = "Normal Operating Spares"
+            elif "commissioning" in v:
+                spir_type_cols[c] = "Commissioning Spare Parts"
+            elif "life cycle" in v:
+                spir_type_cols[c] = "Life Cycle Spare Parts"
 
+    # ── Build tag_meta with per-format eqpt_qty distribution ─────────────────
     tag_meta: dict[str, dict] = {}
-    for i, tag_raw in enumerate(tags_raw):
-        for tag in _expand_tags(tag_raw):
-            if not tag: continue
-            tag_meta[tag] = {
-                "model":        models[i]    if i < len(models)    else "",
-                "serial":       serials[i]   if i < len(serials)   else "",
-                "eqpt_qty":     eqpt_qtys[i] if i < len(eqpt_qtys) else 1,
-                "sheet":        sheet_name.strip().upper(),
-                "manufacturer": meta["manufacturer"],
-                "project_name": meta["project_name"],
-            }
 
+    if spir_fmt in (SPIR_FORMAT_SINGLE_TAG,
+                    SPIR_FORMAT_MULTI_TAG,
+                    SPIR_FORMAT_MULTI_SHEET):
+        # FORMAT 1 / 2 / 4: single-value tag columns
+        # Each tag column is independent — use header eqpt_qty directly (default 1)
+        for i, tag_raw in enumerate(tags_raw):
+            for tag in _expand_tags(tag_raw):
+                if not tag:
+                    continue
+                hdr_qty = eqpt_qtys[i] if i < len(eqpt_qtys) else None
+                tag_meta[tag] = {
+                    "model":        models[i]  if i < len(models)  else "",
+                    "serial":       serials[i] if i < len(serials) else "",
+                    "eqpt_qty":     hdr_qty if hdr_qty is not None else 1,
+                    "num_tags_in_col": 1,
+                    "sheet":        sheet_name.strip().upper(),
+                    "manufacturer": meta["manufacturer"],
+                    "project_name": meta["project_name"],
+                }
+
+    elif spir_fmt == SPIR_FORMAT_PACKED_TAGS:
+        # FORMAT 3: all tags packed in one cell per column
+        # SPIR 6 rule: eqpt_qty=EMPTY → each tag gets eqpt_qty=1
+        for i, tag_raw in enumerate(tags_raw):
+            expanded = _expand_tags(tag_raw)
+            num_t    = max(1, len(expanded))
+            hdr_qty  = eqpt_qtys[i] if i < len(eqpt_qtys) else None
+            per_tag_eq, _ = _distribute_qty_per_tag(num_t, num_t, hdr_qty)
+            for tag in expanded:
+                if not tag:
+                    continue
+                tag_meta[tag] = {
+                    "model":        models[i]  if i < len(models)  else "",
+                    "serial":       serials[i] if i < len(serials) else "",
+                    "eqpt_qty":     per_tag_eq,
+                    "num_tags_in_col": num_t,
+                    "sheet":        sheet_name.strip().upper(),
+                    "manufacturer": meta["manufacturer"],
+                    "project_name": meta["project_name"],
+                }
+
+    elif spir_fmt == SPIR_FORMAT_MIXED:
+        # FORMAT 7: some cols are single-tag, others are packed
+        # Packed cols use distribution; single cols use direct value
+        for i, tag_raw in enumerate(tags_raw):
+            col      = tag_cols[i]
+            expanded = _expand_tags(tag_raw)
+            is_pk    = col in packed_col_set
+            num_t    = max(1, len(expanded)) if is_pk else 1
+            hdr_qty  = eqpt_qtys[i] if i < len(eqpt_qtys) else None
+            if is_pk:
+                per_tag_eq, _ = _distribute_qty_per_tag(num_t, num_t, hdr_qty)
+            else:
+                per_tag_eq = hdr_qty if hdr_qty is not None else 1
+            for tag in expanded:
+                if not tag:
+                    continue
+                tag_meta[tag] = {
+                    "model":        models[i]  if i < len(models)  else "",
+                    "serial":       serials[i] if i < len(serials) else "",
+                    "eqpt_qty":     per_tag_eq,
+                    "num_tags_in_col": num_t,
+                    "sheet":        sheet_name.strip().upper(),
+                    "manufacturer": meta["manufacturer"],
+                    "project_name": meta["project_name"],
+                }
+
+    else:
+        # FALLBACK: treat every column as independent (FORMAT 2 path)
+        for i, tag_raw in enumerate(tags_raw):
+            for tag in _expand_tags(tag_raw):
+                if not tag:
+                    continue
+                hdr_qty = eqpt_qtys[i] if i < len(eqpt_qtys) else None
+                tag_meta[tag] = {
+                    "model":        models[i]  if i < len(models)  else "",
+                    "serial":       serials[i] if i < len(serials) else "",
+                    "eqpt_qty":     hdr_qty if hdr_qty is not None else 1,
+                    "num_tags_in_col": 1,
+                    "sheet":        sheet_name.strip().upper(),
+                    "manufacturer": meta["manufacturer"],
+                    "project_name": meta["project_name"],
+                }
+
+    # ── Read data rows ────────────────────────────────────────────────────────
     items:     dict[tuple, dict]      = {}
     tag_items: dict[str, list[tuple]] = {}
 
     for r in range(8, ws.max_row + 1):
         item_val = _raw(ws, r, item_col)
-        if item_val is None: continue
-        try: item_num = int(float(str(item_val)))
-        except: continue
-        if item_num <= 0: continue
+        if item_val is None:
+            continue
+        try:
+            item_num = int(float(str(item_val)))
+        except Exception:
+            continue
+        if item_num <= 0:
+            continue
 
         key = (sheet_name, item_num)
 
+        # Determine row-level SPIR type (initial/normal/commissioning/lifecycle)
         row_spir_type = spir_type
         for tc, type_label in spir_type_cols.items():
             cell_val = _raw(ws, r, tc)
@@ -688,17 +1039,78 @@ def _extract_main(ws, sheet_name: str, spir_no: str):
         if data.get("desc") or data.get("mfr_part_no"):
             items[key] = data
 
+        # ── Tag-item linkage with per-format qty_identical distribution ───────
+        # LINE NUMBER SHARING: line_index is set by item position (not per tag).
+        # All tags linked to the same item share the same line_index in
+        # build_old_material_number — enforced in Pass 1 of extract_workbook.
+
         for i, (tag_raw, tc) in enumerate(zip(tags_raw, tag_cols)):
             cell_val = _raw(ws, r, tc)
-            if cell_val is None: continue
+            if cell_val is None:
+                continue
+
+            # Parse the flag/qty value from the cell
             try:
-                if int(float(str(cell_val))) <= 0: continue
-            except:
-                s = str(cell_val).strip()
-                if not s or s in ("0", "."): continue
-            for tag in _expand_tags(tag_raw):
-                if not tag: continue
-                tag_items.setdefault(tag, []).append(key)
+                cell_num = float(str(cell_val))
+                if cell_num <= 0:
+                    continue
+            except (ValueError, TypeError):
+                s_val = str(cell_val).strip()
+                if not s_val or s_val in ("0", "."):
+                    continue
+                cell_num = 1.0   # non-numeric non-empty → treat as 1
+
+            expanded_tags = _expand_tags(tag_raw)
+            if not expanded_tags:
+                continue
+
+            is_packed = tc in packed_col_set
+            num_t     = max(1, len(expanded_tags)) if is_packed else 1
+
+            # FORMAT 1: single tag column
+            if spir_fmt == SPIR_FORMAT_SINGLE_TAG:
+                per_tag_identical = int(cell_num)
+
+            # FORMAT 2 / 4: multiple independent single-tag cols
+            elif spir_fmt in (SPIR_FORMAT_MULTI_TAG, SPIR_FORMAT_MULTI_SHEET):
+                per_tag_identical = int(cell_num)
+
+            # FORMAT 3: all cols are packed — distribute total across tags
+            elif spir_fmt == SPIR_FORMAT_PACKED_TAGS:
+                # cell_num = total qty for all tags in this packed col
+                # SPIR 6 rule: per_tag = total / num_tags (floor, min 1)
+                _, per_tag_identical = _distribute_qty_per_tag(
+                    int(cell_num), num_t,
+                    eqpt_qtys[i] if i < len(eqpt_qtys) else None)
+
+            # FORMAT 7: mixed — packed cols distribute, single cols are direct
+            elif spir_fmt == SPIR_FORMAT_MIXED:
+                if is_packed:
+                    _, per_tag_identical = _distribute_qty_per_tag(
+                        int(cell_num), num_t,
+                        eqpt_qtys[i] if i < len(eqpt_qtys) else None)
+                else:
+                    per_tag_identical = int(cell_num)
+
+            else:
+                # FALLBACK
+                per_tag_identical = max(1, int(cell_num) // max(1, num_t))
+
+            for tag in expanded_tags:
+                if not tag:
+                    continue
+                # KEY FORMAT: always 3-tuple (sheet, item_num, tc)
+                # This ensures ts_col is preserved for ALL formats (not just packed).
+                # Without tc in the key, the output builder's effective_tc is None
+                # and qty_by_col lookup falls back to the wrong total-identical value.
+                # _get_item_data normalises to 2-tuple when looking up master_items,
+                # so this change is safe for all downstream consumers.
+                link_key = (sheet_name, item_num, tc)
+                tag_items.setdefault(tag, []).append(link_key)
+                # Store per-col qty so output builder uses the tag's own value,
+                # not the total-across-all-tags value from the qty_identical column.
+                if key in items:
+                    items[key].setdefault('qty_by_col', {})[tc] = per_tag_identical
 
     return items, tag_items, tag_meta
 
@@ -764,6 +1176,21 @@ def _extract_cont_marker(ws, sheet_name: str, main_sheets: list[str],
                         "manufacturer": "",
                         "project_name": "",
                     }
+                # === UPDATED: SPIR 2 QTY FIX ===
+                # Store the per-tag qty override keyed by (main_sheet, item_num, tc).
+                # Without this, the output builder falls back to qty_identical (the
+                # cross-tag total) instead of the per-tag value in the flag column.
+                # We store it against EVERY main sheet so _get_item_data can find it
+                # regardless of which main sheet the item originally came from.
+                try:
+                    per_tag_qty = int(float(str(cell_val)))
+                    if per_tag_qty > 0:
+                        for ms in main_sheets:
+                            master_key = (ms, item_num)
+                            if master_key in master_items:
+                                master_items[master_key].setdefault('qty_by_col', {})[tc] = per_tag_qty
+                except (ValueError, TypeError):
+                    pass
 
     return {"tag_items": tag_items, "tag_meta": tag_meta_out}
 
@@ -905,6 +1332,16 @@ def _extract_annexure_style(wb, spir_no: str) -> dict:
             cv_val = _raw(main_ws, r, ac)
             if cv_val is not None and str(cv_val).strip() not in ("", "0", "."):
                 item_to_annexures[item_num].append(ann_name)
+                # === UPDATED: SPIR 3 QTY FIX ===
+                # The annexure flag column value IS the per-tag quantity for this item.
+                # Store it in qty_by_col so the detail row builder uses 1 (per tag)
+                # instead of falling back to qty_identical (the cross-all-tags total).
+                try:
+                    per_tag_qty = int(float(str(cv_val)))
+                    if per_tag_qty > 0:
+                        data.setdefault('qty_by_col', {})[ac] = per_tag_qty
+                except (ValueError, TypeError):
+                    pass
 
     annexure_tags: dict[str, list[dict]] = {}
     for sn in wb.sheetnames:
@@ -952,6 +1389,9 @@ def _extract_annexure_style(wb, spir_no: str) -> dict:
             d = items.get(item_num, {})
             if not d: continue
             line_idx = d.get("_line_index", item_num)
+            # === UPDATED: SPIR 3 QTY FIX ===
+            # Use the annexure-col per-tag qty (stored in qty_by_col[ac]) not the total.
+            qty_identical_global = d.get('qty_by_col', {}).get(ac) or d.get('qty_identical', 1)
 
             global_hdr = {col: None for col in OUTPUT_COLS}
             global_hdr['SPIR NO']              = spir_no
@@ -967,7 +1407,7 @@ def _extract_annexure_style(wb, spir_no: str) -> dict:
             global_det = {col: None for col in OUTPUT_COLS}
             global_det['SPIR NO']                         = spir_no
             global_det['EQPT MAKE']                       = manufacturer
-            global_det['QUANTITY IDENTICAL PARTS FITTED'] = d.get('qty_identical', 1)
+            global_det['QUANTITY IDENTICAL PARTS FITTED'] = qty_identical_global
             global_det['ITEM NUMBER']                     = item_num
             global_det['POSITION NUMBER']                 = build_position_number(item_num)
             global_det['OLD MATERIAL NUMBER/SPF NUMBER']  = build_old_material_number(
@@ -1015,6 +1455,9 @@ def _extract_annexure_style(wb, spir_no: str) -> dict:
                 d = items.get(item_num, {})
                 if not d: continue
                 line_idx = d.get("_line_index", item_num)
+                # === UPDATED: SPIR 3 QTY FIX ===
+                # Use the annexure-col per-tag qty (qty_by_col[ac]) not the total.
+                qty_identical_per_tag = d.get('qty_by_col', {}).get(ac) or d.get('qty_identical', 1)
 
                 detail_row = {col: None for col in OUTPUT_COLS}
                 detail_row['SPIR NO']                         = spir_no
@@ -1022,7 +1465,7 @@ def _extract_annexure_style(wb, spir_no: str) -> dict:
                 detail_row['EQPT MAKE']                       = manufacturer
                 detail_row['EQPT MODEL']                      = ti.get('model', '')
                 detail_row['EQPT SR NO']                      = ti.get('serial', '')
-                detail_row['QUANTITY IDENTICAL PARTS FITTED'] = d.get('qty_identical', 1)
+                detail_row['QUANTITY IDENTICAL PARTS FITTED'] = qty_identical_per_tag
                 detail_row['ITEM NUMBER']                     = item_num
                 detail_row['POSITION NUMBER']                 = build_position_number(item_num)
                 detail_row['OLD MATERIAL NUMBER/SPF NUMBER']  = build_old_material_number(
@@ -1119,7 +1562,7 @@ def extract_workbook(wb, spir_no: str = "", spir_filename: str = "") -> dict:
                         "cont_overflow_tagged", "cont_overflow_notag"):
             continue
 
-        items, tag_items, tag_meta = _extract_main(ws, sheet_name, spir_no)
+        items, tag_items, tag_meta = _extract_main(ws, sheet_name, spir_no, wb=wb)
         if not items: continue
 
         # Register sheet index and assign line indices to each item
@@ -1213,9 +1656,13 @@ def extract_workbook(wb, spir_no: str = "", spir_filename: str = "") -> dict:
     spare_count = 0
 
     def _get_item_data(key: tuple) -> Optional[dict]:
-        if key in master_items:
-            return master_items[key]
+        # key may be 2-tuple (sheet, item_num) or 3-tuple (sheet, item_num, tc)
+        # master_items only stores 2-tuple keys → always look up as (sheet, item_num)
+        sheet_k  = key[0]
         item_num = key[1]
+        lookup   = (sheet_k, item_num)
+        if lookup in master_items:
+            return master_items[lookup]
         for ms in main_sheets:
             alt = (ms, item_num)
             if alt in master_items:
@@ -1256,8 +1703,22 @@ def extract_workbook(wb, spir_no: str = "", spir_filename: str = "") -> dict:
             d = _get_item_data(key)
             if d is None: continue
             item_num  = key[1]
+            # For packed-col tags: key is 3-tuple (sheet, item_num, tc)
+            # tc used to look up per-col qty_identical override stored by _extract_main
+            key_tc    = key[2] if len(key) > 2 else None
             sidx      = d.get("_sheet_index", 1)
             line_idx  = d.get("_line_index", item_num)
+
+            # qty_identical: prefer per-col override (packed cols), else item-level value
+            # Packed cols: total stored in qty_identical, per-tag in qty_by_col[tc]
+            qty_by_col    = d.get("qty_by_col", {})
+            # Use key_tc first (most specific: this exact packed col)
+            # then ts_col (the group-level col from the ts_key)
+            # then raw qty_identical (single-tag or unresolved)
+            effective_tc  = key_tc if key_tc is not None else ts_col
+            qty_identical = (qty_by_col[effective_tc]
+                             if effective_tc is not None and effective_tc in qty_by_col
+                             else d.get("qty_identical", 1))
 
             detail_row = {col: None for col in OUTPUT_COLS}
             detail_row['SPIR NO']                         = spir_no
@@ -1265,7 +1726,7 @@ def extract_workbook(wb, spir_no: str = "", spir_filename: str = "") -> dict:
             detail_row['EQPT MAKE']                       = meta.get("manufacturer", manufacturer)
             detail_row['EQPT MODEL']                      = meta.get("model", "")
             detail_row['EQPT SR NO']                      = meta.get("serial", "")
-            detail_row['QUANTITY IDENTICAL PARTS FITTED'] = d.get("qty_identical", 1)
+            detail_row['QUANTITY IDENTICAL PARTS FITTED'] = qty_identical
             detail_row['ITEM NUMBER']                     = item_num
             detail_row['POSITION NUMBER']                 = build_position_number(item_num)
             detail_row['OLD MATERIAL NUMBER/SPF NUMBER']  = build_old_material_number(

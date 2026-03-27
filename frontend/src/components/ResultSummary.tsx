@@ -75,7 +75,7 @@ export const ResultSummary = memo(({ result }: Props) => {
         />
         <StatCard
           icon={<Tag className="w-4 h-4" />}
-          label="Tags"
+          label="Unique Tags"
           value={result.total_tags}
           accent
         />

@@ -74,6 +74,8 @@ def _jsonify(v):
  
 # ── POST /extract ──────────────────────────────────────────────────────────────
  
+# ── POST /extract ──────────────────────────────────────────────────────────────
+
 @router.post("/extract", summary="Upload and extract a SPIR file")
 async def extract(
     file:         UploadFile      = File(...),
@@ -82,12 +84,12 @@ async def extract(
 ):
     raw   = await file.read()
     fname = file.filename or "upload.xlsx"
- 
+
     try:
         validate_file(fname, raw, max_mb=cfg.max_file_size_mb)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
- 
+
     try:
         d = run_extraction_pipeline(raw, fname)
     except ValidationError as exc:
@@ -95,19 +97,31 @@ async def extract(
     except Exception as exc:
         log.error("Extraction failed: %s\n%s", exc, traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(exc))
- 
+
+    # ── Safe preview rows ───────────────────────────────────────────────────────
     preview_rows_safe = [
         [_jsonify(cell) for cell in row]
         for row in (d.get("preview_rows") or [])
     ]
- 
+
+    # ── ✅ FIX: Compute TAG COUNT from preview ──────────────────────────────────
+    tags = []
+    for row in preview_rows_safe:
+        if row and len(row) > 1:
+            tag_val = row[1]  # assuming TAG NO is 2nd column
+            if tag_val:
+                tags.append(tag_val)
+
+    unique_tags = len(set(tags))
+
+    # ── Final response ─────────────────────────────────────────────────────────
     return {
         "file_id":        d.get("file_id"),
         "filename":       d.get("filename"),
         "status":         "done",
         "total_rows":     d.get("total_rows", 0),
         "spare_items":    d.get("spare_items", 0),
-        "total_tags":     d.get("total_tags", 0),
+        "total_tags":     unique_tags,  # ✅ FIXED HERE
         "dup1_count":     d.get("dup1_count", 0),
         "sap_count":      d.get("sac_count", 0),
         "annexure_count": d.get("annexure_count", 0),
@@ -122,31 +136,6 @@ async def extract(
         "preview_cols":   d.get("preview_cols", []),
         "preview_rows":   preview_rows_safe,
     }
- 
- 
-# ── GET /status/{job_id} ──────────────────────────────────────────────────────
- 
-@router.get(
-    "/status/{job_id}",
-    response_model=JobStatusResponse,
-    response_model_exclude_none=True,
-    summary="Poll background job status",
-)
-async def job_status(
-    job_id:       str,
-    current_user: Optional[User] = Depends(_auth),
-):
-    prog = get_progress(job_id)
-    if prog is None:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
- 
-    return JobStatusResponse(
-        job_id   = job_id,
-        status   = prog.get("status", "unknown"),
-        progress = prog.get("progress", 0),
-        message  = prog.get("message", ""),
-    )
- 
  
 # ── GET /download/{file_id} ───────────────────────────────────────────────────
  

@@ -88,7 +88,8 @@ def _execute(file_bytes: bytes, original_filename: str) -> dict:
     ]
 
     spare_items = sum(1 for r in raw_rows if not r.get("_is_header", False))
-    tags_found  = {r.get("tag_no") for r in raw_rows if r.get("tag_no")}
+
+    unique_tags = result.get("eqpt_qty", 0)
 
     return {
         "file_id":        file_id,
@@ -96,7 +97,7 @@ def _execute(file_bytes: bytes, original_filename: str) -> dict:
         "status":         "done",
         "total_rows":     len(rows),
         "spare_items":    spare_items,
-        "total_tags":     len(tags_found),
+        "total_tags":     unique_tags,
         "dup1_count":     0,
         "sap_count":      0,
         "annexure_count": result.get("annexure_count", 0),
