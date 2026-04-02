@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3:*)",
+      "Read(//d D:/spir_dynamic/templates/**)",
+      "Bash(ls -la *.xlsm)",
+      "Bash(find D:/spir_dynamic/templates -name *.xlsm -type f)",
+      "Bash(grep -v \"^SERIAL\\\\|^TAGS\\\\|^ANNEXURE\\\\|^OMN\\\\|UserWarn\\\\|^$\\\\|warn\\(\\\\|^Sheet:\\\\|^Type:\\\\|^Main \\\\|^Columnar\\\\|^Tabular\")",
+      "Bash(python:*)",
+      "Bash(cd /d \"D:\\\\spir_dynamic\")",
+      "Bash(find /d/spir_dynamic/templates/working -type f -name *.xlsx)",
+      "Bash(PYTHONPATH=D:/spir_dynamic/src python3 << 'EOF':*)",
+      "Bash(grep -E '\\\\.\\(xlsx|xlsm\\)$')",
+      "Bash(grep -v \"^SERIAL\\\\|^TAGS\\\\|^ANNEXURE\\\\|^OMN\\\\|UserWarn\\\\|^$\\\\|warn\\(\\\\|^Sheet:\\\\|^Type:\\\\|^Main \\\\|^Columnar\\\\|^Tabular\\\\|^VEN-\")",
+      "Bash(grep -n \"def find_data_end\" ./src/spir_dynamic/analysis/*.py)",
+      "Bash(PYTHONPATH=/d/spir_dynamic/src python3)"
+    ]
+  }
+}

@@ -1,0 +1,644 @@
+C:\Users\PRADEEPKUMAR R\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.9_qbz5n2kfra8p0\LocalCache\local-packages\Python39\site-packages\openpyxl\worksheet\_reader.py:329: UserWarning: Data Validation extension is not supported and will be removed
+  warn(msg)
+TabularStrategy: no column_map for 'CONTINUATION SHEET_P1_SH 2'
+TabularStrategy: no column_map for 'CONTINUATION SHEET_P1_SH 4'
+TabularStrategy: no column_map for 'CONTINUATION SHEET_P1_SH 6'
+TabularStrategy: no column_map for 'CONTINUATION SHEET_P2_SH 9'
+TabularStrategy: no column_map for 'CONTINUATION SHEET_P2_SH 11'
+TabularStrategy: no column_map for 'CONTINUATION SHEET_P2_SH 13'
+C:\Users\PRADEEPKUMAR R\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.9_qbz5n2kfra8p0\LocalCache\local-packages\Python39\site-packages\openpyxl\reader\workbook.py:118: UserWarning: Print area cannot be set to Defined name: 'ANNEXURE-1'!$1:$4.
+  warn(f"Print area cannot be set to Defined name: {defn.value}.")
+C:\Users\PRADEEPKUMAR R\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.9_qbz5n2kfra8p0\LocalCache\local-packages\Python39\site-packages\openpyxl\reader\workbook.py:118: UserWarning: Print area cannot be set to Defined name: #N/A.
+  warn(f"Print area cannot be set to Defined name: {defn.value}.")
+TabularStrategy: no column_map for 'Combined'
+TabularStrategy: no column_map for 'CONTINUATION SHEET_P1_SH 2'
+TabularStrategy: no column_map for 'CONTINUATION SHEET_P1_SH 4'
+TabularStrategy: no column_map for 'CONTINUATION SHEET_P1_SH 6'
+TabularStrategy: no column_map for 'CONTINUATION SHEET_P2_SH 9'
+TabularStrategy: no column_map for 'CONTINUATION SHEET_P2_SH 11'
+TabularStrategy: no column_map for 'CONTINUATION SHEET_P2_SH 13'
+====================================================================================================
+EXTRACTION PIPELINE GAP ANALYSIS - ALL 17 TEMPLATE FILES
+====================================================================================================
+
+SUMMARY TABLE:
+----------------------------------------------------------------------------------------------------
+File                                               Items    Tags     Tag Cov    Model      Serial     MFR       
+----------------------------------------------------------------------------------------------------
+SERIAL MAP: {}
+TAGS FOUND: ['AE1E100-ID', '131G0X YL 444P P'] 
+ANNEXURE DATA: {}
+1.VEN-MEWTP-5-43-0007-3.xlsm                       104      2        104/104    104/104    0/104      104/104   
+SERIAL MAP: {}
+TAGS FOUND: ['MANUFACTURERS', 'SUPPLIERS DATA (SEE NOTE 5)', 'ORD-22640-002-1', 'ORD-22640-10-CV', 'ORD-22640-002-9', 'ORD-22640-100-CV', 'ORD-22640-002-14', 'ORD-22640-160-CV', 'ORD-22640-002-22 (POS.7)', 'ORD-22640-280-GT-7', 'T22  - TEST REPORT BSEN10204', 'ISO10474 2.2', 'ORD-23000-002-1', 'ORD-2300-10-CV', 'ORD-23000-002-9 (POS.13)', 'ORD-23000-110-FSS-13', 'ORD-23000-002-16', 'ORD-23000-200-CV', '32-M2-BV-0079', '14-M2-BV-0053', '14-M2-BV-0051', '14-M2-BV-0055', '13-M2-BV-0225', '31-M2-BV-0305', '24-M4-BV-0104', '24-M4-BV-0108', '24-M4-BV-0018', '12-M2-BV-0070', '12-M2-BV-0068', '12-M2-BV-0073'] ...
+ANNEXURE DATA: {'ANNEXUREP1': '1519 tags', 'ANNEXUREP2': '1099 tags'}
+10.VEN-4460-DGEN-5-43-0301-2_1_jaSJBAS.xlsm        798      18       798/798    0/798      0/798      798/798   
+SERIAL MAP: {'68-GLV-1319': 'YDF26000', '89-BV-1259': 'YDF27000', '13-GV-3178': 'YDF28000', '13-GV-3176': 'YDF28000', '13-GV-3232': 'YDF29000', '13-GV-3233': 'YDF29000'}
+TAGS FOUND: ['89-GV-1819', '68-GLV-1316', '68-GLV-1317', '68-GLV-1318', '68-GLV-1319', '89-BV-1259', '13-GV-3178', '13-GV-3176', '13-GV-3232', '13-GV-3233', '89-BV-1523', '89-BV-1289', '89-BV-1295', '89-BV-1524', '34-GV-1014', '34-GV-1015', '16-GV-1964', '16-GV-1965', '89-GLV-1145', '89-NRV-1060', '89-NRV-1061', '13-NRV-1375', '13-GV-3230', '13-GV-3231', '13-GV-3173', '13-GV-3234', '13-GV-3235', '13-GV-3238', '13-GV-3239', '13-GV-3254'] ...
+ANNEXURE DATA: {}
+11.VEN-4391-MTY-5-43-0006-1-SPIR 4 Inches and below(2).xlsm 201      189      201/201    201/201    197/201    201/201   
+SERIAL MAP: {'32-M2-DBV-0001': 'DC1483', '32-M2-DBV-0002': 'DC1484', '32-M2-DBV-0004': 'DC1485', '32-M2-DBV-0003': 'DC1486', '32-M2-DBV-0005': 'DC1487', '32-M2-DBV-0006': 'DC1488'}
+TAGS FOUND: ['MANUFACTURERS', 'SUPPLIERS DATA (SEE NOTE 5)', 'VEN-4460-DGTYP-5-52-0750', 'DFS-2-X1-15-XA-08-AG-E2-3-10-BV', '32-M2-DBV-0001', '32-M2-DBV-0002', '32-M2-DBV-0004', '32-M2-DBV-0003', '32-M2-DBV-0005', '32-M2-DBV-0006', '32-M2-DBV-0007', '32-M2-DBV-0008', '32-M2-DBV-0009', '32-M2-DBV-0010', '32-M2-DBV-0011', '32-M2-DBV-0012', '32-M2-DBV-0013', '32-M2-DBV-0014', '32-M2-DBV-0015', '32-M2-DBV-0016', '32-M2-DBV-0017', '32-M2-DBV-0018', '32-M2-DBV-0019', '32-M2-DBV-0020', '32-4002-DBV-0001', '32-4002-DBV-0002', '32-4002-DBV-0003', '32-4002-DBV-0004', '32-4001-DBV-0001', '32-4001-DBV-0002'] ...
+ANNEXURE DATA: {'ANNEXURE1': '365 tags', 'ANNEXURE2': '26 tags', 'ANNEXURE3': '6 tags', 'ANNEXURE4': '1 tags', 'ANNEXURE5': '10 tags', 'ANNEXURE6': '1 tags'}
+12.VEN-4460-DGTYP-5-43-0751-1.xlsx                 30       413      30/30      0/30       0/30       30/30     
+SERIAL MAP: {'32-M2-NRV-0001': 'FV2404030003', '32-M2-NRV-0002': 'FV2404030004', '32-M2-NRV-0003': 'FV2404030005', '32-M2-NRV-0004': 'FV2404030006', '32-M2-NRV-0005': 'FV2404030007', '32-M2-NRV-0006': 'FV2404030008', '32-M2-NRV-0007': 'FV2404030009', '32-M2-NRV-0008': 'FV2404030010', '14-M2-NRV-0001': 'FV2404030011', '14-M2-NRV-0002': 'FV2404030012'}
+TAGS FOUND: ['32-M2-NRV-0001', '32-M2-NRV-0002', '32-M2-NRV-0003', '32-M2-NRV-0004', '32-M2-NRV-0005', '32-M2-NRV-0006', '32-M2-NRV-0007', '32-M2-NRV-0008', '14-M2-NRV-0001', '14-M2-NRV-0002', '14-M2-NRV-0003', '14-M2-NRV-0004', '12-M2-NRV-0001', '12-M2-NRV-0002', '12-M2-NRV-0003', '12-M2-NRV-0004', '12-M2-NRV-0005', '12-M2-NRV-0006', '12-M2-NRV-0007', '12-M2-NRV-0008', '12-M2-NRV-0009', '12-M2-NRV-0010', '13-M2-NRV-0001', '13-M2-NRV-0002', '13-M2-NRV-0003', '13-M2-NRV-0004', '13-M2-NRV-0005', '13-M2-NRV-0006', '13-M2-NRV-0007', '13-M2-NRV-0008'] ...
+ANNEXURE DATA: {'ANNEXURE1': '105 tags', 'ANNEXURE2': '636 tags', 'ANNEXURE3': '17 tags', 'ANNEXURE4': '4 tags', 'ANNEXURE5': '16 tags', 'ANNEXURE6': '5 tags', 'ANNEXURE7': '4 tags', 'ANNEXURE8': '1 tags', 'ANNEXURE9': '2 tags', 'ANNEXURE10': '2 tags', 'ANNEXURE11': '11 tags', 'ANNEXURE12': '2 tags', 'ANNEXURE13': '1 tags', 'ANNEXURE14': '1 tags', 'ANNEXURE15': '3 tags', 'ANNEXURE16': '1 tags', 'ANNEXURE17': '2 tags', 'ANNEXURE18': '1 tags', 'ANNEXURE19': '1 tags'}
+13.VEN-4460-DGEN-5-43-0116-1-CHANGED.xlsm          850      815      850/850    850/850    850/850    850/850   
+SERIAL MAP: {}
+TAGS FOUND: ['186-30-SB-0005', '186-30-CB-0005'] 
+ANNEXURE DATA: {}
+14.VEN-4142-RLCSF3-2-43-1300-A.xlsx                0        2        0/0        0/0        0/0        0/0       
+SERIAL MAP: {}
+TAGS FOUND: [] 
+ANNEXURE DATA: {}
+15.VEN-4142-RLCSF3-4-43-0500-A.xlsx                0        0        0/0        0/0        0/0        0/0       
+SERIAL MAP: {}
+TAGS FOUND: ["MANUFACTURER'S MODEL", "MANUFACTURER'S SERIAL NO.", 'NO. OF UNITS', 'NO. OF PARTS PER UNITS', 'INDENT', 'ORDER REF. NO.', 'TOTAL IDENTICAL PARTS INSTALLED FOR ALL UNITS', 'DESCRIPTION OF PARTS SLOW-WEARING PARTS AND ALSO ALL PARTS RECOMMENDED TO BE KEPT IN STOCK FOR NORMAL OPERATION', 'DRAWING NUMBER', "MANUFACTURER'S  PART NO", "SUPPLIER'S   PART NO", 'MATERIAL  SPECIFICATIONS', 'REMARKS', 'RECOMMENDED BY  MANUFACTURER', 'RECOMMENDED BY', 'RECOMMENDED BY MANUFACTURER', 'UNIT PRICE EX-WORKS PACKED CURRENCY :', 'DELIVERY IN WEEKS', 'MIN SAFETY STOCK', 'UNIT OF MEASURE', 'SAP NO.', 'CLASSIFICATION OF PARTS.', 'AUTHORITY BLOCK', 'REQUIRED ON SITE DATE', 'SPIR NO.', 'EQUIPMENT', 'MANUFACTURER', 'SUPPLIER', 'DK1042-GV-106', 'DKXXX-GV-106'] ...
+ANNEXURE DATA: {'ANNEXURE1': '17 tags', 'ANNEXURE2': '17 tags', 'ANNEXURE3': '6 tags', 'ANNEXURE4': '6 tags', 'ANNEXURE5': '17 tags'}
+16.VEN-4148-DGTYP-5-43-0003-A.xlsx                 0        69       0/0        0/0        0/0        0/0       
+SERIAL MAP: {}
+TAGS FOUND: ['24-S-0044C', '31-S-0035E', '46-S-0010'] 
+ANNEXURE DATA: {}
+17.VEN-4460-DGTYP-5-43-1202-A (SPIR 4).xlsm        6        3        6/6        6/6        0/6        6/6       
+SERIAL MAP: {}
+TAGS FOUND: ['PUMK-143-A-EA \nPOS 8', '9', '25', '26', '27', '30', '31', '32', '33', '34', '35', '36', '37', '38', '39', '40', 'DS-PUMK-143-A'] 
+ANNEXURE DATA: {}
+2.4400-VP-30-00-10-053-2 TAGS COMMA SEPRATION.xlsm 234      17       234/234    0/234      0/234      234/234   
+SERIAL MAP: {}
+TAGS FOUND: ['SP-127A', 'SP-127B', 'SP-127C', 'SP-1009', 'SP-1017', 'SP-1007', 'SP-016', 'SP-124'] 
+ANNEXURE DATA: {}
+3.VEN-4391-MTY-5-43-0016-5.xlsm                    32       8        32/32      32/32      0/32       32/32     
+SERIAL MAP: {}
+TAGS FOUND: ['23-T-7100X', 'VEN-4460-KAHS-5-43-1002'] 
+ANNEXURE DATA: {}
+4.VEN-4460-KAHS-5-43-1002 .xlsm                    20       2        20/20      10/20      0/20       20/20     
+SERIAL MAP: {}
+TAGS FOUND: ['34-FCS-SC-006', 'MSC-15', 'IMB-11', 'MSC-06', 'IMB-09', '65-SC-085', 'VEN-4391-M1UT-4-59-0008', 'VEN-4391-M1UT-4-59-0009', 'BRS20-0600M2M2-STCZ99HHSESXX.X.XX', '6 PORTS IN TOTAL: 4X 10', '100BASE TX', 'RJ45', '2X 100MBIT', 'S FIBER', '1. UPLINK: 1 X 100BASE-FX', 'MM-SC', '2. UPLINK: 1 X 100BASE-FX', '2 X 12 VDC ... 24 VDC', 'DIN RAIL'] 
+ANNEXURE DATA: {}
+5.VEN-4391-MTY-4-43-0001-0.xlsm                    130      19       130/130    110/130    0/130      130/130   
+SERIAL MAP: {'26-PG-908': '240602340010,', '26-PG-909': '240602340011,', '16-PG-354': '240602340017,', '20-PG-410': '240602340018,', '20-PG-411': '240602340019,', '16-PG-356': '240602340020,'}
+TAGS FOUND: ['34-PG-101', '34-PG-102', '16-PG-353', '26-PG-910', '26-PG-908', '26-PG-909', '16-PG-354', '20-PG-410', '20-PG-411', '16-PG-356', '16-PG-357', '16-PG-408', '16-PG-409', '26-PG-911', '17-PG-301', '17-PG-302', '68-PG-1977', '68-PG-1988', '68-PG-1980', '89-PG813', '68-PG-1978', '68-PG-1981', '68-PG-1982', '68-PG-1983', '68-PG-1989', '68-PG-1990', '68-PG-1991', '68-PG-1992', '68-PG-1993', '68-PG-2009'] ...
+ANNEXURE DATA: {}
+6.VEN-4391-MTY-4-43-0030-4.xlsm                    38       43       38/38      38/38      0/38       38/38     
+SERIAL MAP: {}
+TAGS FOUND: ['89-TR-001', '89-TR-002'] 
+ANNEXURE DATA: {}
+7. VEN-4391-M4TY-2-43-0002-A (SPIR 7).xlsm         68       2        68/68      68/68      0/68       68/68     
+SERIAL MAP: {}
+TAGS FOUND: ['VEN-MEWTP-5-62-0001', '1410-00-D131-02\nB4', 'ASME SA 194 GR. 2H ZN-NI PLATED\nWITH PTFE  COATED', 'VEN-MEWTP-5-60-0003', '1410-00-D131-04\nB2', 'VEN-MEWTP-5-60-0005', '1410-00-D131-05\nSH.3 POS.13', 'T22  - TEST REPORT BSEN10204', 'ISO10474 2.2', 'VEN-MEWTP-5-58-0001', '1410-00-D331-03\nSH.5 POS.14'] 
+ANNEXURE DATA: {}
+8.VEN-MEWTP-5-43-0004-4.xlsm                       115      11       115/115    29/115     0/115      115/115   
+SERIAL MAP: {}
+TAGS FOUND: ['P-3425 A', 'P-3425 B', 'P-1684 A', 'P-1684 B', 'P-2692 A', 'P-2692 B', 'P-2693 A', 'P-2693 B', 'P-1765 A', 'P-1765 B', '6834-P-64 A', '6834-P-64 B', 'P-2022 A', 'P-2022 B', 'P-1686 A', 'P-1686 B', '6834-P-50 A', '6834-P-50 B', '6834-P-52 A', '6834-P-52 B', '6834-P-53 A', '6834-P-53 B', '6834-P-56 A', '6834-P-56 B', '6834-P-57 A', '6834-P-57 B', '6834-P-58 A', '6834-P-58 B', '6834-P-62 A', '6834-P-62 B'] 
+ANNEXURE DATA: {}
+9.VEN-4391-MTY-5-43-0001-REV.5_CODED COPY_1.xlsm   1036     30       1022/1036  1026/1036  0/1036     1036/1036 
+
+====================================================================================================
+DETAILED FILE ANALYSIS
+====================================================================================================
+SERIAL MAP: {}
+TAGS FOUND: ['AE1E100-ID', '131G0X YL 444P P'] 
+ANNEXURE DATA: {}
+
+====================================================================================================
+FILE 1.VEN-MEWTP-5-43-0007-3.xlsm
+====================================================================================================
+SPIR: VEN-MEWTP-5-43-0007  / 1410-00-L311-06
+Format: MAIN SHEET(column_headers)
+
+Sheets (2 total):
+  - MAIN SHEET                                    role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - Validation Lists                              role=utility         layout=none            cols=[NONE]
+
+Extraction Summary:
+  Rows processed: 112
+  Items extracted: 104
+  Total tags: 2
+  Field coverage:
+    - Tags:      104/ 104 (100.0%)
+    - Model:     104/ 104 (100.0%)
+    - Serial:      0/ 104 (0.0%)
+    - Mfr:       104/ 104 (100.0%)
+
+Sample item rows (first 3):
+  [0] tag='AE1E100-ID'              model='AE1E100-ID/131G0X YL 444P P'              serial=None            mfr='Allweiler GmbH \nKirchhellener Ring 77-79'
+  [1] tag='AE1E100-ID'              model='AE1E100-ID/131G0X YL 444P P'              serial=None            mfr='Allweiler GmbH \nKirchhellener Ring 77-79'
+  [2] tag='AE1E100-ID'              model='AE1E100-ID/131G0X YL 444P P'              serial=None            mfr='Allweiler GmbH \nKirchhellener Ring 77-79'
+SERIAL MAP: {}
+TAGS FOUND: ['MANUFACTURERS', 'SUPPLIERS DATA (SEE NOTE 5)', 'ORD-22640-002-1', 'ORD-22640-10-CV', 'ORD-22640-002-9', 'ORD-22640-100-CV', 'ORD-22640-002-14', 'ORD-22640-160-CV', 'ORD-22640-002-22 (POS.7)', 'ORD-22640-280-GT-7', 'T22  - TEST REPORT BSEN10204', 'ISO10474 2.2', 'ORD-23000-002-1', 'ORD-2300-10-CV', 'ORD-23000-002-9 (POS.13)', 'ORD-23000-110-FSS-13', 'ORD-23000-002-16', 'ORD-23000-200-CV', '32-M2-BV-0079', '14-M2-BV-0053', '14-M2-BV-0051', '14-M2-BV-0055', '13-M2-BV-0225', '31-M2-BV-0305', '24-M4-BV-0104', '24-M4-BV-0108', '24-M4-BV-0018', '12-M2-BV-0070', '12-M2-BV-0068', '12-M2-BV-0073'] ...
+ANNEXURE DATA: {'ANNEXUREP1': '1519 tags', 'ANNEXUREP2': '1099 tags'}
+
+====================================================================================================
+FILE 10.VEN-4460-DGEN-5-43-0301-2_1_jaSJBAS.xlsm
+====================================================================================================
+SPIR: VEN-4460-DGEN-5-43-0301
+Format: MAIN SHEET_P1_SH 1(column_headers) + MAIN SHEET_P1_SH 3(column_headers) + MAIN SHEET_P1_SH 5(column_headers) + MAIN SHEET_P1_SH 7(column_headers) + MAIN SHEET_P2_SH 8(column_headers) + MAIN SHEET_P2_SH 10(column_headers) + MAIN SHEET_P2_SH 12(column_headers) + CONTINUATION SHEET_P1_SH 2(global_tag) + CONTINUATION SHEET_P1_SH 4(global_tag) + CONTINUATION SHEET_P1_SH 6(global_tag) + ANNEXURE-P1(tag_column) + CONTINUATION SHEET_P2_SH 9(global_tag) + CONTINUATION SHEET_P2_SH 11(global_tag) + CONTINUATION SHEET_P2_SH 13(global_tag) + ANNEXURE-P2(tag_column)
+
+Sheets (16 total):
+  - MAIN SHEET_P1_SH 1                            role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - CONTINUATION SHEET_P1_SH 2                    role=continuation    layout=global_tag      cols=[NONE]
+  - MAIN SHEET_P1_SH 3                            role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - CONTINUATION SHEET_P1_SH 4                    role=continuation    layout=global_tag      cols=[NONE]
+  - MAIN SHEET_P1_SH 5                            role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - CONTINUATION SHEET_P1_SH 6                    role=continuation    layout=global_tag      cols=[NONE]
+  - MAIN SHEET_P1_SH 7                            role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - ANNEXURE-P1                                   role=annexure        layout=tag_column      cols=[item_number, quantity, serial, tag]
+  - MAIN SHEET_P2_SH 8                            role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - CONTINUATION SHEET_P2_SH 9                    role=continuation    layout=global_tag      cols=[NONE]
+  - MAIN SHEET_P2_SH 10                           role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - CONTINUATION SHEET_P2_SH 11                   role=continuation    layout=global_tag      cols=[NONE]
+  - MAIN SHEET_P2_SH 12                           role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - CONTINUATION SHEET_P2_SH 13                   role=continuation    layout=global_tag      cols=[NONE]
+  - ANNEXURE-P2                                   role=annexure        layout=tag_column      cols=[item_number, quantity, serial, tag]
+  - Validation Lists                              role=utility         layout=none            cols=[NONE]
+
+Extraction Summary:
+  Rows processed: 837
+  Items extracted: 798
+TabularStrategy: no column_map for 'Combined'
+  Total tags: 18
+  Field coverage:
+    - Tags:      798/ 798 (100.0%)
+    - Model:       0/ 798 (0.0%)
+    - Serial:      0/ 798 (0.0%)
+    - Mfr:       798/ 798 (100.0%)
+
+Sample item rows (first 3):
+  [0] tag='MANUFACTURERS'           model='None'                                     serial=None            mfr='JC VALVES'
+  [1] tag='MANUFACTURERS'           model='None'                                     serial=None            mfr='JC VALVES'
+  [2] tag='MANUFACTURERS'           model='None'                                     serial=None            mfr='JC VALVES'
+SERIAL MAP: {'68-GLV-1319': 'YDF26000', '89-BV-1259': 'YDF27000', '13-GV-3178': 'YDF28000', '13-GV-3176': 'YDF28000', '13-GV-3232': 'YDF29000', '13-GV-3233': 'YDF29000'}
+TAGS FOUND: ['89-GV-1819', '68-GLV-1316', '68-GLV-1317', '68-GLV-1318', '68-GLV-1319', '89-BV-1259', '13-GV-3178', '13-GV-3176', '13-GV-3232', '13-GV-3233', '89-BV-1523', '89-BV-1289', '89-BV-1295', '89-BV-1524', '34-GV-1014', '34-GV-1015', '16-GV-1964', '16-GV-1965', '89-GLV-1145', '89-NRV-1060', '89-NRV-1061', '13-NRV-1375', '13-GV-3230', '13-GV-3231', '13-GV-3173', '13-GV-3234', '13-GV-3235', '13-GV-3238', '13-GV-3239', '13-GV-3254'] ...
+ANNEXURE DATA: {}
+
+====================================================================================================
+FILE 11.VEN-4391-MTY-5-43-0006-1-SPIR 4 Inches and below(2).xlsm
+====================================================================================================
+SPIR: VEN-4391-MTY-5-43-0006
+Format: MAIN SHEET(VALVE 4“ and below)(column_headers) + Continuation Sheet(1)(column_headers) + Continuation Sheet(2)(column_headers) + Continuation Sheet(3)(column_headers) + Continuation Sheet(4)(column_headers) + Continuation Sheet(5)(column_headers) + Continuation Sheet(6)(column_headers)
+
+Sheets (8 total):
+  - MAIN SHEET(VALVE 4“ and below)                role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - Continuation Sheet(1)                         role=data            layout=column_headers  cols=[NONE]
+  - Continuation Sheet(2)                         role=data            layout=column_headers  cols=[NONE]
+  - Continuation Sheet(3)                         role=data            layout=column_headers  cols=[NONE]
+  - Continuation Sheet(4)                         role=data            layout=column_headers  cols=[NONE]
+  - Continuation Sheet(5)                         role=data            layout=column_headers  cols=[NONE]
+  - Continuation Sheet(6)                         role=data            layout=column_headers  cols=[NONE]
+  - Validation Lists                              role=utility         layout=none            cols=[NONE]
+
+Extraction Summary:
+  Rows processed: 402
+  Items extracted: 201
+  Total tags: 189
+  Field coverage:
+    - Tags:      201/ 201 (100.0%)
+    - Model:     201/ 201 (100.0%)
+    - Serial:    197/ 201 (98.0%)
+    - Mfr:       201/ 201 (100.0%)
+
+Sample item rows (first 3):
+  [0] tag='89-GV-1819'              model='GA1N-C95500/C63200/C95500'                serial=None            mfr='JIANGSU YDF VALVE CO.,LTD'
+  [1] tag='68-GLV-1316'             model='GL1R-A105N/16'                            serial=None            mfr='JIANGSU YDF VALVE CO.,LTD'
+  [2] tag='68-GLV-1317'             model='GL1R-A105N/16'                            serial=None            mfr='JIANGSU YDF VALVE CO.,LTD'
+SERIAL MAP: {'32-M2-DBV-0001': 'DC1483', '32-M2-DBV-0002': 'DC1484', '32-M2-DBV-0004': 'DC1485', '32-M2-DBV-0003': 'DC1486', '32-M2-DBV-0005': 'DC1487', '32-M2-DBV-0006': 'DC1488'}
+TAGS FOUND: ['MANUFACTURERS', 'SUPPLIERS DATA (SEE NOTE 5)', 'VEN-4460-DGTYP-5-52-0750', 'DFS-2-X1-15-XA-08-AG-E2-3-10-BV', '32-M2-DBV-0001', '32-M2-DBV-0002', '32-M2-DBV-0004', '32-M2-DBV-0003', '32-M2-DBV-0005', '32-M2-DBV-0006', '32-M2-DBV-0007', '32-M2-DBV-0008', '32-M2-DBV-0009', '32-M2-DBV-0010', '32-M2-DBV-0011', '32-M2-DBV-0012', '32-M2-DBV-0013', '32-M2-DBV-0014', '32-M2-DBV-0015', '32-M2-DBV-0016', '32-M2-DBV-0017', '32-M2-DBV-0018', '32-M2-DBV-0019', '32-M2-DBV-0020', '32-4002-DBV-0001', '32-4002-DBV-0002', '32-4002-DBV-0003', '32-4002-DBV-0004', '32-4001-DBV-0001', '32-4001-DBV-0002'] ...
+ANNEXURE DATA: {'ANNEXURE1': '365 tags', 'ANNEXURE2': '26 tags', 'ANNEXURE3': '6 tags', 'ANNEXURE4': '1 tags', 'ANNEXURE5': '10 tags', 'ANNEXURE6': '1 tags'}
+
+====================================================================================================
+FILE 12.VEN-4460-DGTYP-5-43-0751-1.xlsx
+====================================================================================================
+SPIR: VEN-4460-DGTYP-5-43-0751
+Format: MAIN SHEET-Normal spare (column_headers) + Annexure 1(tag_column) + Annexure 2(tag_column) + Annexure 3(tag_column) + Annexure 4(tag_column) + Annexure 5(tag_column) + Annexure 6(tag_column)
+
+Sheets (7 total):
+  - MAIN SHEET-Normal spare                       role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - Annexure 1                                    role=annexure        layout=tag_column      cols=[tag, description, manufacturer, serial, model]
+  - Annexure 2                                    role=annexure        layout=tag_column      cols=[tag, description, manufacturer, serial, model]
+  - Annexure 3                                    role=annexure        layout=tag_column      cols=[tag, description, manufacturer, serial, model]
+  - Annexure 4                                    role=annexure        layout=tag_column      cols=[tag, description, manufacturer, serial, model]
+  - Annexure 5                                    role=annexure        layout=tag_column      cols=[tag, description, manufacturer, serial, model]
+  - Annexure 6                                    role=annexure        layout=tag_column      cols=[tag, description, manufacturer, serial, model]
+
+Extraction Summary:
+  Rows processed: 444
+  Items extracted: 30
+  Total tags: 413
+  Field coverage:
+    - Tags:       30/  30 (100.0%)
+    - Model:       0/  30 (0.0%)
+    - Serial:      0/  30 (0.0%)
+    - Mfr:        30/  30 (100.0%)
+
+Sample item rows (first 3):
+  [0] tag='MANUFACTURERS'           model='None'                                     serial=None            mfr='Astec Valves & Fittings Pvt. Ltd.'
+  [1] tag='MANUFACTURERS'           model='None'                                     serial=None            mfr='Astec Valves & Fittings Pvt. Ltd.'
+  [2] tag='MANUFACTURERS'           model='None'                                     serial=None            mfr='Astec Valves & Fittings Pvt. Ltd.'
+SERIAL MAP: {'32-M2-NRV-0001': 'FV2404030003', '32-M2-NRV-0002': 'FV2404030004', '32-M2-NRV-0003': 'FV2404030005', '32-M2-NRV-0004': 'FV2404030006', '32-M2-NRV-0005': 'FV2404030007', '32-M2-NRV-0006': 'FV2404030008', '32-M2-NRV-0007': 'FV2404030009', '32-M2-NRV-0008': 'FV2404030010', '14-M2-NRV-0001': 'FV2404030011', '14-M2-NRV-0002': 'FV2404030012'}
+TAGS FOUND: ['32-M2-NRV-0001', '32-M2-NRV-0002', '32-M2-NRV-0003', '32-M2-NRV-0004', '32-M2-NRV-0005', '32-M2-NRV-0006', '32-M2-NRV-0007', '32-M2-NRV-0008', '14-M2-NRV-0001', '14-M2-NRV-0002', '14-M2-NRV-0003', '14-M2-NRV-0004', '12-M2-NRV-0001', '12-M2-NRV-0002', '12-M2-NRV-0003', '12-M2-NRV-0004', '12-M2-NRV-0005', '12-M2-NRV-0006', '12-M2-NRV-0007', '12-M2-NRV-0008', '12-M2-NRV-0009', '12-M2-NRV-0010', '13-M2-NRV-0001', '13-M2-NRV-0002', '13-M2-NRV-0003', '13-M2-NRV-0004', '13-M2-NRV-0005', '13-M2-NRV-0006', '13-M2-NRV-0007', '13-M2-NRV-0008'] ...
+ANNEXURE DATA: {'ANNEXURE1': '105 tags', 'ANNEXURE2': '636 tags', 'ANNEXURE3': '17 tags', 'ANNEXURE4': '4 tags', 'ANNEXURE5': '16 tags', 'ANNEXURE6': '5 tags', 'ANNEXURE7': '4 tags', 'ANNEXURE8': '1 tags', 'ANNEXURE9': '2 tags', 'ANNEXURE10': '2 tags', 'ANNEXURE11': '11 tags', 'ANNEXURE12': '2 tags', 'ANNEXURE13': '1 tags', 'ANNEXURE14': '1 tags', 'ANNEXURE15': '3 tags', 'ANNEXURE16': '1 tags', 'ANNEXURE17': '2 tags', 'ANNEXURE18': '1 tags', 'ANNEXURE19': '1 tags'}
+
+====================================================================================================
+FILE 13.VEN-4460-DGEN-5-43-0116-1-CHANGED.xlsm
+====================================================================================================
+SPIR: VEN-4460-DGEN-5-43-0116
+Format: MAIN SHEET(column_headers) + CONTINUATION SHEET(column_headers) + ANNEXURE-1(tag_column) + ANNEXURE-2(tag_column) + ANNEXURE-3(tag_column) + ANNEXURE-4(tag_column) + ANNEXURE-5(tag_column) + ANNEXURE-6(tag_column) + ANNEXURE-7(tag_column) + ANNEXURE-8(tag_column) + ANNEXURE-9(tag_column) + ANNEXURE-10(tag_column) + ANNEXURE-11(tag_column) + ANNEXURE-12(tag_column) + ANNEXURE-13(tag_column) + ANNEXURE-14(tag_column) + ANNEXURE-15(tag_column) + ANNEXURE-16(tag_column) + ANNEXURE-17(tag_column) + ANNEXURE-18(tag_column) + ANNEXURE-19(tag_column)
+
+Sheets (22 total):
+  - MAIN SHEET                                    role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - CONTINUATION SHEET                            role=data            layout=column_headers  cols=[NONE]
+  - ANNEXURE-1                                    role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-2                                    role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-3                                    role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-4                                    role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-5                                    role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-6                                    role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-7                                    role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-8                                    role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-9                                    role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-10                                   role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-11                                   role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-12                                   role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-13                                   role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-14                                   role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-15                                   role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-16                                   role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-17                                   role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-18                                   role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-19                                   role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - Validation Lists                              role=utility         layout=none            cols=[NONE]
+
+Extraction Summary:
+  Rows processed: 1665
+  Items extracted: 850
+  Total tags: 815
+  Field coverage:
+    - Tags:      850/ 850 (100.0%)
+    - Model:     850/ 850 (100.0%)
+    - Serial:    850/ 850 (100.0%)
+    - Mfr:       850/ 850 (100.0%)
+
+Sample item rows (first 3):
+  [0] tag='32-M2-NRV-0001'          model='06CH9R1C416R0X'                           serial='FV2404030003'  mfr='FBV'
+  [1] tag='32-M2-NRV-0002'          model='06CH9R1C416R0X'                           serial='FV2404030004'  mfr='FBV'
+  [2] tag='32-M2-NRV-0003'          model='06CH9R1C416R0X'                           serial='FV2404030005'  mfr='FBV'
+SERIAL MAP: {}
+TAGS FOUND: ['186-30-SB-0005', '186-30-CB-0005'] 
+ANNEXURE DATA: {}
+
+====================================================================================================
+FILE 14.VEN-4142-RLCSF3-2-43-1300-A.xlsx
+====================================================================================================
+SPIR: : VEN-4142-RLCSF3-2-43-1300 REV. A
+Format: MAIN SHEET(column_headers)
+
+Sheets (1 total):
+  - MAIN SHEET                                    role=data            layout=column_headers  cols=[manufacturer, model, supplier, unit_price, delivery_weeks, quantity, uom, sap_number, classification]
+
+Extraction Summary:
+  Rows processed: 2
+  Items extracted: 0
+  Total tags: 2
+  Field coverage:
+    - Tags:        0/   0 (0.0%)
+    - Model:       0/   0 (0.0%)
+    - Serial:      0/   0 (0.0%)
+    - Mfr:         0/   0 (0.0%)
+
+WARNING: No items extracted!
+SERIAL MAP: {}
+TAGS FOUND: [] 
+ANNEXURE DATA: {}
+
+====================================================================================================
+FILE 15.VEN-4142-RLCSF3-4-43-0500-A.xlsx
+====================================================================================================
+SPIR: VEN-4142-RLCSF3-4-43-0500
+Format: MAIN Sheet (none)
+
+Sheets (2 total):
+  - MAIN Sheet                                    role=data            layout=none            cols=[serial, item_number, unit_price, delivery_weeks, quantity, uom, classification, model]
+  - Sheet1 (2)                                    role=unknown         layout=none            cols=[NONE]
+
+Extraction Summary:
+  Rows processed: 0
+  Items extracted: 0
+  Total tags: 0
+  Field coverage:
+    - Tags:        0/   0 (0.0%)
+    - Model:       0/   0 (0.0%)
+    - Serial:      0/   0 (0.0%)
+    - Mfr:         0/   0 (0.0%)
+
+WARNING: No items extracted!
+SERIAL MAP: {}
+TAGS FOUND: ["MANUFACTURER'S MODEL", "MANUFACTURER'S SERIAL NO.", 'NO. OF UNITS', 'NO. OF PARTS PER UNITS', 'INDENT', 'ORDER REF. NO.', 'TOTAL IDENTICAL PARTS INSTALLED FOR ALL UNITS', 'DESCRIPTION OF PARTS SLOW-WEARING PARTS AND ALSO ALL PARTS RECOMMENDED TO BE KEPT IN STOCK FOR NORMAL OPERATION', 'DRAWING NUMBER', "MANUFACTURER'S  PART NO", "SUPPLIER'S   PART NO", 'MATERIAL  SPECIFICATIONS', 'REMARKS', 'RECOMMENDED BY  MANUFACTURER', 'RECOMMENDED BY', 'RECOMMENDED BY MANUFACTURER', 'UNIT PRICE EX-WORKS PACKED CURRENCY :', 'DELIVERY IN WEEKS', 'MIN SAFETY STOCK', 'UNIT OF MEASURE', 'SAP NO.', 'CLASSIFICATION OF PARTS.', 'AUTHORITY BLOCK', 'REQUIRED ON SITE DATE', 'SPIR NO.', 'EQUIPMENT', 'MANUFACTURER', 'SUPPLIER', 'DK1042-GV-106', 'DKXXX-GV-106'] ...
+ANNEXURE DATA: {'ANNEXURE1': '17 tags', 'ANNEXURE2': '17 tags', 'ANNEXURE3': '6 tags', 'ANNEXURE4': '6 tags', 'ANNEXURE5': '17 tags'}
+
+====================================================================================================
+FILE 16.VEN-4148-DGTYP-5-43-0003-A.xlsx
+====================================================================================================
+SPIR: VEN-4148-DGTYP-5-43-0003-A
+Format: MAIN SHEET(column_headers) + SPIR REVIEW(tag_column) + ANNEXURE-1(tag_column) + ANNEXURE-2(tag_column) + ANNEXURE-3(tag_column) + ANNEXURE-4(tag_column) + ANNEXURE-5(tag_column) + Combined(global_tag)
+
+Sheets (9 total):
+  - MAIN SHEET                                    role=data            layout=column_headers  cols=[model, supplier, unit_price, delivery_weeks, quantity, uom, sap_number, classification]
+  - SPIR REVIEW                                   role=data            layout=tag_column      cols=[tag, supplier, description]
+  - ANNEXURE-1                                    role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-2                                    role=annexure        layout=tag_column      cols=[tag, manufacturer, model, serial]
+  - ANNEXURE-3                                    role=annexure        layout=tag_column      cols=[item_number, tag, manufacturer, model, serial]
+  - ANNEXURE-4                                    role=annexure        layout=tag_column      cols=[item_number, tag, manufacturer, model, serial]
+  - ANNEXURE-5                                    role=annexure        layout=tag_column      cols=[item_number, tag, manufacturer, model, serial]
+  - Guidlines                                     role=unknown         layout=none            cols=[NONE]
+  - Combined                                      role=data            layout=global_tag      cols=[NONE]
+
+Extraction Summary:
+  Rows processed: 92
+  Items extracted: 0
+  Total tags: 69
+  Field coverage:
+    - Tags:        0/   0 (0.0%)
+    - Model:       0/   0 (0.0%)
+    - Serial:      0/   0 (0.0%)
+    - Mfr:         0/   0 (0.0%)
+
+WARNING: No items extracted!
+SERIAL MAP: {}
+TAGS FOUND: ['24-S-0044C', '31-S-0035E', '46-S-0010'] 
+ANNEXURE DATA: {}
+
+====================================================================================================
+FILE 17.VEN-4460-DGTYP-5-43-1202-A (SPIR 4).xlsm
+====================================================================================================
+SPIR: VEN-4460-DGTYP-5-43-1202
+REV A
+Format: MAIN SHEET(column_headers)
+
+Sheets (3 total):
+  - MAIN SHEET                                    role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - CONTINUATION SHEET                            role=continuation    layout=none            cols=[NONE]
+  - Validation Lists                              role=utility         layout=none            cols=[NONE]
+
+Extraction Summary:
+  Rows processed: 9
+  Items extracted: 6
+  Total tags: 3
+  Field coverage:
+    - Tags:        6/   6 (100.0%)
+    - Model:       6/   6 (100.0%)
+    - Serial:      0/   6 (0.0%)
+    - Mfr:         6/   6 (100.0%)
+
+Sample item rows (first 3):
+  [0] tag='24-S-0044C'              model='Y STRAINER'                               serial=None            mfr='INOXFUCINE S.P.A.'
+  [1] tag='24-S-0044C'              model='Y STRAINER'                               serial=None            mfr='INOXFUCINE S.P.A.'
+  [2] tag='31-S-0035E'              model='Y STRAINER'                               serial=None            mfr='INOXFUCINE S.P.A.'
+SERIAL MAP: {}
+TAGS FOUND: ['PUMK-143-A-EA \nPOS 8', '9', '25', '26', '27', '30', '31', '32', '33', '34', '35', '36', '37', '38', '39', '40', 'DS-PUMK-143-A'] 
+ANNEXURE DATA: {}
+
+====================================================================================================
+FILE 2.4400-VP-30-00-10-053-2 TAGS COMMA SEPRATION.xlsm
+====================================================================================================
+SPIR: 4400-VP-30-00-10-053 (REV.2)
+Format: MAIN SHEET(column_headers)
+
+Sheets (3 total):
+  - MAIN SHEET                                    role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - CONTINUATION SHEET                            role=continuation    layout=none            cols=[NONE]
+  - Validation Lists                              role=utility         layout=none            cols=[NONE]
+
+Extraction Summary:
+  Rows processed: 252
+  Items extracted: 234
+  Total tags: 17
+  Field coverage:
+    - Tags:      234/ 234 (100.0%)
+    - Model:       0/ 234 (0.0%)
+    - Serial:      0/ 234 (0.0%)
+    - Mfr:       234/ 234 (100.0%)
+
+Sample item rows (first 3):
+  [0] tag='PUMK-143-A-EA \nPos 8'   model='None'                                     serial=None            mfr='Firedos, SNY'
+  [1] tag='PUMK-143-A-EA \nPos 8'   model='None'                                     serial=None            mfr='Firedos, SNY'
+  [2] tag='PUMK-143-A-EA \nPos 8'   model='None'                                     serial=None            mfr='Firedos, SNY'
+SERIAL MAP: {}
+TAGS FOUND: ['SP-127A', 'SP-127B', 'SP-127C', 'SP-1009', 'SP-1017', 'SP-1007', 'SP-016', 'SP-124'] 
+ANNEXURE DATA: {}
+
+====================================================================================================
+FILE 3.VEN-4391-MTY-5-43-0016-5.xlsm
+====================================================================================================
+SPIR: VEN-4391-MTY-5-43-0016
+Format: MAIN SHEET(column_headers) + CONTINUATION SHEET(column_headers)
+
+Sheets (3 total):
+  - MAIN SHEET                                    role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - CONTINUATION SHEET                            role=data            layout=column_headers  cols=[manufacturer, supplier]
+  - Validation Lists                              role=utility         layout=none            cols=[NONE]
+
+Extraction Summary:
+  Rows processed: 40
+  Items extracted: 32
+  Total tags: 8
+  Field coverage:
+    - Tags:       32/  32 (100.0%)
+    - Model:      32/  32 (100.0%)
+    - Serial:      0/  32 (0.0%)
+    - Mfr:        32/  32 (100.0%)
+
+Sample item rows (first 3):
+  [0] tag='SP-127A'                 model='Custom Make'                              serial=None            mfr='STEDPRO ENGINEERING & MANUFACTURING LLP'
+  [1] tag='SP-127A'                 model='Custom Make'                              serial=None            mfr='STEDPRO ENGINEERING & MANUFACTURING LLP'
+  [2] tag='SP-127A'                 model='Custom Make'                              serial=None            mfr='STEDPRO ENGINEERING & MANUFACTURING LLP'
+SERIAL MAP: {}
+TAGS FOUND: ['23-T-7100X', 'VEN-4460-KAHS-5-43-1002'] 
+ANNEXURE DATA: {}
+
+====================================================================================================
+FILE 4.VEN-4460-KAHS-5-43-1002 .xlsm
+====================================================================================================
+SPIR: VEN-4460-KAHS-5-43-1002
+Format: MAIN SHEET(column_headers)
+
+Sheets (3 total):
+  - MAIN SHEET                                    role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - CONTINUATION SHEET                            role=continuation    layout=none            cols=[NONE]
+  - Validation Lists                              role=utility         layout=none            cols=[NONE]
+
+Extraction Summary:
+  Rows processed: 22
+  Items extracted: 20
+  Total tags: 2
+  Field coverage:
+    - Tags:       20/  20 (100.0%)
+    - Model:      10/  20 (50.0%)
+    - Serial:      0/  20 (0.0%)
+    - Mfr:        20/  20 (100.0%)
+
+Sample item rows (first 3):
+  [0] tag='23-T-7100X'              model='RECOVERED OIL TANK'                       serial=None            mfr='Arabian Industries Manufacturing LLC'
+  [1] tag='23-T-7100X'              model='RECOVERED OIL TANK'                       serial=None            mfr='Arabian Industries Manufacturing LLC'
+  [2] tag='23-T-7100X'              model='RECOVERED OIL TANK'                       serial=None            mfr='Arabian Industries Manufacturing LLC'
+SERIAL MAP: {}
+TAGS FOUND: ['34-FCS-SC-006', 'MSC-15', 'IMB-11', 'MSC-06', 'IMB-09', '65-SC-085', 'VEN-4391-M1UT-4-59-0008', 'VEN-4391-M1UT-4-59-0009', 'BRS20-0600M2M2-STCZ99HHSESXX.X.XX', '6 PORTS IN TOTAL: 4X 10', '100BASE TX', 'RJ45', '2X 100MBIT', 'S FIBER', '1. UPLINK: 1 X 100BASE-FX', 'MM-SC', '2. UPLINK: 1 X 100BASE-FX', '2 X 12 VDC ... 24 VDC', 'DIN RAIL'] 
+ANNEXURE DATA: {}
+
+====================================================================================================
+FILE 5.VEN-4391-MTY-4-43-0001-0.xlsm
+====================================================================================================
+SPIR: VEN-4391-MTY-4-43-0001
+Format: MAIN SHEET-1(column_headers) + CONTINUATION SHEET-1(column_headers) + MAIN SHEET-2(column_headers)
+
+Sheets (4 total):
+  - MAIN SHEET-1                                  role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - CONTINUATION SHEET-1                          role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - MAIN SHEET-2                                  role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - Validation Lists                              role=utility         layout=none            cols=[NONE]
+
+Extraction Summary:
+  Rows processed: 157
+  Items extracted: 130
+  Total tags: 19
+  Field coverage:
+    - Tags:      130/ 130 (100.0%)
+    - Model:     110/ 130 (84.6%)
+    - Serial:      0/ 130 (0.0%)
+    - Mfr:       130/ 130 (100.0%)
+
+Sample item rows (first 3):
+  [0] tag='34-FCS-SC-006'           model='DCS SYSTEM PANEL (FREELANCE)'             serial=None            mfr='ABB'
+  [1] tag='34-FCS-SC-006'           model='DCS SYSTEM PANEL (FREELANCE)'             serial=None            mfr='ABB'
+  [2] tag='MSC-15'                  model='DCS SYSTEM PANEL NGL-1/2 LER-41 (INFI90)' serial=None            mfr='ABB'
+SERIAL MAP: {'26-PG-908': '240602340010,', '26-PG-909': '240602340011,', '16-PG-354': '240602340017,', '20-PG-410': '240602340018,', '20-PG-411': '240602340019,', '16-PG-356': '240602340020,'}
+TAGS FOUND: ['34-PG-101', '34-PG-102', '16-PG-353', '26-PG-910', '26-PG-908', '26-PG-909', '16-PG-354', '20-PG-410', '20-PG-411', '16-PG-356', '16-PG-357', '16-PG-408', '16-PG-409', '26-PG-911', '17-PG-301', '17-PG-302', '68-PG-1977', '68-PG-1988', '68-PG-1980', '89-PG813', '68-PG-1978', '68-PG-1981', '68-PG-1982', '68-PG-1983', '68-PG-1989', '68-PG-1990', '68-PG-1991', '68-PG-1992', '68-PG-1993', '68-PG-2009'] ...
+ANNEXURE DATA: {}
+
+====================================================================================================
+FILE 6.VEN-4391-MTY-4-43-0030-4.xlsm
+====================================================================================================
+SPIR: VEN-4391-MTY-4-43-0030
+Format: MAIN SHEET(column_headers) + CONTINUATION SHEET(column_headers) + MAIN SHEET (2)(column_headers) + CONTINUATION SHEET (2)(column_headers) + MAIN SHEET (3)(column_headers) + CONTINUATION SHEET (3)(column_headers)
+
+Sheets (7 total):
+  - MAIN SHEET                                    role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - CONTINUATION SHEET                            role=data            layout=column_headers  cols=[NONE]
+  - MAIN SHEET (2)                                role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - CONTINUATION SHEET (2)                        role=data            layout=column_headers  cols=[NONE]
+  - MAIN SHEET (3)                                role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - CONTINUATION SHEET (3)                        role=data            layout=column_headers  cols=[NONE]
+  - Validation Lists                              role=utility         layout=none            cols=[NONE]
+
+Extraction Summary:
+  Rows processed: 81
+  Items extracted: 38
+  Total tags: 43
+  Field coverage:
+    - Tags:       38/  38 (100.0%)
+    - Model:      38/  38 (100.0%)
+    - Serial:      0/  38 (0.0%)
+    - Mfr:        38/  38 (100.0%)
+
+Sample item rows (first 3):
+  [0] tag='34-PG-101'               model='ITEC SS Bourdon P202 Pressure Gauge'      serial=None            mfr='ITEC SRL'
+  [1] tag='34-PG-101'               model='ITEC SS Bourdon P202 Pressure Gauge'      serial=None            mfr='ITEC SRL'
+  [2] tag='34-PG-101'               model='ITEC SS Bourdon P202 Pressure Gauge'      serial=None            mfr='ITEC SRL'
+SERIAL MAP: {}
+TAGS FOUND: ['89-TR-001', '89-TR-002'] 
+ANNEXURE DATA: {}
+
+====================================================================================================
+FILE 7. VEN-4391-M4TY-2-43-0002-A (SPIR 7).xlsm
+====================================================================================================
+SPIR: VEN-4391-M4TY-2-43-0002
+Format: MAIN SHEET 1(column_headers) + MAIN SHEET 2(column_headers)
+
+Sheets (4 total):
+  - MAIN SHEET 1                                  role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - MAIN SHEET 2                                  role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - CONTINUATION SHEET                            role=continuation    layout=none            cols=[NONE]
+  - Validation Lists                              role=utility         layout=none            cols=[NONE]
+
+Extraction Summary:
+  Rows processed: 72
+  Items extracted: 68
+  Total tags: 2
+  Field coverage:
+    - Tags:       68/  68 (100.0%)
+    - Model:      68/  68 (100.0%)
+    - Serial:      0/  68 (0.0%)
+    - Mfr:        68/  68 (100.0%)
+
+Sample item rows (first 3):
+  [0] tag='89-TR-001'               model='UNIGEAR ZS1'                              serial=None            mfr='ABB CZECH REPUBLIC'
+  [1] tag='89-TR-001'               model='UNIGEAR ZS1'                              serial=None            mfr='ABB CZECH REPUBLIC'
+  [2] tag='89-TR-001'               model='UNIGEAR ZS1'                              serial=None            mfr='ABB CZECH REPUBLIC'
+SERIAL MAP: {}
+TAGS FOUND: ['VEN-MEWTP-5-62-0001', '1410-00-D131-02\nB4', 'ASME SA 194 GR. 2H ZN-NI PLATED\nWITH PTFE  COATED', 'VEN-MEWTP-5-60-0003', '1410-00-D131-04\nB2', 'VEN-MEWTP-5-60-0005', '1410-00-D131-05\nSH.3 POS.13', 'T22  - TEST REPORT BSEN10204', 'ISO10474 2.2', 'VEN-MEWTP-5-58-0001', '1410-00-D331-03\nSH.5 POS.14'] 
+ANNEXURE DATA: {}
+
+====================================================================================================
+FILE 8.VEN-MEWTP-5-43-0004-4.xlsm
+====================================================================================================
+SPIR: VEN-MEWTP-5-43-0004
+Format: MAIN SHEET 1(column_headers) + MAIN SHEET 2(column_headers) + MAIN SHEET 3(column_headers) + MAIN SHEET 4(column_headers)
+
+Sheets (6 total):
+  - COVER                                         role=utility         layout=none            cols=[NONE]
+  - MAIN SHEET 1                                  role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - MAIN SHEET 2                                  role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - MAIN SHEET 3                                  role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - MAIN SHEET 4                                  role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - Validation Lists                              role=utility         layout=none            cols=[NONE]
+
+Extraction Summary:
+  Rows processed: 129
+  Items extracted: 115
+  Total tags: 11
+  Field coverage:
+    - Tags:      115/ 115 (100.0%)
+    - Model:      29/ 115 (25.2%)
+    - Serial:      0/ 115 (0.0%)
+    - Mfr:       115/ 115 (100.0%)
+
+Sample item rows (first 3):
+  [0] tag='VEN-MEWTP-5-62-0001'     model='None'                                     serial=None            mfr='UNIDRO S.R.L.'
+  [1] tag='VEN-MEWTP-5-62-0001'     model='None'                                     serial=None            mfr='UNIDRO S.R.L.'
+  [2] tag='VEN-MEWTP-5-62-0001'     model='None'                                     serial=None            mfr='UNIDRO S.R.L.'
+SERIAL MAP: {}
+TAGS FOUND: ['P-3425 A', 'P-3425 B', 'P-1684 A', 'P-1684 B', 'P-2692 A', 'P-2692 B', 'P-2693 A', 'P-2693 B', 'P-1765 A', 'P-1765 B', '6834-P-64 A', '6834-P-64 B', 'P-2022 A', 'P-2022 B', 'P-1686 A', 'P-1686 B', '6834-P-50 A', '6834-P-50 B', '6834-P-52 A', '6834-P-52 B', '6834-P-53 A', '6834-P-53 B', '6834-P-56 A', '6834-P-56 B', '6834-P-57 A', '6834-P-57 B', '6834-P-58 A', '6834-P-58 B', '6834-P-62 A', '6834-P-62 B'] 
+ANNEXURE DATA: {}
+
+====================================================================================================
+FILE 9.VEN-4391-MTY-5-43-0001-REV.5_CODED COPY_1.xlsm
+====================================================================================================
+SPIR: VEN-4391-MTY-5-43-0001
+Format: MAIN SHEET(column_headers) + MAIN SHEET (2)(column_headers) + MAIN SHEET (3)(column_headers) + MAIN SHEET (4)(column_headers) + MAIN SHEET (5)(column_headers) + MAIN SHEET (6)(column_headers) + MAIN SHEET (7)(column_headers) + MAIN SHEET (8)(column_headers) + MAIN SHEET (9)(none)
+
+Sheets (10 total):
+  - MAIN SHEET                                    role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - MAIN SHEET (2)                                role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - MAIN SHEET (3)                                role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - MAIN SHEET (4)                                role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - MAIN SHEET (5)                                role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - MAIN SHEET (6)                                role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - MAIN SHEET (7)                                role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - MAIN SHEET (8)                                role=data            layout=column_headers  cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - MAIN SHEET (9)                                role=data            layout=none            cols=[item_number, quantity, description, dwg_no, part_number, manufacturer, supplier, material_spec, currency, unit_price, delivery_weeks, min_max, sap_number, classification, model]
+  - Validation Lists                              role=utility         layout=none            cols=[NONE]
+
+Extraction Summary:
+  Rows processed: 1097
+  Items extracted: 1036
+  Total tags: 30
+  Field coverage:
+    - Tags:     1022/1036 (98.6%)
+    - Model:    1026/1036 (99.0%)
+    - Serial:      0/1036 (0.0%)
+    - Mfr:      1036/1036 (100.0%)
+
+Sample item rows (first 3):
+  [0] tag='P-3425 A'                model='OCVL-2X3X10H-1'                           serial=None            mfr='SULZER PUMPS INDIA PVT. LTD.'
+  [1] tag='P-3425 A'                model='OCVL-2X3X10H-1'                           serial=None            mfr='SULZER PUMPS INDIA PVT. LTD.'
+  [2] tag='P-3425 A'                model='OCVL-2X3X10H-1'                           serial=None            mfr='SULZER PUMPS INDIA PVT. LTD.'
