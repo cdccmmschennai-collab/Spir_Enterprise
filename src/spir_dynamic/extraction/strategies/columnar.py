@@ -34,6 +34,58 @@ from spir_dynamic.analysis.header_detector import is_footer_row
 log = logging.getLogger(__name__)
 
 
+_NUMERIC_LIKE_CURRENCY_TOKENS = (
+    "rs",
+    "inr",
+    "usd",
+    "eur",
+    "gbp",
+    "aed",
+    "sar",
+    "sgd",
+    "₹",
+    "€",
+    "£",
+)
+
+
+def _is_numeric_like_cell(raw: Any) -> bool:
+    """
+    Reject values that are "numeric" after stripping punctuation but are actually text.
+    Used to prevent swapped column mappings (e.g., unit_price from description column).
+    """
+    if raw is None or is_placeholder(raw):
+        return False
+    s = str(raw).strip()
+    if not s:
+        return False
+    if clean_num(raw) is None:
+        return False
+
+    # If letters exist, only allow common currency tokens at the end.
+    if re.search(r"[A-Za-z]", s):
+        # Allow only digits/punctuation/spaces + optional trailing currency token.
+        allowed_currency = "|".join(_NUMERIC_LIKE_CURRENCY_TOKENS).replace(".", r"\.")
+        return bool(
+            re.match(
+                rf"^\s*[\d\.,\-\(\)\s/]+(?:\s*(?:{allowed_currency}))?\s*$",
+                s,
+                flags=re.IGNORECASE,
+            )
+        )
+    return True
+
+
+def _is_text_heavy_cell(raw: Any) -> bool:
+    """Description-like cells should contain alphabetic content."""
+    if raw is None or is_placeholder(raw):
+        return False
+    s = str(raw).strip()
+    if len(s) < 3:
+        return False
+    return bool(re.search(r"[A-Za-z]", s))
+
+
 def _split_separated_value(val: str, expected_count: int) -> list[str]:
     """
     Split a separated value (serial number, model, etc.) into individual parts.
@@ -506,7 +558,16 @@ class ColumnarStrategy:
                 continue
             raw = ws.cell(row, col).value
             if field in ("quantity", "unit_price", "total_price", "delivery_weeks", "eqpt_qty", "min_max"):
-                item[field] = clean_num(raw)
+                # Enforce numeric-like cells for numeric fields.
+                if _is_numeric_like_cell(raw):
+                    item[field] = clean_num(raw)
+                else:
+                    item[field] = None
+            elif field == "description":
+                if _is_text_heavy_cell(raw):
+                    item[field] = clean_str(raw)
+                else:
+                    item[field] = None
             else:
                 item[field] = clean_str(raw)
         return item

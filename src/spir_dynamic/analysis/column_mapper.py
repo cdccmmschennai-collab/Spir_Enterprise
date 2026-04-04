@@ -7,7 +7,10 @@ which column contains which data field. Handles merged cells and multi-row heade
 from __future__ import annotations
 
 import logging
-from typing import Any
+import re
+from typing import Any, Iterable
+
+from spir_dynamic.utils.cell_utils import clean_num, is_placeholder
 
 log = logging.getLogger(__name__)
 
@@ -84,40 +87,151 @@ FIELD_KEYWORDS: dict[str, list[str]] = {
 }
 
 
-def map_headers(ws, header_row: int) -> dict[str, int]:
+def map_headers(
+    ws,
+    header_row: int,
+    *,
+    min_score: int = 30,
+    sample_rows: int = 10,
+) -> dict[str, int]:
     """
     Map header row cells to logical field names.
 
     Returns {field_name: 1-based_column_index} for all recognized columns.
     """
-    mapping: dict[str, int] = {}
     max_col = min(ws.max_column or 50, 80)
 
-    for c in range(1, max_col + 1):
-        cell_text = _get_header_text(ws, header_row, c)
-        if not cell_text:
-            continue
-
-        # Normalize whitespace: "UNIT  OF MEASURE" → "unit of measure"
-        import re as _re
-        cell_lower = _re.sub(r"\s+", " ", cell_text.lower().strip())
-
-        for field, keywords in FIELD_KEYWORDS.items():
-            if field in mapping:
-                continue
-            for kw in keywords:
-                if kw in cell_lower:
-                    mapping[field] = c
-                    break
-
-    # Try the row above for any unmapped fields (multi-row headers)
+    header_rows_to_consider: list[int] = [header_row]
     if header_row > 1:
-        _try_secondary_row(ws, header_row - 1, max_col, mapping)
+        header_rows_to_consider.append(header_row - 1)  # typical multi-row headers
+
+    # Precompute header text variants per column so multi-row headers work
+    # even if `find_header_row()` is off by 1.
+    header_text_by_col: dict[int, list[str]] = {}
+    for c in range(1, max_col + 1):
+        texts: list[str] = []
+        for r in header_rows_to_consider:
+            t = _get_header_text(ws, r, c)
+            if t:
+                texts.append(t)
+        if texts:
+            header_text_by_col[c] = texts
+
+    # For each column, score each field using the best-matching header text.
+    candidates: list[tuple[int, str, int]] = []  # (score, field, col)
+    best_by_col: dict[int, tuple[int, str]] = {}  # col -> (score, field)
+
+    for c, texts in header_text_by_col.items():
+        col_best_score = 0
+        col_best_field: str | None = None
+        for field, keywords in FIELD_KEYWORDS.items():
+            score = _score_field_against_header_texts(texts, keywords)
+            if score > col_best_score:
+                col_best_score = score
+                col_best_field = field
+
+        if col_best_field is not None and col_best_score >= min_score:
+            best_by_col[c] = (col_best_score, col_best_field)
+
+        # Keep top candidates above threshold (for validation/backoff later)
+        scored_fields = [
+            (field, _score_field_against_header_texts(texts, keywords))
+            for field, keywords in FIELD_KEYWORDS.items()
+        ]
+        scored_fields.sort(key=lambda x: x[1], reverse=True)
+        for field, score in scored_fields[:3]:
+            if score >= min_score:
+                candidates.append((score, field, c))
+
+    if not candidates:
+        return {}
+
+    # Validation: reject mappings that are clearly incompatible with value types.
+    # This reduces wrong numeric/text assignments even when header scoring is noisy.
+    data_row_start = header_row + 1
+    data_row_end = min((ws.max_row or 0), header_row + sample_rows)
+    sample_range = range(data_row_start, data_row_end + 1)
+
+    numeric_like_fields = {"quantity", "unit_price", "total_price", "delivery_weeks", "eqpt_qty", "min_max"}
+    text_heavy_fields = {"description"}
+
+    col_stats: dict[int, dict[str, float]] = {}
+    for _, _, c in candidates:
+        if c in col_stats:
+            continue
+        col_stats[c] = _compute_column_stats(ws, c, sample_range)
+
+    def _candidate_passes_validation(field: str, col: int) -> bool:
+        stats = col_stats.get(col) or {}
+        numeric_rate = stats.get("numeric_rate", 0.0)
+        integer_rate = stats.get("integer_rate", 0.0)
+        alpha_rate = stats.get("alpha_rate", 0.0)
+
+        # If we don't have enough samples, be lenient (layout may have sparse data).
+        sample_count = int(stats.get("sample_count", 0))
+        if sample_count < 3:
+            return True
+
+        if field in numeric_like_fields:
+            # Ensure the column is mostly numeric-like.
+            if numeric_rate < 0.55:
+                return False
+            # Quantity-like fields are typically integers in SPIR.
+            if field in {"quantity", "eqpt_qty"} and integer_rate < 0.45:
+                return False
+            return True
+
+        if field in text_heavy_fields:
+            # Descriptions are expected to have alphabetic content.
+            return alpha_rate >= 0.45
+
+        return True
+
+    # Conflict resolution:
+    # - If multiple fields match the same column, keep the highest-scoring match.
+    # - Enforce uniqueness: one field -> one column.
+    # Greedy works well because we validate and candidates are top-ranked.
+    candidates = [
+        (score, field, col)
+        for (score, field, col) in candidates
+        if _candidate_passes_validation(field, col)
+    ]
+    candidates.sort(key=lambda x: x[0], reverse=True)
+
+    used_fields: set[str] = set()
+    used_cols: set[int] = set()
+    mapping: dict[str, int] = {}
+
+    for score, field, col in candidates:
+        if field in used_fields:
+            continue
+        if col in used_cols:
+            continue
+        if score < min_score:
+            continue
+        mapping[field] = col
+        used_fields.add(field)
+        used_cols.add(col)
 
     if mapping:
+        debug_best = [
+            (field, col, *best_by_col.get(col, (0, "")))
+            for field, col in mapping.items()
+        ]
+        debug_best_sorted = sorted(debug_best, key=lambda x: x[1])
         log.debug(
-            "Column mapping for '%s' row %d: %s",
-            ws.title, header_row,
+            "Column scoring (best-per-mapped-col) for '%s' header_row=%d: %s",
+            ws.title,
+            header_row,
+            [
+                {"field": f, "col": col, "best_score": score}
+                for f, col, score, _ in debug_best_sorted
+            ],
+        )
+        log.debug(
+            "Final column mapping for '%s' header_row=%d: %s",
+            ws.title,
+            header_row,
             {k: v for k, v in sorted(mapping.items(), key=lambda x: x[1])},
         )
 
@@ -148,24 +262,121 @@ def _get_header_text(ws, row: int, col: int) -> str | None:
     return None
 
 
-def _try_secondary_row(
-    ws, row: int, max_col: int, existing: dict[str, int]
-) -> None:
-    """Try to map unmapped fields from a secondary header row."""
-    for c in range(1, max_col + 1):
-        cell_text = _get_header_text(ws, row, c)
-        if not cell_text:
+def _normalize_header_text(text: str) -> str:
+    # Normalize whitespace: "UNIT  OF MEASURE" → "unit of measure"
+    return re.sub(r"\s+", " ", str(text).lower().strip())
+
+
+def _keyword_score_for_cell(cell_lower: str, keyword: str) -> int:
+    """
+    Score how well a single keyword matches a header cell.
+
+    Strong match: exact phrase hits (multi-word patterns).
+    Weak match: short generic tokens (e.g. "price", "qty") inside the cell.
+    """
+    kw = _normalize_header_text(keyword)
+    if not kw:
+        return 0
+
+    if cell_lower == kw:
+        return 100
+
+    if kw in cell_lower:
+        # Multi-word phrases are typically more specific.
+        if " " in kw or len(kw) >= 8:
+            return 80
+        # Short tokens can match multiple fields; keep them low/moderate.
+        if re.search(rf"\b{re.escape(kw)}\b", cell_lower):
+            return 35
+        return 20
+
+    # Word-boundary match for short tokens (helps with "EQPT QTY", "TOTAL PRICE").
+    if " " not in kw and len(kw) <= 6:
+        if re.search(rf"\b{re.escape(kw)}\b", cell_lower):
+            return 35
+    return 0
+
+
+def _score_field_against_header_texts(header_texts: Iterable[str], keywords: list[str]) -> int:
+    """Return the max score of any keyword against any provided header text."""
+    best = 0
+    for t in header_texts:
+        cell_lower = _normalize_header_text(t)
+        for kw in keywords:
+            best = max(best, _keyword_score_for_cell(cell_lower, kw))
+    return best
+
+
+def _compute_column_stats(ws, col: int, sample_rows: range) -> dict[str, float]:
+    """
+    Compute lightweight value-type stats for a column (numeric-like vs text-heavy).
+    Used to validate a proposed mapping.
+    """
+    sample_count = 0
+    numeric_like_count = 0
+    integer_like_count = 0
+    alpha_count = 0
+
+    for r in sample_rows:
+        v = ws.cell(r, col).value
+        if is_placeholder(v) or v is None:
             continue
+        sample_count += 1
 
-        cell_lower = cell_text.lower().strip()
+        s = str(v).strip()
+        has_alpha = bool(re.search(r"[A-Za-z]", s))
+        if has_alpha:
+            alpha_count += 1
 
-        for field, keywords in FIELD_KEYWORDS.items():
-            if field in existing:
-                continue
-            for kw in keywords:
-                if kw in cell_lower:
-                    existing[field] = c
-                    break
+        if _value_is_numeric_like(v):
+            numeric_like_count += 1
+            num = clean_num(v)
+            if num is not None:
+                # integer-like: close to whole number
+                if abs(num - round(num)) <= 1e-6:
+                    integer_like_count += 1
+
+    if sample_count == 0:
+        return {"sample_count": 0.0, "numeric_rate": 0.0, "integer_rate": 0.0, "alpha_rate": 0.0}
+
+    numeric_rate = numeric_like_count / sample_count
+    integer_rate = (integer_like_count / numeric_like_count) if numeric_like_count else 0.0
+    alpha_rate = alpha_count / sample_count
+
+    return {
+        "sample_count": float(sample_count),
+        "numeric_rate": float(numeric_rate),
+        "integer_rate": float(integer_rate),
+        "alpha_rate": float(alpha_rate),
+    }
+
+
+def _value_is_numeric_like(v: Any) -> bool:
+    """
+    Numeric-like means:
+      - parsable as number, AND
+      - contains no alphabetic text except common currency tokens.
+    """
+    if is_placeholder(v) or v is None:
+        return False
+
+    s = str(v).strip()
+    if not s:
+        return False
+
+    if clean_num(v) is None:
+        return False
+
+    # Allow optional trailing currency tokens/symbols.
+    # If there are other letters, it's likely a text/description cell.
+    currency_pat = r"(?:rs\.?|inr|usd|eur|gbp|aed|sar|sgd|₹|€|£)"
+    return bool(
+        re.match(
+            rf"^\s*[\d\.,\-\(\)\s/]+(?:\s*{currency_pat})?\s*$",
+            s,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def get_unmapped_columns(ws, header_row: int, mapped: dict[str, int]) -> dict[int, str]:

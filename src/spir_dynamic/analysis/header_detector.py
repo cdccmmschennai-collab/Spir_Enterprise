@@ -110,18 +110,134 @@ def find_header_row(ws, scan_rows: int = 30) -> int | None:
     """
     Find the most keyword-rich row in the first `scan_rows` rows.
 
-    Returns 1-based row index or None if no row scores >= 2.
+    Returns 1-based row index or None if no suitable row is found.
     """
     max_col = min(ws.max_column or 50, 60)
     best_score, best_row = 0, None
+    best_signals: dict[str, Any] | None = None
 
-    for r in range(1, min(scan_rows + 1, (ws.max_row or 0) + 1)):
+    CRITICAL_PATTERNS = (
+        "description",
+        "item number",
+        "item no",
+        "quantity",
+        "qty",
+        "unit price",
+        "price per unit",
+        "unit cost",
+        "total price",
+        "total cost",
+        "currency",
+        "part number",
+        "part no",
+    )
+
+    def _row_signals(row_idx: int) -> dict[str, Any]:
+        keyword_cols: set[int] = set()
+        keyword_count = 0
+        critical_hits = 0
+        non_empty = 0
+
+        keyword_min_col = None
+        keyword_max_col = None
+
+        for c in range(1, max_col + 1):
+            v = ws.cell(row_idx, c).value
+            if v is None:
+                continue
+            s = str(v).lower().strip()
+            if not s:
+                continue
+            non_empty += 1
+
+            hit_kw = None
+            for kw in HEADER_KEYWORDS:
+                if kw in s:
+                    hit_kw = kw
+                    break
+            if hit_kw:
+                keyword_count += 1
+                keyword_cols.add(c)
+                keyword_min_col = c if keyword_min_col is None else min(keyword_min_col, c)
+                keyword_max_col = c if keyword_max_col is None else max(keyword_max_col, c)
+
+            for pat in CRITICAL_PATTERNS:
+                if pat in s:
+                    critical_hits += 1
+                    break
+
+        span_width = 0
+        if keyword_min_col is not None and keyword_max_col is not None:
+            span_width = keyword_max_col - keyword_min_col
+
+        return {
+            "keyword_count": keyword_count,
+            "keyword_cols": len(keyword_cols),
+            "critical_hits": critical_hits,
+            "non_empty": non_empty,
+            "span_width": span_width,
+        }
+
+    scan_limit = min(scan_rows + 1, (ws.max_row or 0) + 1)
+    for r in range(1, scan_limit):
+        signals = _row_signals(r)
+        keyword_cols = int(signals["keyword_cols"])
+        span_width = int(signals["span_width"])
+        critical_hits = int(signals["critical_hits"])
+
+        # Reject rows that look like mostly metadata:
+        # - too few keyword columns
+        # - keyword columns are too concentrated (small span)
+        if keyword_cols < 2:
+            continue
+        if span_width < 3 and keyword_cols < 4:
+            continue
+
+        # Tabular header rows usually contain multiple critical patterns
+        # spread across columns. Be tolerant but avoid picking rows like "Model" / "Serial".
+        candidate_ok = False
+        if critical_hits >= 2 and keyword_cols >= 3:
+            candidate_ok = True
+        elif critical_hits >= 1 and keyword_cols >= 4:
+            candidate_ok = True
+
+        if not candidate_ok:
+            continue
+
+        # Weighted score:
+        # - prefer more keyword columns
+        # - prefer higher critical hits
+        # - prefer wider span (tabular spread)
+        # - small boost for non-empty cells
+        score = (
+            keyword_cols * 20
+            + critical_hits * 10
+            + span_width * 2
+            + min(signals["non_empty"], 30) * 0.2
+        )
+
+        if score > best_score:
+            best_score, best_row = score, r
+            best_signals = signals
+
+    if best_row is not None:
+        log.debug(
+            "Header found at row %d (score=%.1f, signals=%s) in '%s'",
+            best_row,
+            best_score,
+            best_signals,
+            ws.title,
+        )
+        return best_row
+
+    # Fallback to old simplistic scoring if nothing passes filters
+    for r in range(1, scan_limit):
         s = _score_row(ws, r, max_col)
         if s > best_score:
             best_score, best_row = s, r
 
     if best_score >= 2:
-        log.debug("Header found at row %d (score=%d) in '%s'", best_row, best_score, ws.title)
+        log.debug("Header fallback found at row %d (score=%d) in '%s'", best_row, best_score, ws.title)
         return best_row
 
     log.debug("No header found in '%s' (best score=%d)", ws.title, best_score)

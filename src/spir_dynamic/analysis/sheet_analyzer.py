@@ -85,6 +85,17 @@ def analyze_sheet(ws, sheet_name: str) -> SheetProfile:
 
     # Step 3: Map columns
     profile.column_map = map_headers(ws, profile.header_row)
+    if profile.column_map:
+        required = {"description", "item_number", "quantity", "unit_price", "part_number", "supplier", "currency"}
+        hit_required = sorted(required.intersection(profile.column_map.keys()))
+        log.debug(
+            "Sheet '%s': mapping hit required=%s (%d/%d) in header_row=%d",
+            sheet_name,
+            hit_required,
+            len(hit_required),
+            len(required),
+            profile.header_row,
+        )
 
     # Step 4: Locate tags
     tag_result = locate_tags(ws, profile.header_row, profile.column_map)
