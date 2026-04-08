@@ -1,0 +1,33 @@
+# infra/docker/Dockerfile.worker
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt .
+RUN pip install --upgrade pip \
+ && pip install --prefix=/install --no-cache-dir -r requirements.txt
+
+FROM python:3.11-slim
+
+RUN useradd -m -u 1001 spir
+WORKDIR /app
+
+COPY --from=builder /install /usr/local
+COPY --chown=spir:spir backend/ /app/
+COPY --chown=spir:spir workers/  /app/workers/
+
+RUN mkdir -p /tmp/spir_uploads /app/logs \
+ && chown -R spir:spir /tmp/spir_uploads /app/logs
+
+USER spir
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/app
+
+# Celery worker — concurrency=2 means 2 files processed simultaneously per container
+# Adjust based on available RAM: each slot uses ~3× file_size in memory
+CMD ["celery", "-A", "workers.celery_app", "worker", \
+     "--loglevel=info", \
+     "--concurrency=2", \
+     "--queues=spir_extraction", \
+     "--max-tasks-per-child=50"]
