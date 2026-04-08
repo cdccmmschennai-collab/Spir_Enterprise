@@ -86,6 +86,12 @@ def row_from_dict(item: dict) -> list:
     for entry in OUTPUT_COLUMNS:
         col_idx = CI[entry["col"]]
         val = item.get(entry["field"])
+        # PHASE 5 FIX: For supplier_name (SUPPLIER/ OCM NAME column),
+        # prefer manufacturer over supplier as fallback.
+        # In SPIR files, the OCM (Original Component Manufacturer) is the
+        # manufacturer, not the supplier/distributor.
+        if val is None and entry["field"] == "supplier_name":
+            val = item.get("manufacturer")
         if val is None:
             val = item.get(entry["col"])
         if val is not None:

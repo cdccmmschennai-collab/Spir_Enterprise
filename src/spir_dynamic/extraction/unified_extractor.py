@@ -38,9 +38,17 @@ _transposed = TransposedStrategy()
 # Pattern to detect annexure-reference tag values like "Annexure 1", "ANNEXURE-2",
 # "Refer Annexure 3", "ANNEXURE (P1)-1", "ANNEXURE (P2)-3", etc.
 _ANNEXURE_REF_RE = re.compile(
-    r"(?:refer\s+)?annexure[\s\-_]*(?:\(([^)]*)\)[\s\-_]*)?(\d+)",
+    r"(?:refer\s+)?annexure[\s\-_]*(?:\(([^)]*)\)[\s\-_]*)?(\d+|[IVX]+)\b",
     re.IGNORECASE,
 )
+
+# Roman numeral to integer mapping
+_ROMAN_TO_INT = {
+    'I': 1, 'II': 2, 'III': 3, 'IV': 4, 'V': 5,
+    'VI': 6, 'VII': 7, 'VIII': 8, 'IX': 9, 'X': 10,
+    'XI': 11, 'XII': 12, 'XIII': 13, 'XIV': 14, 'XV': 15,
+    'XVI': 16, 'XVII': 17, 'XVIII': 18, 'XIX': 19, 'XX': 20,
+}
 
 
 def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
@@ -171,6 +179,24 @@ def _extract_columnar_group(
             "Item source '%s': %d items read",
             item_source.name, len(items_dict),
         )
+
+    # PHASE 2 FIX: Merge items from other columnar sheets that have
+    # description data missing from the item source.
+    # Some SPIR files split items across sheets (e.g., items 1-18 in MAIN SHEET,
+    # items 19-24 in MAIN SHEET (3)). The item source may have item numbers
+    # for 19-24 but no description/part_number data.
+    for profile in columnar_profiles:
+        if profile.name == (item_source.name if item_source else ""):
+            continue
+        ws = wb[profile.name]
+        other_items = _columnar.read_items(ws, profile)
+        for item_num, item_data in other_items.items():
+            if item_num not in items_dict:
+                # New item not in source — add it
+                items_dict[item_num] = item_data
+            elif not items_dict[item_num].get("desc") and item_data.get("desc"):
+                # Source has item number but no description — fill from other sheet
+                items_dict[item_num].update(item_data)
 
     # Extract from each columnar sheet
     for profile in columnar_profiles:
@@ -333,7 +359,12 @@ def _enrich_equipment_data(
             if row.get("item_num"):
                 annex_groups[annex_key]["details"].append(row)
             else:
-                annex_groups[annex_key]["headers"].append(row)
+                # PHASE 5 FIX: Deduplicate header rows by tag_no to avoid
+                # duplicates when multiple sheets reference the same annexure.
+                # E.g., MAIN SHEET and CONTINUATION SHEET-1 both have "Annexure I".
+                existing_tags = {h.get("tag_no") for h in annex_groups[annex_key]["headers"]}
+                if tag not in existing_tags:
+                    annex_groups[annex_key]["headers"].append(row)
         else:
             non_annex_rows.append((idx, row))
 
@@ -537,6 +568,14 @@ def _read_annexure_equipment(
         serial_val = clean_str(ws.cell(r, serial_col).value) if serial_col else None
         mfr_val = clean_str(ws.cell(r, mfr_col).value) if mfr_col else None
 
+        # PHASE 5 FIX: Carry forward missing model/manufacturer from previous row.
+        # Some SPIR annexure sheets only have model/mfr on the first row,
+        # with subsequent rows having only tag + serial.
+        if not model_val and entries:
+            model_val = entries[-1].get("model")
+        if not mfr_val and entries:
+            mfr_val = entries[-1].get("manufacturer")
+
         # Handle serial ranges for multi-tag cells
         serials = _split_serial_range(serial_val, len(tags)) if serial_val else [None] * len(tags)
 
@@ -685,6 +724,8 @@ def _normalize_annexure_ref(value: str) -> str | None:
     "Refer Annexure 3"    → "ANNEXURE3"
     "ANNEXURE (P1)-1"     → "ANNEXUREP1-1"
     "ANNEXURE (P2)-3"     → "ANNEXUREP2-3"
+    "Annexure I"           → "ANNEXURE1"
+    "Annexure II"          → "ANNEXURE2"
     Returns None if value is not an annexure reference.
     """
     if not value:
@@ -692,7 +733,10 @@ def _normalize_annexure_ref(value: str) -> str | None:
     m = _ANNEXURE_REF_RE.search(str(value).strip())
     if m:
         group_id = m.group(1)  # e.g. "P1" from "(P1)", or None
-        number = m.group(2)    # e.g. "1"
+        number = m.group(2)    # e.g. "1" or "I"
+        # Convert Roman numeral to integer if needed
+        if number.upper() in _ROMAN_TO_INT:
+            number = str(_ROMAN_TO_INT[number.upper()])
         if group_id:
             return f"ANNEXURE{group_id.upper()}-{number}"
         return f"ANNEXURE{number}"

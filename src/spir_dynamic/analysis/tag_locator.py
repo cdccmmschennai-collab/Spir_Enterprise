@@ -30,7 +30,9 @@ _MIN_TAG_COLUMN_VALUES = 2
 _MIN_TAG_COLUMNS = 2
 
 # Row range to scan for column-header tags
-_TAG_HEADER_SCAN_ROWS = 8
+# PHASE 4 FIX: Increased from 8 to 15 to handle files where headers
+# appear at row 10-11 (e.g., files 14, 15, 16 with different layouts)
+_TAG_HEADER_SCAN_ROWS = 15
 
 # Columns to scan for row-header tags
 _TAG_ROW_SCAN_COL = 1  # Column A
@@ -158,6 +160,9 @@ def _check_column_headers(
     # Every SPIR file has this label — columns to its RIGHT are tag columns.
     # This works regardless of tag format (no TAG_PATTERN needed).
     _TAG_LABEL_KWS = ["tag no", "tag number", "equip"]
+    _ANNEXURE_PAT = re.compile(
+        r"(?i)(?:refer\s+)?annexure[\s\-_]*(?:\([^)]*\)[\s\-_]*)?(?:\d+|[IVX]+)\b"
+    )
     for r in range(1, min(3, (ws.max_row or 0) + 1)):
         for c in range(1, min(5, max_col + 1)):
             v = ws.cell(r, c).value
@@ -178,8 +183,17 @@ def _check_column_headers(
                         continue
                     empty_streak = 0
                     s = str(tv).strip()
+                    # PHASE 2 FIX: Allow longer values if they look like
+                    # comma/semicolon-separated tags (e.g., 10 tags in one cell).
+                    # A long value with tag-like patterns and separators is valid.
+                    looks_like_packed_tags = (
+                        len(s) > 50
+                        and re.search(r"[A-Z0-9]{2,}[-/][A-Z0-9]", s, re.IGNORECASE)
+                        and re.search(r"[,;/|]", s)
+                    )
                     # Stop at long text (SPIR title, notes) or section breaks
-                    if (len(s) > 50
+                    # but allow packed tag columns
+                    if (len(s) > 50 and not looks_like_packed_tags
                         or "spare parts" in s.lower()
                         or "note" in s.lower()
                         or "interchangeability" in s.lower()
@@ -196,6 +210,39 @@ def _check_column_headers(
                         tag_columns=tag_cols,
                         confidence=0.95,
                     )
+                # PHASE 2 FIX: Accept a single tag column if it contains
+                # multiple comma/semicolon-separated tags (e.g., 10 tags in one cell).
+                # This handles continuation sheets where all tags are packed into
+                # a single column header cell.
+                # PHASE 4 FIX: Also accept alphanumeric equipment identifiers
+                # without separators (e.g., "18421LP0004", "3014LJ1") which are
+                # valid single-tag SPIR files.
+                # PHASE 5 FIX: Also accept annexure references (e.g., "Annexure I")
+                # as valid single-column tag columns. The actual tags come from
+                # the referenced annexure sheet.
+                elif len(tag_cols) == 1:
+                    single_val = ws.cell(r, tag_cols[0]).value
+                    if single_val:
+                        sv = str(single_val).strip()
+                        has_multiple_tags = (
+                            re.search(r"[,;/|]", sv)
+                            and re.search(r"[A-Z0-9]{1,}[-/][A-Z0-9]", sv, re.IGNORECASE)
+                        )
+                        # PHASE 4 FIX: Accept alphanumeric equipment identifiers
+                        # without separators (e.g., "18421LP0004", "3014LJ1")
+                        is_equip_id = bool(re.match(r"^[A-Z0-9]{6,}$", sv, re.IGNORECASE))
+                        # PHASE 5 FIX: Accept annexure references
+                        is_annexure_ref = bool(_ANNEXURE_PAT.match(sv))
+                        if has_multiple_tags or is_equip_id or is_annexure_ref:
+                            log.debug(
+                                "COLUMN_HEADERS detected via label '%s' in row %d: 1 tag column %s (packed=%s, equip_id=%s, annexure_ref=%s)",
+                                str(v).strip(), r, tag_cols, has_multiple_tags, is_equip_id, is_annexure_ref,
+                            )
+                            return TagLocationResult(
+                                layout=TagLayout.COLUMN_HEADERS,
+                                tag_columns=tag_cols,
+                                confidence=0.80,
+                            )
 
     # Fallback: scan rows for tag-like column headers using TAG_PATTERN
     best_row = None

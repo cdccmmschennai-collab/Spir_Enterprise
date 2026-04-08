@@ -177,6 +177,38 @@ class ColumnarStrategy:
 
         # EQPT MAKE from global metadata (top-right of SPIR sheet)
         global_mfr = global_meta.get("manufacturer")
+        global_supplier = global_meta.get("supplier")
+
+        # PHASE 4 FIX: Extract currency from unit price column header if not
+        # in a separate column. E.g., "UNIT PRICE (USD)" → currency="USD"
+        global_currency = global_meta.get("currency")
+        if not global_currency and profile.column_map.get("unit_price"):
+            up_col = profile.column_map["unit_price"]
+            # Scan rows around the header row to find currency text
+            # (currency may be in row above or below the detected header)
+            header_row_idx = profile.header_row
+            if header_row_idx:
+                for scan_r in range(max(1, header_row_idx - 3), header_row_idx + 3):
+                    up_header = str(ws.cell(scan_r, up_col).value or "").upper()
+                    if not up_header.strip():
+                        continue
+                    # Look for currency codes in parentheses: "UNIT PRICE (USD)"
+                    currency_match = re.search(r"\(([A-Z]{3})\)", up_header)
+                    if currency_match:
+                        global_currency = currency_match.group(1)
+                        break
+                    # Check for ": US $" or similar patterns
+                    currency_match = re.search(r":\s*([A-Z\$]+)\s*\$", up_header)
+                    if currency_match:
+                        global_currency = "USD"
+                        break
+                    # Check for standalone currency codes
+                    for code in ["USD", "QAR", "AED", "EUR", "GBP", "SAR", "INR"]:
+                        if code in up_header:
+                            global_currency = code
+                            break
+                    if global_currency:
+                        break
 
         for col, tag_list in tag_info.items():
             for tag in tag_list:
@@ -191,12 +223,12 @@ class ColumnarStrategy:
                     "spir_no": spir_no or global_meta.get("spir_no"),
                     "tag_no": tag,
                     "manufacturer": global_mfr,
+                    "supplier": global_supplier,
                     "model": tmeta.get("model"),
                     "serial": tmeta.get("serial"),
                     "eqpt_qty": tmeta.get("eqpt_qty"),
                     "desc": eqpt_desc,
                     "spir_type": global_meta.get("spir_type"),
-                    # No item_num, no supplier — this is a header row
                 }
                 rows.append(header_row)
 
@@ -213,6 +245,7 @@ class ColumnarStrategy:
                         "tag_no": tag,
                         # EQPT fields — eqpt_qty only on header rows
                         "manufacturer": global_mfr,
+                        "supplier": global_supplier,
                         "model": tmeta.get("model"),
                         "serial": tmeta.get("serial"),
                         # No eqpt_qty on detail rows (reference shows it only on headers)
@@ -224,7 +257,8 @@ class ColumnarStrategy:
                         "mfr_part_no": item.get("mfr_part_no"),
                         "material_spec": item.get("material_spec"),
                         "supplier_name": item.get("supplier_name"),
-                        "currency": item.get("currency"),
+                        # PHASE 4 FIX: Use global currency as fallback
+                        "currency": item.get("currency") or global_currency,
                         "unit_price": item.get("unit_price"),
                         "delivery": item.get("delivery"),
                         "min_max": item.get("min_max"),
@@ -271,19 +305,56 @@ class ColumnarStrategy:
         """
         Read tag values from tag columns in the top rows.
         Returns {column_index: [tag1, tag2, ...]} (handles multi-tag cells).
+
+        PHASE 1 FIX: Expanded skip keywords to reject header text, column
+        labels, and SPIR metadata that was being incorrectly extracted as tags.
         """
         result: dict[int, list[str]] = {}
 
         # Label keywords that should NOT be treated as tags
+        # Expanded to catch all known SPIR header/column text patterns
         _SKIP_KEYWORDS = frozenset({
+            # Equipment/tag labels
             "equipment", "tag no", "tag number", "equip", "mfr", "model",
             "manufacturer", "supplier", "serial", "ser no", "no. of units",
             "item number", "description", "spare parts", "note", "or tag",
+            # Column header labels (PHASE 1: added)
+            "dwg no", "drawing no", "part number", "material spec",
+            "material specification", "material certification",
+            "supplier/ocm", "ocm name", "unit price", "currency",
+            "delivery", "lead time", "uom", "unit of measure",
+            "sap number", "sap no", "classification", "min max",
+            "stock level", "identical parts", "total no",
+            "qty identical", "quantity", "spare parts list",
+            "interchangeability", "remarks", "spir number",
+            "ref indicator", "authority block", "required on site",
+            "purchase order", "po number", "project", "contract",
+            "engineering", "reminder", "technical data", "signature",
+            "requisition", "prepared by", "checked by", "approved by",
+            "revision", "end of", "company",
+            # Section labels
+            "manufacturers/suppliers data", "vendor data",
+            "note 1", "note 2", "note 3", "note 4", "note 5",
+            "see note", "attach", "attachments",
+            # Row numbering labels
+            "mfr type", "mfr ser", "type or model",
+            "no. of parts", "parts per unit",
+            # SPIR metadata labels
+            "qatarenergy", "buyer", "purchaser", "contractor",
+            "sub-contractor", "vendor", "fabricator",
         })
 
+        # Patterns that look like column header references (e.g., "10A", "10B", "11A")
+        _COLUMN_REF_PAT = re.compile(r"^\d+[A-Z]$")
+
+        # Pattern for annexure references (including Roman numerals)
         _ANNEXURE_PAT = re.compile(
-            r"(?i)(?:refer\s+)?annexure[\s\-_]*(?:\([^)]*\)[\s\-_]*)?\d+"
+            r"(?i)(?:refer\s+)?annexure[\s\-_]*(?:\([^)]*\)[\s\-_]*)?(?:\d+|[IVX]+)\b"
         )
+
+        # Pattern for actual equipment tags (must have at least one separator or be alphanumeric with structure)
+        # FIX: Changed {2,} to {1,} to accept single-letter prefix tags like "V-8943", "E-8925"
+        _TAG_LIKE_PAT = re.compile(r"[A-Z0-9]{1,}[-/][A-Z0-9]", re.IGNORECASE)
 
         for col in profile.tag_columns:
             for r in range(1, min(9, (ws.max_row or 0) + 1)):
@@ -300,15 +371,40 @@ class ColumnarStrategy:
                     continue
                 if raw.isdigit() and len(raw) <= 2:
                     continue
-                if len(raw) > 50:
+                # PHASE 2 FIX: Allow long values if they look like packed tags
+                # (comma/semicolon-separated tag values from continuation sheets)
+                looks_like_packed = (
+                    len(raw) > 50
+                    and re.search(r"[A-Z0-9]{2,}[-/][A-Z0-9]", raw, re.IGNORECASE)
+                    and re.search(r"[,;/|]", raw)
+                )
+                if len(raw) > 50 and not looks_like_packed:
                     continue
                 if raw == "_":
+                    continue
+
+                # PHASE 1 FIX: Reject column header references like "10A", "10B", "11A"
+                if _COLUMN_REF_PAT.match(raw):
+                    continue
+
+                # PHASE 1 FIX: Reject values that look like section headers
+                # (contain "see note", "pos", or are purely descriptive)
+                if re.search(r"(?i)(see note|pos\.?\s*\d|attachment)", raw):
                     continue
 
                 # Check for annexure reference
                 if _ANNEXURE_PAT.match(raw):
                     result[col] = [raw]
                     break
+
+                # PHASE 1 FIX: Validate that the value looks like an actual tag
+                # Tags typically have structure: prefix-number, or annexure refs
+                # Reject plain text that doesn't match tag patterns
+                if not _TAG_LIKE_PAT.search(raw) and not _ANNEXURE_PAT.match(raw):
+                    # Allow short alphanumeric codes that could be tag suffixes
+                    # but reject anything that looks like header text
+                    if len(raw) > 20 or " " in raw:
+                        continue
 
                 # Accept as tag — split if comma/slash separated
                 tags = split_tags(raw)
@@ -390,15 +486,21 @@ class ColumnarStrategy:
                         metadata[tag] = {}
                     metadata[tag][row_field] = val
 
-        # Fallback: when eqpt_qty is missing but column has multiple tags,
-        # use the tag count as eqpt_qty (e.g., 8 comma-separated tags → eqpt_qty=8)
+        # PHASE 2 FIX: Fallback for eqpt_qty when "No. OF UNITS" is missing.
+        # - Multi-tag cell (e.g., "TAG-1, TAG-2, TAG-3") → eqpt_qty = tag count
+        # - Single tag cell with no units row → eqpt_qty = 1
+        # This handles SPIR files where the units row is absent or in a
+        # different position than expected.
         for col, tags in tag_info.items():
-            if len(tags) > 1:
-                for tag in tags:
-                    if tag and tag in metadata and metadata[tag].get("eqpt_qty") is None:
-                        metadata[tag]["eqpt_qty"] = len(tags)
-                    elif tag and tag not in metadata:
-                        metadata.setdefault(tag, {})["eqpt_qty"] = len(tags)
+            tag_count = len(tags) if tags else 1
+            for tag in tags if tags else [None]:
+                if tag is None:
+                    continue
+                if tag in metadata:
+                    if metadata[tag].get("eqpt_qty") is None:
+                        metadata[tag]["eqpt_qty"] = tag_count
+                else:
+                    metadata.setdefault(tag, {})["eqpt_qty"] = tag_count
 
         return metadata
 

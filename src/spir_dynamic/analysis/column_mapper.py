@@ -25,6 +25,8 @@ FIELD_KEYWORDS: dict[str, list[str]] = {
     "description": [
         "description of parts", "description of part",
         "description", "desc of part", "part description",
+        # PHASE 3 FIX: Continuation sheets use "REMARKS" for description
+        "remarks",
     ],
     "quantity": [
         "total no. of identical", "identical parts fitted",
@@ -48,7 +50,7 @@ FIELD_KEYWORDS: dict[str, list[str]] = {
         "part#", "vendor part", "supplier part",
     ],
     "manufacturer": [
-        "manufacturer name", "manufacturer", "mfr name", "make",
+        "manufacturer", "mfr",
     ],
     "supplier": [
         "supplier/ocm", "supplier ocm", "supplier name",
@@ -76,7 +78,7 @@ FIELD_KEYWORDS: dict[str, list[str]] = {
         "model", "eqpt model",
     ],
     "serial": [
-        "serial", "sr no", "serial no",
+        "serial", "sr no", "serial no", "mfr ser", "mfr ser no",
     ],
     "eqpt_qty": [
         "eqpt qty", "equipment qty", "no of eqpt",
@@ -103,7 +105,45 @@ def map_headers(
 
     header_rows_to_consider: list[int] = [header_row]
     if header_row > 1:
-        header_rows_to_consider.append(header_row - 1)  # typical multi-row headers
+        # PHASE 5 FIX: Only include header_row - 1 if it looks like a real header,
+        # not a reminder/banner row or a commercial sub-header row.
+        # Reminder rows contain keywords like "vendor", "supplier", "contractor"
+        # in a long banner text. Commercial sub-headers are rows that only have
+        # unit_price/delivery/qty keywords but no item_number/description.
+        prev_row = header_row - 1
+        if _row_looks_like_header(ws, prev_row, max_col):
+            # Check if prev_row is a commercial-only sub-header (no item/desc keywords)
+            has_core_header = False
+            core_keywords = {"item_number", "description", "part_number", "dwg_no"}
+            for c in range(1, max_col + 1):
+                v = ws.cell(prev_row, c).value
+                if v:
+                    s = str(v).lower().strip()
+                    for field in core_keywords:
+                        for kw in FIELD_KEYWORDS.get(field, []):
+                            if kw in s:
+                                has_core_header = True
+                                break
+            if has_core_header:
+                header_rows_to_consider.append(prev_row)
+    # PHASE 4 FIX: Some SPIR files have sub-headers BELOW the main header row.
+    # E.g., row 11 has "ITEM NUMBER", row 12 has "DESCRIPTION OF PARTS",
+    # "DRAWING Number", "PART NUMBER". Scan up to 3 rows below to catch these.
+    # Allow skipping transitional rows (0-1 keyword hits) between header rows.
+    max_row = ws.max_row or 0
+    skip_count = 0
+    for offset in range(1, 4):
+        r = header_row + offset
+        if r > max_row:
+            break
+        if _row_looks_like_header(ws, r, max_col):
+            header_rows_to_consider.append(r)
+            skip_count = 0  # Reset skip counter after finding a header
+        elif skip_count < 1:
+            # Allow one transitional row between headers
+            skip_count += 1
+        else:
+            break  # Two non-header rows in a row = stop
 
     # Precompute header text variants per column so multi-row headers work
     # even if `find_header_row()` is off by 1.
@@ -161,7 +201,22 @@ def map_headers(
             continue
         col_stats[c] = _compute_column_stats(ws, c, sample_range)
 
+    # PHASE 5 FIX: Reject columns whose header text is a recommendation/approval
+    # label rather than a data column. E.g., "RECOMMENDED BY .MANUFACTURER" is
+    # not a data column — it's a signature/recommendation field.
+    _REJECT_PATTERNS = [
+        "RECOMMENDED BY", "APPROVED BY", "CHECKED BY", "PREPARED BY",
+    ]
+    def _is_rejection_header(col: int) -> bool:
+        texts = header_text_by_col.get(col, [])
+        combined = " ".join(texts).upper()
+        return any(pat in combined for pat in _REJECT_PATTERNS)
+
     def _candidate_passes_validation(field: str, col: int) -> bool:
+        # Always reject recommendation/approval columns regardless of sample count
+        if _is_rejection_header(col):
+            return False
+
         stats = col_stats.get(col) or {}
         numeric_rate = stats.get("numeric_rate", 0.0)
         integer_rate = stats.get("integer_rate", 0.0)
@@ -195,6 +250,25 @@ def map_headers(
         (score, field, col)
         for (score, field, col) in candidates
         if _candidate_passes_validation(field, col)
+    ]
+
+    # PHASE 4 FIX: When header text contains both "manufacturer" and "serial",
+    # prefer "serial" mapping (e.g., "Manufacturer Serial No" -> serial, not manufacturer).
+    # When header contains both "manufacturer" and "model", prefer "model" mapping
+    # (e.g., "Manufacturer Model no" -> model, not manufacturer).
+    # Use a large enough bonus to overcome the base score difference.
+    def _apply_tiebreakers(score: int, field: str, col: int) -> int:
+        texts = header_text_by_col.get(col, [])
+        combined = " ".join(texts).lower()
+        if field == "serial" and "manufacturer" in combined and "serial" in combined:
+            return score + 50  # Prefer serial over manufacturer for "Manufacturer Serial No"
+        if field == "model" and "manufacturer" in combined and "model" in combined:
+            return score + 50  # Prefer model over manufacturer for "Manufacturer Model no"
+        return score
+
+    candidates = [
+        (_apply_tiebreakers(score, field, col), field, col)
+        for (score, field, col) in candidates
     ]
     candidates.sort(key=lambda x: x[0], reverse=True)
 
@@ -377,6 +451,40 @@ def _value_is_numeric_like(v: Any) -> bool:
             flags=re.IGNORECASE,
         )
     )
+
+
+def _row_looks_like_header(ws, row: int, max_col: int) -> bool:
+    """
+    Check if a row looks like a header row (not a data row).
+    Header rows have keyword-rich cells and no long description-like text.
+    For multi-line header cells, only check the first line.
+    Whitespace is normalized before length checks.
+    """
+    keyword_hits = 0
+    has_long_text = False
+    for c in range(1, min(max_col + 1, 40)):
+        v = ws.cell(row, c).value
+        if v is None:
+            continue
+        s = str(v).strip()
+        if not s:
+            continue
+        # For multi-line cells, check only the first line
+        first_line = s.split("\n")[0].strip()
+        # Normalize excessive whitespace for length check
+        normalized = re.sub(r"\s+", " ", first_line)
+        sl = normalized.lower()
+        # Check for header keywords
+        for field, keywords in FIELD_KEYWORDS.items():
+            for kw in keywords:
+                if kw in sl:
+                    keyword_hits += 1
+                    break
+        # Long first line (60+ chars) usually means data, not header
+        if len(normalized) > 60:
+            has_long_text = True
+    # A header row should have at least 2 keyword hits and no very long text
+    return keyword_hits >= 2 and not has_long_text
 
 
 def get_unmapped_columns(ws, header_row: int, mapped: dict[str, int]) -> dict[int, str]:

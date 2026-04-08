@@ -34,6 +34,12 @@ UTILITY_KEYWORDS = frozenset(
         "contents",
         "change log",
         "revision",
+        # PHASE 4 FIX: Review/checklist sheets are not data sheets
+        "spir review",
+        "review sheet",
+        "guidlines",
+        "guidelines",
+        "combined",
     }
 )
 
