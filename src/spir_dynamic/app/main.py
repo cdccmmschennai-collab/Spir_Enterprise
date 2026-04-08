@@ -4,8 +4,10 @@ FastAPI application factory.
 from __future__ import annotations
 
 from fastapi import FastAPI
+from spir_dynamic.app.auth import auth_router
 from fastapi.middleware.cors import CORSMiddleware
 
+from spir_dynamic.app.auth import auth_router
 from spir_dynamic.app.config import get_settings
 from spir_dynamic.app.routes import router
 from spir_dynamic.utils.logging import setup_logging
@@ -21,6 +23,8 @@ def create_app() -> FastAPI:
         docs_url="/api/docs",
         redoc_url="/api/redoc",
     )
+    app.include_router(auth_router, prefix="/auth")
+    app.include_router(router, prefix="/api")
 
     app.add_middleware(
         CORSMiddleware,
@@ -31,6 +35,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(router, prefix="/api")
+    app.include_router(auth_router, prefix="/auth")
 
     return app
 

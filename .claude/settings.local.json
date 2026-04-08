@@ -14,7 +14,15 @@
       "Bash(grep -v \"^SERIAL\\\\|^TAGS\\\\|^ANNEXURE\\\\|^OMN\\\\|UserWarn\\\\|^$\\\\|warn\\(\\\\|^Sheet:\\\\|^Type:\\\\|^Main \\\\|^Columnar\\\\|^Tabular\\\\|^VEN-\")",
       "Bash(grep -n \"def find_data_end\" ./src/spir_dynamic/analysis/*.py)",
       "Bash(PYTHONPATH=/d/spir_dynamic/src python3)",
-      "Bash(dir C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic:*)"
+      "Bash(dir C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic:*)",
+      "Bash(npx create-next-app@latest frontend --typescript --tailwind --eslint --app --no-src-dir --import-alias \"@/*\" --yes)",
+      "Bash(npx --yes create-next-app@latest frontend --typescript --tailwind --eslint --app --no-src-dir --import-alias \"@/*\" --yes)",
+      "Bash(npm --version)",
+      "Bash(npx --version)",
+      "Bash(where node:*)",
+      "Bash(where npm:*)",
+      "Read(//c/Users/softuser1/Downloads/Downloads/**)",
+      "Bash(dir \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\")"
     ]
   }
 }

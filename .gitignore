@@ -25,3 +25,5 @@ Thumbs.db
 # Output files
 *.xlsx
 temp/ 
+
+frontend/.next

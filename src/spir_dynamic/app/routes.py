@@ -1,6 +1,5 @@
 """
 FastAPI route handlers.
-Simplified: no auth, sync processing only.
 """
 from __future__ import annotations
 
@@ -8,9 +7,10 @@ import io
 import logging
 from typing import Any
 
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
 
+from spir_dynamic.app.auth import verify_token
 from spir_dynamic.app.pipeline import run_pipeline, retrieve_result
 from spir_dynamic.app.config import get_settings
 from spir_dynamic.extraction.file_validator import ValidationError
@@ -22,7 +22,10 @@ router = APIRouter()
 
 
 @router.post("/extract")
-async def extract(file: UploadFile = File(...)) -> dict[str, Any]:
+async def extract(
+    file: UploadFile = File(...),
+    _: str = Depends(verify_token),
+) -> dict[str, Any]:
     """Upload and extract a SPIR Excel file."""
     cfg = get_settings()
 
@@ -49,7 +52,7 @@ async def extract(file: UploadFile = File(...)) -> dict[str, Any]:
 
 
 @router.get("/download/{file_id}")
-async def download(file_id: str):
+async def download(file_id: str, _: str = Depends(verify_token)):
     """Download the extracted Excel file."""
     result = retrieve_result(file_id)
     if result is None:

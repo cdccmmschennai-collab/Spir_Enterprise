@@ -1,6 +1,5 @@
 """
 Centralized configuration via environment variables / .env file.
-Simplified: no Redis, no Celery, no S3, no auth.
 """
 from __future__ import annotations
 
@@ -26,6 +25,12 @@ class Settings(BaseSettings):
 
     # CORS
     allowed_origins: list[str] = ["*"]
+
+    # Auth
+    app_user: str = "admin"
+    app_pass: str = "cdc@2026"
+    secret_key: str = "insecure-dev-secret-replace-in-production"
+    token_expire_hours: int = 8
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
