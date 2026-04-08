@@ -27,3 +27,6 @@ Thumbs.db
 temp/ 
 
 frontend/.next
+
+# large input files
+templates/input files/
