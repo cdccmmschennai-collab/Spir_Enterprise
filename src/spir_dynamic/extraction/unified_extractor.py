@@ -431,6 +431,7 @@ def _enrich_equipment_data(
             # Only enrich model/serial from annexure; manufacturer stays
             # from global metadata (top-right of SPIR = EQPT MAKE)
             _TAG_ENRICH = ("model", "serial")
+            N = len(annex_tags)
             for tdata in annex_tags:
                 # Tag header
                 for hdr in grp["headers"]:
@@ -440,13 +441,22 @@ def _enrich_equipment_data(
                         if tdata.get(field):
                             tag_hdr[field] = tdata[field]
                     enriched.append(tag_hdr)
-                # Tag spare rows
+                # Tag spare rows — divide total qty by N annexure tags
                 for dtl in grp["details"]:
                     tag_dtl = dict(dtl)
                     tag_dtl["tag_no"] = tdata["tag"]
                     for field in _TAG_ENRICH:
                         if tdata.get(field):
                             tag_dtl[field] = tdata[field]
+                    if N > 1:
+                        raw_qty = tag_dtl.get("quantity")
+                        try:
+                            q = float(raw_qty) if raw_qty is not None else None
+                            if q and q > 0:
+                                per_tag = q / N
+                                tag_dtl["quantity"] = int(per_tag) if per_tag == int(per_tag) else per_tag
+                        except (TypeError, ValueError):
+                            pass
                     enriched.append(tag_dtl)
 
     log.info(
@@ -473,7 +483,9 @@ def _build_annexure_registry(
     """
     registry: dict[str, list[dict[str, Any]]] = {}
 
+    print(f"DEBUG _build_annexure_registry: total profiles={len(profiles)}")
     for profile in profiles:
+        print(f"DEBUG _build_annexure_registry: checking sheet={profile.name!r} role={profile.role}")
         if profile.role != SheetRole.ANNEXURE:
             continue
 
@@ -481,13 +493,16 @@ def _build_annexure_registry(
         if not annex_key:
             annex_key = profile.name.strip().upper()
 
+        print(f"DEBUG _build_annexure_registry: processing ANNEXURE sheet={profile.name!r} key={annex_key!r}")
         ws = wb[profile.name]
 
         # Check for a group number column (e.g. "ANNEXURE-P1 NUMBER")
         group_col = _find_annexure_group_col(ws, profile)
 
         entries = _read_annexure_equipment(ws, profile, group_col=group_col)
+        print(f"DEBUG _build_annexure_registry: entries count={len(entries)} for sheet={profile.name!r}")
         if not entries:
+            print(f"DEBUG _build_annexure_registry: SKIPPING sheet={profile.name!r} - no entries found")
             continue
 
         if group_col:
@@ -545,6 +560,8 @@ def _read_annexure_equipment(
     Uses the profile's column_map when available, otherwise scans headers.
     If group_col is provided, each entry gets a '_group' field for subgrouping.
     """
+    print(f"DEBUG _read_annexure_equipment: sheet={profile.name!r} role={profile.role} layout={profile.tag_layout}")
+    print(f"DEBUG _read_annexure_equipment: profile.column_map={profile.column_map}")
     entries: list[dict[str, Any]] = []
 
     col_map = profile.column_map
@@ -552,6 +569,7 @@ def _read_annexure_equipment(
         col_map = _scan_annexure_headers(ws)
 
     tag_col = col_map.get("tag")
+    print(f"DEBUG _read_annexure_equipment: tag_col={tag_col} col_map={col_map}")
     model_col = col_map.get("model") or col_map.get("manufacturer_model")
     serial_col = col_map.get("serial")
     mfr_col = col_map.get("manufacturer")
@@ -561,13 +579,36 @@ def _read_annexure_equipment(
     if mfr_col and model_col and mfr_col == model_col:
         mfr_col = None
 
-    if not tag_col:
-        return entries
-
     start_row = profile.data_start_row or (
         (profile.header_row + 1) if profile.header_row else 3
     )
     end_row = profile.data_end_row or (ws.max_row or 0)
+
+    if not tag_col:
+        # Fallback: scan data rows to find the column with the most tag-like values.
+        # Handles annexure sheets whose tag column has an unrecognized header (or no header).
+        from spir_dynamic.utils.cell_utils import looks_like_tag as _llt
+        best_col, best_count = None, 0
+        scan_end = min(start_row + 20, end_row + 1)
+        max_col = min((ws.max_column or 5) + 1, 20)
+        for c in range(1, max_col):
+            count = sum(
+                1 for r in range(start_row, scan_end)
+                if _llt(str(ws.cell(r, c).value or ""))
+            )
+            if count > best_count:
+                best_count, best_col = count, c
+        print(f"DEBUG _read_annexure_equipment: data-scan best_col={best_col} best_count={best_count} start_row={start_row} scan_end={scan_end}")
+        if best_col and best_count >= 1:
+            tag_col = best_col
+            log.info(
+                "Annexure '%s': tag column not found by header; using col %d "
+                "(%d tag-like values via data scan)",
+                getattr(profile, "name", "?"), tag_col, best_count,
+            )
+        else:
+            print(f"DEBUG _read_annexure_equipment: GIVING UP - no tag column found")
+            return entries  # truly can't find tags
 
     for r in range(start_row, end_row + 1):
         tag_val = clean_str(ws.cell(r, tag_col).value)
@@ -630,9 +671,10 @@ def _read_annexure_equipment(
 
 def _scan_annexure_headers(ws) -> dict[str, int]:
     """Scan first rows of an annexure sheet to find tag/model/serial columns."""
+    print(f"DEBUG _scan_annexure_headers: sheet={getattr(ws, 'title', '?')} max_row={ws.max_row} max_col={ws.max_column}")
     col_map: dict[str, int] = {}
     keywords = {
-        "tag": ["tag no", "tag number", "tag number(s)", "valve tag", "equipment tag", "equip"],
+        "tag": ["tag no", "tag number", "tag number(s)", "valve tag", "equipment tag", "equip", "tag"],
         "model": ["model number", "model no", "model", "mfr type", "manufacturer model"],
         "serial": ["serial number", "serial no", "serial", "ser no", "sr no"],
         "manufacturer": ["manufacturer", "make", "mfr name"],
@@ -645,11 +687,14 @@ def _scan_annexure_headers(ws) -> dict[str, int]:
             if v is None:
                 continue
             cell_lower = str(v).lower().strip()
+            print(f"DEBUG _scan_annexure_headers: r={r} c={c} value={repr(v)}")
             for field, kws in keywords.items():
                 if field not in col_map and any(kw in cell_lower for kw in kws):
                     col_map[field] = c
+                    print(f"DEBUG _scan_annexure_headers: matched field={field} col={c} value={repr(v)}")
                     break
 
+    print(f"DEBUG _scan_annexure_headers: result col_map={col_map}")
     return col_map
 
 

@@ -138,6 +138,7 @@ class ColumnarStrategy:
                       Passed to continuation sheets that lack their own header row.
         """
         rows: list[dict[str, Any]] = []
+        print(f"DEBUG _columnar.extract: sheet={profile.name!r} is_item_source={'YES' if items_dict is None else 'NO'} items_dict_len={len(items_dict) if items_dict else 0}")
 
         if not profile.tag_columns:
             log.warning("ColumnarStrategy: no tag_columns for '%s'", profile.name)
@@ -234,6 +235,25 @@ class ColumnarStrategy:
 
                 # Detail rows — one per applicable item
                 applicable_items = tag_items_map.get(col, {})
+                print(f"DEBUG _columnar.extract: tag={tag!r} col={col} applicable_items={len(applicable_items)} is_item_source={is_item_source}")
+
+                # For continuation sheets (items_dict was passed in from outside),
+                # if a tag column has zero applicable items AND its cells are genuinely
+                # blank (not explicit zeros — those are already filtered by Bug 2 fix),
+                # inherit all items from items_dict with qty=1.
+                if not applicable_items and not is_item_source and items_dict:
+                    col_start = profile.data_start_row or (
+                        (profile.header_row + 1) if profile.header_row else 8
+                    )
+                    col_end = profile.data_end_row or (ws.max_row or 0)
+                    has_any_data = any(
+                        ws.cell(r, col).value is not None
+                        and not is_placeholder(ws.cell(r, col).value)
+                        for r in range(col_start, col_end + 1)
+                    )
+                    if not has_any_data:
+                        applicable_items = {num: 1 for num in items_dict}
+
                 for item_num, per_tag_qty in applicable_items.items():
                     item = items_dict.get(item_num, {})
                     if not item:
@@ -392,8 +412,15 @@ class ColumnarStrategy:
                 if re.search(r"(?i)(see note|pos\.?\s*\d|attachment)", raw):
                     continue
 
-                # Check for annexure reference
+                # Check for annexure reference (numbered: "Annexure 1", "Annexure I", etc.)
                 if _ANNEXURE_PAT.match(raw):
+                    result[col] = [raw]
+                    break
+
+                # Accept bare "Refer Annexure" / "Annexure" without a number.
+                # _normalize_annexure_ref returns ANNEXURE_ANY for these, and
+                # _enrich_equipment_data remaps ANNEXURE_ANY when exactly 1 annexure exists.
+                if re.search(r"(?i)annex", raw):
                     result[col] = [raw]
                     break
 
@@ -645,6 +672,9 @@ class ColumnarStrategy:
                     tag_count = len(tag_info.get(col, []))
                     if tag_count > 1 and per_tag_qty > 0 and per_tag_qty % tag_count == 0:
                         per_tag_qty = per_tag_qty // tag_count
+
+                    if per_tag_qty <= 0:
+                        continue
 
                     mapping[col][item_num] = per_tag_qty
 
