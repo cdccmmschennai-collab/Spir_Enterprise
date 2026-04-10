@@ -11,8 +11,14 @@ HOW TO MODIFY COLUMNS:
   Change width  -> update "width"
 
 No other file needs to change when you modify this file.
+
+DynamicSchema builds an output schema from what was actually found in a specific
+SPIR file. Canonical columns come first (in OUTPUT_COLUMNS order), then any
+extra/unknown columns found in the source file are appended at the end.
 """
 from __future__ import annotations
+
+from dataclasses import dataclass, field
 
 OUTPUT_COLUMNS: list[dict] = [
 
@@ -97,3 +103,96 @@ def row_from_dict(item: dict) -> list:
         if val is not None:
             row[col_idx] = val
     return row
+
+
+# ---------------------------------------------------------------------------
+# DynamicSchema — output schema built from what was found in a specific file
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DynamicSchema:
+    """
+    Output schema built from actual columns found in a SPIR file.
+
+    Canonical OUTPUT_COLUMNS appear first (in their defined order), followed
+    by any extra columns discovered in the source that aren't part of the
+    standard 27-column schema.
+    """
+    columns: list[dict] = field(default_factory=list)
+    col_names: list[str] = field(default_factory=list)
+    ci: dict[str, int] = field(default_factory=dict)
+    field_ci: dict[str, int] = field(default_factory=dict)
+
+    @classmethod
+    def build(
+        cls,
+        found_fields: dict[str, int],
+        extra_cols: dict[int, str],
+    ) -> "DynamicSchema":
+        """
+        Build schema:
+        1. Walk canonical OUTPUT_COLUMNS in their defined order
+        2. Append any extra_cols whose header text isn't already in a canonical column
+        """
+        columns: list[dict] = []
+        col_names: list[str] = []
+        ci: dict[str, int] = {}
+        field_ci: dict[str, int] = {}
+
+        # Canonical columns first
+        for entry in OUTPUT_COLUMNS:
+            idx = len(columns)
+            columns.append(entry)
+            col_names.append(entry["col"])
+            ci[entry["col"]] = idx
+            field_ci[entry["field"]] = idx
+
+        # Extra discovered columns: only add if not already covered
+        canonical_cols_lower = {c.lower() for c in col_names}
+        for _ws_col, header_text in extra_cols.items():
+            if not header_text:
+                continue
+            if header_text.lower() in canonical_cols_lower:
+                continue
+            idx = len(columns)
+            extra_entry = {
+                "col": header_text,
+                "field": f"_extra_{idx}",
+                "default": None,
+                "width": 20,
+            }
+            columns.append(extra_entry)
+            col_names.append(header_text)
+            ci[header_text] = idx
+            field_ci[extra_entry["field"]] = idx
+            canonical_cols_lower.add(header_text.lower())
+
+        schema = cls()
+        schema.columns = columns
+        schema.col_names = col_names
+        schema.ci = ci
+        schema.field_ci = field_ci
+        return schema
+
+    def make_empty_row(self) -> list:
+        return [c.get("default") for c in self.columns]
+
+    def row_from_dict(self, item: dict) -> list:
+        row = self.make_empty_row()
+        for entry in self.columns:
+            field_name = entry["field"]
+            col_name = entry["col"]
+            idx = self.ci[col_name]
+            val = item.get(field_name)
+            if val is None and field_name == "supplier_name":
+                val = item.get("manufacturer")
+            if val is None:
+                val = item.get(col_name)
+            if val is not None:
+                row[idx] = val
+        return row
+
+    @classmethod
+    def from_standard(cls) -> "DynamicSchema":
+        """Build a DynamicSchema from the standard OUTPUT_COLUMNS (no extras)."""
+        return cls.build(found_fields={}, extra_cols={})

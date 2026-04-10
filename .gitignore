@@ -32,3 +32,9 @@ frontend/.next
 templates/input files/
 
 templates/
+
+
+.next/
+.pytest_cache/
+
+.antigravity/

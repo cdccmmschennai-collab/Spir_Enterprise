@@ -22,7 +22,17 @@
       "Bash(where node:*)",
       "Bash(where npm:*)",
       "Read(//c/Users/softuser1/Downloads/Downloads/**)",
-      "Bash(dir \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\")"
+      "Bash(dir \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\")",
+      "Read(//c/Users/softuser1/Downloads/spir_dynamic/**)",
+      "Bash(dir templates:*)",
+      "Bash(dir \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\templates\" /s /b)",
+      "Bash(cmd.exe:*)",
+      "Bash(powershell -Command \"Get-ChildItem -Path 'C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\templates' -Recurse | Select-Object Name, FullName\")",
+      "Bash(git -C /c/Users/softuser1/Downloads/spir_dynamic status --short)",
+      "Bash(where python:*)",
+      "Bash(cmd:*)",
+      "Bash(uv run:*)",
+      "Bash(py -c \"print\\('hi'\\)\")"
     ]
   }
 }

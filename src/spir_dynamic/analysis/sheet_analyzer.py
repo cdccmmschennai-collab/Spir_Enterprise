@@ -14,12 +14,12 @@ from spir_dynamic.analysis.header_detector import (
     find_metadata,
     find_data_end,
 )
-from spir_dynamic.analysis.column_mapper import map_headers
+from spir_dynamic.analysis.column_mapper import map_headers, get_unmapped_columns
 from spir_dynamic.analysis.tag_locator import locate_tags
 
 log = logging.getLogger(__name__)
 
-# Sheet names that indicate non-data utility sheets
+# Sheet names that indicate non-data utility sheets (fallback defaults)
 UTILITY_KEYWORDS = frozenset(
     {
         "validation",
@@ -34,7 +34,6 @@ UTILITY_KEYWORDS = frozenset(
         "contents",
         "change log",
         "revision",
-        # PHASE 4 FIX: Review/checklist sheets are not data sheets
         "spir review",
         "review sheet",
         "guidlines",
@@ -42,6 +41,18 @@ UTILITY_KEYWORDS = frozenset(
         "combined",
     }
 )
+
+
+def _get_utility_keywords() -> frozenset[str]:
+    """Return utility sheet keywords from config, falling back to defaults."""
+    try:
+        from spir_dynamic.app.config import load_keywords
+        kw = load_keywords().get("utility_sheet_keywords")
+        if kw:
+            return frozenset(kw)
+    except Exception:
+        pass
+    return UTILITY_KEYWORDS
 
 
 def analyze_sheet(ws, sheet_name: str) -> SheetProfile:
@@ -61,7 +72,7 @@ def analyze_sheet(ws, sheet_name: str) -> SheetProfile:
 
     # Step 1: Quick utility check (name-based hint)
     name_lower = sheet_name.lower().strip()
-    if any(kw in name_lower for kw in UTILITY_KEYWORDS):
+    if any(kw in name_lower for kw in _get_utility_keywords()):
         profile.role = SheetRole.UTILITY
         profile.confidence = 0.8
         log.debug("Sheet '%s' classified as UTILITY by name", sheet_name)
@@ -90,7 +101,12 @@ def analyze_sheet(ws, sheet_name: str) -> SheetProfile:
         return profile
 
     # Step 3: Map columns
-    profile.column_map = map_headers(ws, profile.header_row)
+    try:
+        from spir_dynamic.app.config import get_settings
+        min_score = get_settings().min_column_map_score
+    except Exception:
+        min_score = 30
+    profile.column_map = map_headers(ws, profile.header_row, min_score=min_score)
     if profile.column_map:
         required = {"description", "item_number", "quantity", "unit_price", "part_number", "supplier", "currency"}
         hit_required = sorted(required.intersection(profile.column_map.keys()))
@@ -102,6 +118,9 @@ def analyze_sheet(ws, sheet_name: str) -> SheetProfile:
             len(required),
             profile.header_row,
         )
+
+    # Capture extra columns (not mapped to standard fields)
+    profile.extra_columns = get_unmapped_columns(ws, profile.header_row, profile.column_map)
 
     # Step 4: Locate tags
     tag_result = locate_tags(ws, profile.header_row, profile.column_map)
@@ -132,11 +151,31 @@ def analyze_sheet(ws, sheet_name: str) -> SheetProfile:
         profile.role = SheetRole.ANNEXURE
         profile.confidence = min(profile.confidence + 0.1, 1.0)
 
+    # Discovery mode: if confidence is very low and no tags found, re-run
+    # column mapping with a lower threshold to pick up partial matches.
+    if profile.confidence < 0.4 and tag_result.layout == TagLayout.NONE and not profile.column_map:
+        try:
+            from spir_dynamic.app.config import get_settings
+            disc_score = get_settings().discovery_min_score
+        except Exception:
+            disc_score = 15
+        disc_map = map_headers(ws, profile.header_row, min_score=disc_score)
+        if disc_map:
+            profile.column_map = disc_map
+            profile.discovery_mode = True
+            profile.role = SheetRole.DATA
+            profile.confidence = min(len(disc_map) / 10.0, 0.35)
+            log.warning(
+                "Sheet '%s': discovery mode active — %d columns found at low threshold",
+                sheet_name, len(disc_map),
+            )
+
     log.info(
-        "Sheet '%s': role=%s, tags=%s, header_row=%s, cols=%d, rows=%d, conf=%.2f",
+        "Sheet '%s': role=%s, tags=%s, header_row=%s, cols=%d, rows=%d, conf=%.2f%s",
         sheet_name, profile.role.value, profile.tag_layout.value,
         profile.header_row, len(profile.column_map), profile.row_count,
         profile.confidence,
+        " [DISCOVERY]" if profile.discovery_mode else "",
     )
     return profile
 

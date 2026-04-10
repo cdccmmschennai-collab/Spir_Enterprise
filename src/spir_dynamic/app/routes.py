@@ -3,6 +3,7 @@ FastAPI route handlers.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 from typing import Any
@@ -40,8 +41,9 @@ async def extract(
             detail=f"File is {size_mb:.1f} MB — exceeds {cfg.max_file_size_mb} MB limit",
         )
 
+    loop = asyncio.get_event_loop()
     try:
-        result = run_pipeline(content, filename)
+        result = await loop.run_in_executor(None, run_pipeline, content, filename)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:

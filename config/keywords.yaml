@@ -1,0 +1,200 @@
+# SPIR Dynamic — keyword configuration
+# Edit this file to add new SPIR file formats. Restart the backend to pick up changes.
+
+# Column header → field mappings (replaces FIELD_KEYWORDS in column_mapper.py)
+field_keywords:
+  tag:
+    - "equipment tag"
+    - "equip tag"
+    - "tag no"
+    - "tag number"
+    - "tag #"
+    - "equip't"
+    - "tag"
+  description:
+    - "description of parts"
+    - "description of part"
+    - "description"
+    - "desc of part"
+    - "part description"
+    - "item description"
+    - "nomenclature"
+    - "part name"
+    - "remarks"
+  quantity:
+    - "total no. of identical"
+    - "identical parts fitted"
+    - "no. of identical"
+    - "qty identical"
+    - "quantity"
+    - "qty"
+    - "no of parts"
+    - "nos"
+    - "number"
+  item_number:
+    - "item number"
+    - "item no"
+    - "item #"
+    - "s/n"
+    - "sl no"
+    - "item"
+    - "sr no"
+    - "seq no"
+  unit_price:
+    - "unit price"
+    - "price per unit"
+    - "unit cost"
+    - "price"
+  total_price:
+    - "total price"
+    - "total cost"
+    - "extended price"
+  currency:
+    - "currency"
+    - "curr"
+  part_number:
+    - "manufacturer part"
+    - "mfr part"
+    - "part number"
+    - "part no"
+    - "part#"
+    - "vendor part"
+    - "supplier part"
+    - "mfr part no"
+  manufacturer:
+    - "manufacturer"
+    - "mfr"
+    - "make"
+  supplier:
+    - "supplier/ocm"
+    - "supplier ocm"
+    - "supplier name"
+    - "ocm name"
+    - "vendor"
+    - "vendor name"
+    - "ocm"
+  uom:
+    - "unit of measure"
+    - "uom"
+    - "unit"
+    - "ea"
+    - "each"
+  delivery_weeks:
+    - "delivery time"
+    - "lead time"
+    - "delivery"
+  sap_number:
+    - "sap number"
+    - "sap no"
+    - "sap #"
+    - "material number"
+  classification:
+    - "classification"
+    - "class of part"
+    - "spare type"
+    - "class"
+    - "criticality"
+  dwg_no:
+    - "drawing no"
+    - "dwg no"
+    - "drawing number"
+    - "drg no"
+    - "drawing"
+  material_spec:
+    - "material spec"
+    - "material specification"
+    - "spec"
+  model:
+    - "model"
+    - "eqpt model"
+    - "model number"
+  serial:
+    - "serial"
+    - "sr no"
+    - "serial no"
+    - "mfr ser"
+    - "mfr ser no"
+  eqpt_qty:
+    - "eqpt qty"
+    - "equipment qty"
+    - "no of eqpt"
+  min_max:
+    - "min max"
+    - "min/max"
+    - "stock level"
+    - "min stock"
+
+# Header row detection keywords (replaces HEADER_KEYWORDS in header_detector.py)
+header_keywords:
+  - "description"
+  - "tag"
+  - "quantity"
+  - "item"
+  - "part number"
+  - "unit price"
+  - "manufacturer"
+  - "supplier"
+  - "currency"
+  - "delivery"
+  - "uom"
+  - "sap"
+  - "classification"
+  - "drawing"
+  - "material"
+  - "lead time"
+  - "remarks"
+  - "nomenclature"
+  - "vendor"
+
+# Sheet names that indicate utility/skip sheets (replaces UTILITY_KEYWORDS in sheet_analyzer.py)
+utility_sheet_keywords:
+  - "validation"
+  - "lookup"
+  - "reference"
+  - "dropdown"
+  - "list"
+  - "instructions"
+  - "cover"
+  - "summary"
+  - "index"
+  - "contents"
+  - "change log"
+  - "revision"
+  - "spir review"
+  - "review sheet"
+  - "guidelines"
+  - "combined"
+
+# Tag detection config (drives TAG_PATTERN in cell_utils.py)
+tag_detection:
+  min_prefix_length: 1        # 1 allows single-letter prefix tags like V-1234
+  separator_chars: "[-/]"
+  suffix_pattern: "[A-Z0-9]"
+  split_chars: "[,/|;]"
+
+# Vendor prefix stripping for OMN (replaces _VENDOR_PREFIXES in post_processor.py)
+vendor_prefixes:
+  - "VEN"
+  - "DEM"
+  - "CON"
+  - "EPC"
+  - "CTR"
+  - "SUB"
+
+# Currency codes recognized during extraction
+currency_codes:
+  - "USD"
+  - "QAR"
+  - "AED"
+  - "EUR"
+  - "GBP"
+  - "SAR"
+  - "INR"
+  - "OMR"
+  - "KWD"
+  - "BHD"
+
+# Scoring thresholds
+scoring:
+  min_column_map_score: 30    # minimum score to map a column to a field
+  discovery_min_score: 15     # lower threshold used in discovery mode (unknown formats)

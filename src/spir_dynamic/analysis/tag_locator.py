@@ -228,15 +228,18 @@ def _check_column_headers(
                             re.search(r"[,;/|]", sv)
                             and re.search(r"[A-Z0-9]{1,}[-/][A-Z0-9]", sv, re.IGNORECASE)
                         )
-                        # PHASE 4 FIX: Accept alphanumeric equipment identifiers
-                        # without separators (e.g., "18421LP0004", "3014LJ1")
                         is_equip_id = bool(re.match(r"^[A-Z0-9]{6,}$", sv, re.IGNORECASE))
-                        # PHASE 5 FIX: Accept annexure references
                         is_annexure_ref = bool(_ANNEXURE_PAT.match(sv))
-                        if has_multiple_tags or is_equip_id or is_annexure_ref:
+                        # Accept a real equipment tag (e.g. "KAHS-1002", "PT-4460-001")
+                        is_real_tag = looks_like_tag(sv)
+                        # Accept bare "Refer Annexure" / "Annexure" without a number
+                        is_bare_annexure = bool(re.search(r"(?i)annex", sv)) and not is_annexure_ref
+                        if has_multiple_tags or is_equip_id or is_annexure_ref or is_real_tag or is_bare_annexure:
                             log.debug(
-                                "COLUMN_HEADERS detected via label '%s' in row %d: 1 tag column %s (packed=%s, equip_id=%s, annexure_ref=%s)",
-                                str(v).strip(), r, tag_cols, has_multiple_tags, is_equip_id, is_annexure_ref,
+                                "COLUMN_HEADERS detected via label '%s' in row %d: 1 tag column %s "
+                                "(packed=%s, equip_id=%s, annexure_ref=%s, real_tag=%s, bare_annexure=%s)",
+                                str(v).strip(), r, tag_cols,
+                                has_multiple_tags, is_equip_id, is_annexure_ref, is_real_tag, is_bare_annexure,
                             )
                             return TagLocationResult(
                                 layout=TagLayout.COLUMN_HEADERS,

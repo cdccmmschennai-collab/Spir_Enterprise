@@ -17,6 +17,8 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Field keywords: logical field name -> list of header text patterns
 # ---------------------------------------------------------------------------
+# The canonical defaults below are used as fallback when keywords.yaml is absent.
+# At runtime, _get_field_keywords() loads from config/keywords.yaml instead.
 FIELD_KEYWORDS: dict[str, list[str]] = {
     "tag": [
         "equipment tag", "equip tag", "tag no", "tag number",
@@ -25,16 +27,18 @@ FIELD_KEYWORDS: dict[str, list[str]] = {
     "description": [
         "description of parts", "description of part",
         "description", "desc of part", "part description",
-        # PHASE 3 FIX: Continuation sheets use "REMARKS" for description
+        "item description", "nomenclature", "part name",
+        # Continuation sheets use "REMARKS" for description
         "remarks",
     ],
     "quantity": [
         "total no. of identical", "identical parts fitted",
         "no. of identical", "qty identical", "quantity",
-        "qty", "no of parts",
+        "qty", "no of parts", "nos", "number",
     ],
     "item_number": [
         "item number", "item no", "item #", "s/n", "sl no",
+        "item", "sr no", "seq no",
     ],
     "unit_price": [
         "unit price", "price per unit", "unit cost", "price",
@@ -54,10 +58,10 @@ FIELD_KEYWORDS: dict[str, list[str]] = {
     ],
     "supplier": [
         "supplier/ocm", "supplier ocm", "supplier name",
-        "ocm name", "vendor",
+        "ocm name", "vendor", "vendor name", "ocm",
     ],
     "uom": [
-        "unit of measure", "uom",
+        "unit of measure", "uom", "unit", "ea", "each",
     ],
     "delivery_weeks": [
         "delivery time", "lead time", "delivery",
@@ -87,6 +91,18 @@ FIELD_KEYWORDS: dict[str, list[str]] = {
         "min max", "min/max", "stock level",
     ],
 }
+
+
+def _get_field_keywords() -> dict[str, list[str]]:
+    """Return field keywords from config/keywords.yaml, falling back to defaults."""
+    try:
+        from spir_dynamic.app.config import load_keywords
+        kw = load_keywords().get("field_keywords")
+        if kw:
+            return kw
+    except Exception:
+        pass
+    return FIELD_KEYWORDS
 
 
 def map_headers(
@@ -120,7 +136,7 @@ def map_headers(
                 if v:
                     s = str(v).lower().strip()
                     for field in core_keywords:
-                        for kw in FIELD_KEYWORDS.get(field, []):
+                        for kw in _get_field_keywords().get(field, []):
                             if kw in s:
                                 has_core_header = True
                                 break
@@ -161,10 +177,11 @@ def map_headers(
     candidates: list[tuple[int, str, int]] = []  # (score, field, col)
     best_by_col: dict[int, tuple[int, str]] = {}  # col -> (score, field)
 
+    field_keywords = _get_field_keywords()
     for c, texts in header_text_by_col.items():
         col_best_score = 0
         col_best_field: str | None = None
-        for field, keywords in FIELD_KEYWORDS.items():
+        for field, keywords in field_keywords.items():
             score = _score_field_against_header_texts(texts, keywords)
             if score > col_best_score:
                 col_best_score = score
@@ -176,7 +193,7 @@ def map_headers(
         # Keep top candidates above threshold (for validation/backoff later)
         scored_fields = [
             (field, _score_field_against_header_texts(texts, keywords))
-            for field, keywords in FIELD_KEYWORDS.items()
+            for field, keywords in field_keywords.items()
         ]
         scored_fields.sort(key=lambda x: x[1], reverse=True)
         for field, score in scored_fields[:3]:
@@ -475,7 +492,7 @@ def _row_looks_like_header(ws, row: int, max_col: int) -> bool:
         normalized = re.sub(r"\s+", " ", first_line)
         sl = normalized.lower()
         # Check for header keywords
-        for field, keywords in FIELD_KEYWORDS.items():
+        for field, keywords in _get_field_keywords().items():
             for kw in keywords:
                 if kw in sl:
                     keyword_hits += 1
