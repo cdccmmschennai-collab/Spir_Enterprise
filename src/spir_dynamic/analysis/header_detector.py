@@ -97,6 +97,7 @@ METADATA_KEYWORDS: dict[str, list[str]] = {
     # PHASE 4 FIX: Accept "supplier", "supplier:", "SUPPLIER : VALUE" etc.
     "supplier": ["supplier"],
     "project": ["project", "contract"],
+    "model": ["model no", "model number", "eqpt model", "model"],
 }
 
 # Footers that indicate end of data section

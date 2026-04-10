@@ -501,6 +501,21 @@ def _build_annexure_registry(
 
         entries = _read_annexure_equipment(ws, profile, group_col=group_col)
         print(f"DEBUG _build_annexure_registry: entries count={len(entries)} for sheet={profile.name!r}")
+
+        # Fallback for COLUMN_HEADERS annexure sheets (tags are column headers, not row data).
+        # _read_annexure_equipment expects ROW_HEADERS style; use columnar tag-header reader instead.
+        if not entries and profile.tag_layout == TagLayout.COLUMN_HEADERS:
+            print(f"DEBUG _build_annexure_registry: trying COLUMN_HEADERS fallback for sheet={profile.name!r}")
+            tag_info = _columnar._read_tag_headers(ws, profile)
+            meta = _columnar._read_tag_metadata(ws, profile, tag_info)
+            for _col_idx, col_tags in tag_info.items():
+                for tag in col_tags:
+                    if tag and not re.search(r"(?i)annex", tag):
+                        entry: dict[str, Any] = {"tag": tag}
+                        entry.update(meta.get(tag, {}))
+                        entries.append(entry)
+            print(f"DEBUG _build_annexure_registry: COLUMN_HEADERS fallback found {len(entries)} tags")
+
         if not entries:
             print(f"DEBUG _build_annexure_registry: SKIPPING sheet={profile.name!r} - no entries found")
             continue

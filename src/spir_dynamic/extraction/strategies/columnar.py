@@ -296,7 +296,7 @@ class ColumnarStrategy:
                     ]
                     new_parts = [p for p in parts if p]
                     if new_parts:
-                        detail_row["new_desc"] = " | ".join(new_parts)
+                        detail_row["new_desc"] = ",".join(new_parts)
 
                     rows.append(detail_row)
 

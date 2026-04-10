@@ -147,9 +147,17 @@ def analyze_sheet(ws, sheet_name: str) -> SheetProfile:
     profile.confidence = (tag_result.confidence + col_score) / 2.0
 
     # Name-based hints (boost confidence, never override)
+    # Promote DATA sheets whose name contains "annexure" to ANNEXURE,
+    # but NOT if the sheet has COLUMN_HEADERS layout WITH a description column —
+    # those are spare-data sheets that happen to be named "Annexure", not tag-list sheets.
     if "annexure" in name_lower and profile.role == SheetRole.DATA:
-        profile.role = SheetRole.ANNEXURE
-        profile.confidence = min(profile.confidence + 0.1, 1.0)
+        is_spare_data_sheet = (
+            tag_result.layout == TagLayout.COLUMN_HEADERS
+            and bool(profile.column_map.get("description"))
+        )
+        if not is_spare_data_sheet:
+            profile.role = SheetRole.ANNEXURE
+            profile.confidence = min(profile.confidence + 0.1, 1.0)
 
     # Discovery mode: if confidence is very low and no tags found, re-run
     # column mapping with a lower threshold to pick up partial matches.

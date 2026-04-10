@@ -114,7 +114,7 @@ class TransposedStrategy:
                 parts = [row.get("desc"), row.get("mfr_part_no"), row.get("supplier_name")]
                 new_parts = [p for p in parts if p]
                 if new_parts:
-                    row["new_desc"] = " | ".join(new_parts)
+                    row["new_desc"] = ",".join(new_parts)
 
                 rows.append(row)
 
