@@ -38,3 +38,6 @@ templates/
 .pytest_cache/
 
 .antigravity/
+
+echo "__pycache__/" >> .gitignore
+echo "*.pyc" >> .gitignore
