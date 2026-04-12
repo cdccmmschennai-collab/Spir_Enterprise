@@ -1,0 +1,162 @@
+diff --git a/.claude/settings.local.json b/.claude/settings.local.json
+index a647504f..6e165cf3 100644
+--- a/.claude/settings.local.json
++++ b/.claude/settings.local.json
+@@ -14,7 +14,15 @@
+       "Bash(grep -v \"^SERIAL\\\\|^TAGS\\\\|^ANNEXURE\\\\|^OMN\\\\|UserWarn\\\\|^$\\\\|warn\\(\\\\|^Sheet:\\\\|^Type:\\\\|^Main \\\\|^Columnar\\\\|^Tabular\\\\|^VEN-\")",
+       "Bash(grep -n \"def find_data_end\" ./src/spir_dynamic/analysis/*.py)",
+       "Bash(PYTHONPATH=/d/spir_dynamic/src python3)",
+-      "Bash(dir C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic:*)"
++      "Bash(dir C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic:*)",
++      "Bash(npx create-next-app@latest frontend --typescript --tailwind --eslint --app --no-src-dir --import-alias \"@/*\" --yes)",
++      "Bash(npx --yes create-next-app@latest frontend --typescript --tailwind --eslint --app --no-src-dir --import-alias \"@/*\" --yes)",
++      "Bash(npm --version)",
++      "Bash(npx --version)",
++      "Bash(where node:*)",
++      "Bash(where npm:*)",
++      "Read(//c/Users/softuser1/Downloads/Downloads/**)",
++      "Bash(dir \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\")"
+     ]
+   }
+ }
+diff --git a/.env.example b/.env.example
+index 89d882ce..51419e52 100644
+--- a/.env.example
++++ b/.env.example
+@@ -8,5 +8,12 @@ LOG_LEVEL=INFO
+ MAX_FILE_SIZE_MB=2048
+ PREVIEW_ROW_COUNT=12
+ 
+-# CORS
+-ALLOWED_ORIGINS=["*"]
++# CORS — must list exact frontend origin (no wildcard) when allow_credentials=True
++ALLOWED_ORIGINS=["http://localhost:3000"]
++
++# Auth
++APP_USER=admin
++APP_PASS=admin123
++# Generate with: openssl rand -hex 32
++SECRET_KEY=mysecretkey123456
++TOKEN_EXPIRE_HOURS=8
+diff --git a/pyproject.toml b/pyproject.toml
+index aa138f06..98b29efb 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -14,6 +14,8 @@ dependencies = [
+     "pydantic-settings>=2.1",
+     "structlog>=24.1",
+     "python-multipart>=0.0.9",
++    "python-jose[cryptography]>=3.3",
++    "passlib[bcrypt]>=1.7",
+ ]
+ 
+ [project.optional-dependencies]
+diff --git a/src/spir_dynamic/app/__pycache__/config.cpython-314.pyc b/src/spir_dynamic/app/__pycache__/config.cpython-314.pyc
+index 9f5c618d..0af8bd97 100644
+Binary files a/src/spir_dynamic/app/__pycache__/config.cpython-314.pyc and b/src/spir_dynamic/app/__pycache__/config.cpython-314.pyc differ
+diff --git a/src/spir_dynamic/app/__pycache__/main.cpython-314.pyc b/src/spir_dynamic/app/__pycache__/main.cpython-314.pyc
+index a2e78274..9d2c22ad 100644
+Binary files a/src/spir_dynamic/app/__pycache__/main.cpython-314.pyc and b/src/spir_dynamic/app/__pycache__/main.cpython-314.pyc differ
+diff --git a/src/spir_dynamic/app/__pycache__/routes.cpython-314.pyc b/src/spir_dynamic/app/__pycache__/routes.cpython-314.pyc
+index 0e97ea0c..d71ee74e 100644
+Binary files a/src/spir_dynamic/app/__pycache__/routes.cpython-314.pyc and b/src/spir_dynamic/app/__pycache__/routes.cpython-314.pyc differ
+diff --git a/src/spir_dynamic/app/config.py b/src/spir_dynamic/app/config.py
+index c8df7aa9..fa3bf83d 100644
+--- a/src/spir_dynamic/app/config.py
++++ b/src/spir_dynamic/app/config.py
+@@ -1,6 +1,5 @@
+ """
+ Centralized configuration via environment variables / .env file.
+-Simplified: no Redis, no Celery, no S3, no auth.
+ """
+ from __future__ import annotations
+ 
+@@ -27,6 +26,12 @@ class Settings(BaseSettings):
+     # CORS
+     allowed_origins: list[str] = ["*"]
+ 
++    # Auth
++    app_user: str = "admin"
++    app_pass: str = "cdc@2026"
++    secret_key: str = "insecure-dev-secret-replace-in-production"
++    token_expire_hours: int = 8
++
+     model_config = {"env_file": ".env", "extra": "ignore"}
+ 
+ 
+diff --git a/src/spir_dynamic/app/main.py b/src/spir_dynamic/app/main.py
+index b2982f13..0fa9ba84 100644
+--- a/src/spir_dynamic/app/main.py
++++ b/src/spir_dynamic/app/main.py
+@@ -4,8 +4,10 @@ FastAPI application factory.
+ from __future__ import annotations
+ 
+ from fastapi import FastAPI
++from spir_dynamic.app.auth import auth_router
+ from fastapi.middleware.cors import CORSMiddleware
+ 
++from spir_dynamic.app.auth import auth_router
+ from spir_dynamic.app.config import get_settings
+ from spir_dynamic.app.routes import router
+ from spir_dynamic.utils.logging import setup_logging
+@@ -21,6 +23,8 @@ def create_app() -> FastAPI:
+         docs_url="/api/docs",
+         redoc_url="/api/redoc",
+     )
++    app.include_router(auth_router, prefix="/auth")
++    app.include_router(router, prefix="/api")
+ 
+     app.add_middleware(
+         CORSMiddleware,
+@@ -31,6 +35,7 @@ def create_app() -> FastAPI:
+     )
+ 
+     app.include_router(router, prefix="/api")
++    app.include_router(auth_router, prefix="/auth")
+ 
+     return app
+ 
+diff --git a/src/spir_dynamic/app/routes.py b/src/spir_dynamic/app/routes.py
+index db38a18c..c5cfd2b2 100644
+--- a/src/spir_dynamic/app/routes.py
++++ b/src/spir_dynamic/app/routes.py
+@@ -1,6 +1,5 @@
+ """
+ FastAPI route handlers.
+-Simplified: no auth, sync processing only.
+ """
+ from __future__ import annotations
+ 
+@@ -8,9 +7,10 @@ import io
+ import logging
+ from typing import Any
+ 
+-from fastapi import APIRouter, UploadFile, File, HTTPException
++from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+ from fastapi.responses import StreamingResponse
+ 
++from spir_dynamic.app.auth import verify_token
+ from spir_dynamic.app.pipeline import run_pipeline, retrieve_result
+ from spir_dynamic.app.config import get_settings
+ from spir_dynamic.extraction.file_validator import ValidationError
+@@ -22,7 +22,10 @@ router = APIRouter()
+ 
+ 
+ @router.post("/extract")
+-async def extract(file: UploadFile = File(...)) -> dict[str, Any]:
++async def extract(
++    file: UploadFile = File(...),
++    _: str = Depends(verify_token),
++) -> dict[str, Any]:
+     """Upload and extract a SPIR Excel file."""
+     cfg = get_settings()
+ 
+@@ -49,7 +52,7 @@ async def extract(file: UploadFile = File(...)) -> dict[str, Any]:
+ 
+ 
+ @router.get("/download/{file_id}")
+-async def download(file_id: str):
++async def download(file_id: str, _: str = Depends(verify_token)):
+     """Download the extracted Excel file."""
+     result = retrieve_result(file_id)
+     if result is None:

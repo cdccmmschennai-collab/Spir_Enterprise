@@ -483,29 +483,27 @@ def _build_annexure_registry(
     """
     registry: dict[str, list[dict[str, Any]]] = {}
 
-    print(f"DEBUG _build_annexure_registry: total profiles={len(profiles)}")
     for profile in profiles:
-        print(f"DEBUG _build_annexure_registry: checking sheet={profile.name!r} role={profile.role}")
-        if profile.role != SheetRole.ANNEXURE:
+        annex_key = _normalize_annexure_ref(profile.name)
+        is_annexure_like_sheet = (
+            profile.role == SheetRole.ANNEXURE or annex_key is not None
+        )
+        if not is_annexure_like_sheet:
             continue
 
-        annex_key = _normalize_annexure_ref(profile.name)
         if not annex_key:
             annex_key = profile.name.strip().upper()
 
-        print(f"DEBUG _build_annexure_registry: processing ANNEXURE sheet={profile.name!r} key={annex_key!r}")
         ws = wb[profile.name]
 
         # Check for a group number column (e.g. "ANNEXURE-P1 NUMBER")
         group_col = _find_annexure_group_col(ws, profile)
 
         entries = _read_annexure_equipment(ws, profile, group_col=group_col)
-        print(f"DEBUG _build_annexure_registry: entries count={len(entries)} for sheet={profile.name!r}")
 
         # Fallback for COLUMN_HEADERS annexure sheets (tags are column headers, not row data).
         # _read_annexure_equipment expects ROW_HEADERS style; use columnar tag-header reader instead.
         if not entries and profile.tag_layout == TagLayout.COLUMN_HEADERS:
-            print(f"DEBUG _build_annexure_registry: trying COLUMN_HEADERS fallback for sheet={profile.name!r}")
             tag_info = _columnar._read_tag_headers(ws, profile)
             meta = _columnar._read_tag_metadata(ws, profile, tag_info)
             for _col_idx, col_tags in tag_info.items():
@@ -514,10 +512,8 @@ def _build_annexure_registry(
                         entry: dict[str, Any] = {"tag": tag}
                         entry.update(meta.get(tag, {}))
                         entries.append(entry)
-            print(f"DEBUG _build_annexure_registry: COLUMN_HEADERS fallback found {len(entries)} tags")
 
         if not entries:
-            print(f"DEBUG _build_annexure_registry: SKIPPING sheet={profile.name!r} - no entries found")
             continue
 
         if group_col:

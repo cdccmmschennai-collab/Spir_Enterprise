@@ -212,7 +212,8 @@ class ColumnarStrategy:
                     if global_currency:
                         break
 
-        for col, tag_list in tag_info.items():
+        for col in sorted(tag_info):
+            tag_list = tag_info[col]
             for tag in tag_list:
                 tmeta = tag_metadata.get(tag, {})
 
