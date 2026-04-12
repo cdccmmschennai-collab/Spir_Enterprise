@@ -18,6 +18,8 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Keywords that appear in SPIR data headers
 # ---------------------------------------------------------------------------
+# These defaults are used when keywords.yaml is not available.
+# At runtime, _get_header_keywords() loads from config/keywords.yaml.
 HEADER_KEYWORDS: list[str] = [
     "description of parts",
     "description of part",
@@ -61,7 +63,7 @@ HEADER_KEYWORDS: list[str] = [
     "drawing no",
     "dwg no",
     "material spec",
-    # PHASE 3 FIX: Continuation sheet keywords
+    # Continuation sheet keywords
     "remarks",
     "mfr ser",
     "mfr ser'l",
@@ -70,11 +72,25 @@ HEADER_KEYWORDS: list[str] = [
     "no of units",
     "parts per unit",
     "equip't",
+    "nomenclature",
+    "item description",
 ]
+
+
+def _get_header_keywords() -> list[str]:
+    """Return header keywords from config/keywords.yaml, falling back to defaults."""
+    try:
+        from spir_dynamic.app.config import load_keywords
+        kw = load_keywords().get("header_keywords")
+        if kw:
+            return kw
+    except Exception:
+        pass
+    return HEADER_KEYWORDS
 
 # Keywords that indicate metadata in the header area (above the data header)
 METADATA_KEYWORDS: dict[str, list[str]] = {
-    "spir_no": ["spir number", "spir no", "spir ref", "spir #"],
+    "spir_no": ["spir number", "spir no", "spir ref", "spir #", "spir:", "spir id", "spir no."],
     "equipment": ["equipment:"],
     # PHASE 4 FIX: Accept "manufacturer", "manufacturer:", "MANUFACTURER : VALUE" etc.
     "manufacturer": ["manufacturer"],
@@ -104,13 +120,14 @@ FOOTER_STARTS = (
 
 def _score_row(ws, row_idx: int, max_col: int) -> int:
     """Score a row based on how many header keywords it contains."""
+    keywords = _get_header_keywords()
     score = 0
     for c in range(1, max_col + 1):
         v = ws.cell(row_idx, c).value
         if v is None:
             continue
         cell = str(v).lower().strip()
-        for kw in HEADER_KEYWORDS:
+        for kw in keywords:
             if kw in cell:
                 score += 1
                 break
@@ -471,114 +488,23 @@ def _detect_spir_type(ws, scan_rows: int, max_col: int) -> str | None:
             if tv is True:
                 return normalized
 
-    # No type ticked — return None (blank). Do NOT guess or default.
-    return None
-
-    # PHASE 4 FIX: If only ONE type label is found, use it directly.
-    # Some SPIR files write the type as plain text (e.g., "Initial Spare Parts")
-    # without a checkbox grid. In this case, there's only one type label present.
+    # If only ONE type label is found, use it directly (text-only format).
     unique_types = set(n for _, _, n in type_cells)
     if len(unique_types) == 1:
         return unique_types.pop()
 
-    # PHASE 4 FIX: If multiple type labels are found in the same row as standalone
-    # text (not checkbox labels), this is a text-only format. Detect this by checking
-    # if ALL type cells contain ONLY the type text (not part of a larger label).
-    # In text-only formats, the first type found is the selected one.
+    # If ALL type cells contain only a bare type keyword, this is a text-only
+    # format (no checkbox grid). Return the first type found.
     all_standalone = True
     for r, c, normalized in type_cells:
-        cell_val = str(ws.cell(r, c).value or "").strip()
-        cell_lower = cell_val.lower()
-        is_standalone = cell_lower in _SPIR_TYPE_MAP
-        if not is_standalone:
+        cell_val = str(ws.cell(r, c).value or "").strip().lower()
+        if cell_val not in _SPIR_TYPE_MAP:
             all_standalone = False
             break
-    
     if all_standalone:
-        # Text-only format — return the first type found
         return type_cells[0][2]
 
-    # Phase 2: Find the tick row — the row below the type labels where
-    # EXACTLY ONE type column has a value > 0 and the others are 0.
-    # This distinguishes the tick row from column-numbering rows (where
-    # ALL columns have positive values).
-    type_row = type_cells[0][0]  # all labels are in the same row
-    type_cols = [(c, normalized) for _, c, normalized in type_cells]
-
-    for offset in range(2, 7):
-        check_row = type_row + offset
-        if check_row > (ws.max_row or 0):
-            continue
-
-        # Read values from ALL type columns at this row
-        col_vals: list[tuple[float, str]] = []
-        all_numeric = True
-        for c, normalized in type_cols:
-            cv = ws.cell(check_row, c).value
-            if cv is True:
-                return normalized
-            try:
-                num_val = float(cv) if cv is not None else 0
-                col_vals.append((num_val, normalized))
-            except (ValueError, TypeError):
-                all_numeric = False
-                break
-
-        if not all_numeric or not col_vals:
-            continue
-
-        # Tick row: exactly ONE has value > 0, others are 0
-        positive = [(v, n) for v, n in col_vals if v > 0]
-        zeros = [v for v, _ in col_vals if v == 0]
-
-        if len(positive) == 1 and len(zeros) >= 1:
-            return positive[0][1]
-
-    # PHASE 4 FIX: No tick row found. Check if this is a text-only format
-    # (not a checkbox grid). In text-only formats, the type labels appear as
-    # standalone text values without a grid structure. We detect this by checking
-    # if the type cells have NO tick values (0/1) in the immediate rows below them.
-    # Only check offset 2-3 (where checkbox ticks would be), not further down
-    # where data rows with 0/1 values might exist.
-    has_tick_below = False
-    for c, _ in type_cols:
-        for offset in range(2, 4):  # Only check immediate rows below
-            check_row = type_row + offset
-            if check_row > (ws.max_row or 0):
-                continue
-            cv = ws.cell(check_row, c).value
-            try:
-                num = float(cv) if cv is not None else -1
-                # Tick values are 0 or 1, not column numbers (which are typically > 1)
-                if num in (0, 1):
-                    has_tick_below = True
-                    break
-            except (ValueError, TypeError):
-                pass
-        if has_tick_below:
-            break
-
-    # If no tick values below type labels, this is a text-only format.
-    # The selected type is the one that appears as a standalone value.
-    if not has_tick_below:
-        for r, c, normalized in type_cells:
-            cell_val = str(ws.cell(r, c).value or "").strip()
-            cell_lower = cell_val.lower()
-            # Use _SPIR_TYPE_MAP directly for proper capitalization
-            for pattern, norm in _SPIR_TYPE_MAP.items():
-                if cell_lower == pattern:
-                    return norm
-
-    # Phase 3: No data-row tick found. Check for boolean True in same row
-    # (fallback for non-standard formats — some files use checkboxes)
-    for r, c, normalized in type_cells:
-        for check_c in range(c + 1, min(c + 12, max_col + 1)):
-            tv = ws.cell(r, check_c).value
-            if tv is True:
-                return normalized
-
-    # Phase 4: No type ticked — return None (no default; the SPIR type
-    # must be explicitly ticked in the input file)
+    # No type ticked — return None (blank). Do NOT guess or default.
     return None
 
 

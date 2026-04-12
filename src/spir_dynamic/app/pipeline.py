@@ -58,7 +58,7 @@ def run_pipeline(file_bytes: bytes, original_filename: str) -> dict[str, Any]:
     raw_rows = result.get("rows", [])
     spir_no = result.get("spir_no", "")
 
-    # Step 4: Convert dicts to output-schema rows
+    # Step 4: Convert dicts to the standard 27-column output schema
     output_rows = [row_from_dict(r) for r in raw_rows]
 
     # Step 4b: Ensure SPIR NO on all rows
@@ -83,8 +83,8 @@ def run_pipeline(file_bytes: bytes, original_filename: str) -> dict[str, Any]:
     output_rows = deduplicate_rows(output_rows, CI)
     dup_info = analyse_duplicates(output_rows)
 
-    # Step 7b: Ensure SPIR ERROR = 0 on all rows (after dedup which may set "" or "DUPLICATE")
-    error_col = CI.get("SPIR ERROR")
+    # Step 7b: Ensure ERROR = 0 on all rows that have no error string
+    error_col = CI.get("ERROR")
     if error_col is not None:
         for row in output_rows:
             if error_col < len(row):
@@ -92,7 +92,7 @@ def run_pipeline(file_bytes: bytes, original_filename: str) -> dict[str, Any]:
                 if val is None or val == "":
                     row[error_col] = 0
 
-    # Step 8: Build styled Excel
+    # Step 8: Build styled Excel (always 27 columns)
     xlsx_bytes = build_xlsx(output_rows, spir_no)
 
     # Step 9: Store result

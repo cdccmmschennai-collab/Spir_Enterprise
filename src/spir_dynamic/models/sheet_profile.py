@@ -59,6 +59,12 @@ class SheetProfile:
     # Continuation relationship
     continuation_of: str | None = None
 
+    # Extra columns not in the standard 27-column schema (col_index → header_text)
+    extra_columns: dict[int, str] = field(default_factory=dict)
+
+    # True when the sheet was processed in discovery mode (low-confidence format)
+    discovery_mode: bool = False
+
     # Statistics
     row_count: int = 0
     confidence: float = 0.0

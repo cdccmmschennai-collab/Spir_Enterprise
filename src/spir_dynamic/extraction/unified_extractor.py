@@ -42,13 +42,19 @@ _ANNEXURE_REF_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Roman numeral to integer mapping
-_ROMAN_TO_INT = {
-    'I': 1, 'II': 2, 'III': 3, 'IV': 4, 'V': 5,
-    'VI': 6, 'VII': 7, 'VIII': 8, 'IX': 9, 'X': 10,
-    'XI': 11, 'XII': 12, 'XIII': 13, 'XIV': 14, 'XV': 15,
-    'XVI': 16, 'XVII': 17, 'XVIII': 18, 'XIX': 19, 'XX': 20,
-}
+def _roman_to_int(s: str) -> int | None:
+    """Convert a roman numeral string to int. Returns None if not valid."""
+    vals = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+    s = s.upper().strip()
+    if not s or not all(c in vals for c in s):
+        return None
+    result = 0
+    prev = 0
+    for ch in reversed(s):
+        curr = vals[ch]
+        result += curr if curr >= prev else -curr
+        prev = curr
+    return result if result > 0 else None
 
 
 def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
@@ -139,6 +145,9 @@ def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
                 "row_count": p.row_count,
                 "confidence": p.confidence,
                 "columns_mapped": list(p.column_map.keys()),
+                "column_map": p.column_map,
+                "extra_columns": p.extra_columns,
+                "discovery_mode": p.discovery_mode,
             }
             for p in profiles
         ],
@@ -255,12 +264,11 @@ def _resolve_spir_no(profiles: list[SheetProfile], filename: str) -> str:
         spir = p.metadata.get("spir_no")
         if spir:
             spir_clean = str(spir).strip()
-            # If SPIR NO has slash or looks broken, fall through to filename
-            if "/" not in spir_clean:
+            # Accept any value that is at least 5 chars and contains alphanumerics
+            if len(spir_clean) >= 5 and re.search(r'[A-Z0-9]', spir_clean, re.I):
                 return spir_clean
 
     if filename:
-        import re
         patterns = [
             r"([A-Z0-9]{2,}-[A-Z0-9]{2,}-[A-Z0-9][\w\-]*)",
             r"(\d{4,}[\-_]\w+[\-_]\w+)",
@@ -311,14 +319,28 @@ def _enrich_equipment_data(
     annexure_registry = _build_annexure_registry(wb, profiles)
     # annexure_registry: {normalized_annexure_key: [{"tag":..,"model":..,"serial":..,"manufacturer":..}, ...]}
 
+    # Step 1b: Resolve bare "ANNEXURE_ANY" references (e.g. "Refer Annexure" without a number).
+    # If exactly one annexure sheet exists, remap all ANNEXURE_ANY tags to its key.
+    _real_keys = {k for k in annexure_registry if k != "ANNEXURE_ANY"}
+    if len(_real_keys) == 1:
+        _single_key = next(iter(_real_keys))
+        for _row in all_rows:
+            _tag = str(_row.get("tag_no") or "").strip()
+            if _tag and _normalize_annexure_ref(_tag) == "ANNEXURE_ANY":
+                _row["tag_no"] = _single_key
+    elif len(_real_keys) > 1:
+        # Multiple annexure sheets — can't auto-resolve bare references unambiguously.
+        # Leave as-is; log so the operator knows.
+        _any_rows = [r for r in all_rows if _normalize_annexure_ref(str(r.get("tag_no") or "")) == "ANNEXURE_ANY"]
+        if _any_rows:
+            log.warning(
+                "Bare annexure reference found (%d rows) but %d annexure sheets exist — "
+                "cannot auto-resolve; tags will be left as-is",
+                len(_any_rows), len(_real_keys),
+            )
+
     # Step 2: Build tag→equipment lookup from annexure + continuation rows
     tag_equip = _build_tag_equipment_lookup(all_rows, profiles, annexure_registry)
-
-    print("TAGS FOUND:", list(tag_equip.keys())[:30],
-          "..." if len(tag_equip) > 30 else "")
-    print("ANNEXURE DATA:", {
-        k: f"{len(v)} tags" for k, v in annexure_registry.items()
-    })
 
     # Step 3: Determine which annexure sheets are being resolved via fan-out
     resolved_annexure_keys: set[str] = set()
@@ -610,9 +632,9 @@ def _scan_annexure_headers(ws) -> dict[str, int]:
     """Scan first rows of an annexure sheet to find tag/model/serial columns."""
     col_map: dict[str, int] = {}
     keywords = {
-        "tag": ["tag no", "tag number", "valve tag", "equipment tag", "equip"],
-        "model": ["model", "mfr type", "manufacturer model"],
-        "serial": ["serial", "ser no", "sr no", "serial number"],
+        "tag": ["tag no", "tag number", "tag number(s)", "valve tag", "equipment tag", "equip"],
+        "model": ["model number", "model no", "model", "mfr type", "manufacturer model"],
+        "serial": ["serial number", "serial no", "serial", "ser no", "sr no"],
         "manufacturer": ["manufacturer", "make", "mfr name"],
     }
 
@@ -707,12 +729,6 @@ def _build_tag_equipment_lookup(
                 if val:
                     tag_equip[tag_key][field] = val  # Override
 
-    print("SERIAL MAP:", {
-        k: v.get("serial", "")
-        for k, v in list(tag_equip.items())[:10]
-        if v.get("serial")
-    })
-
     return tag_equip
 
 
@@ -735,8 +751,9 @@ def _normalize_annexure_ref(value: str) -> str | None:
         group_id = m.group(1)  # e.g. "P1" from "(P1)", or None
         number = m.group(2)    # e.g. "1" or "I"
         # Convert Roman numeral to integer if needed
-        if number.upper() in _ROMAN_TO_INT:
-            number = str(_ROMAN_TO_INT[number.upper()])
+        roman_val = _roman_to_int(number)
+        if roman_val is not None:
+            number = str(roman_val)
         if group_id:
             return f"ANNEXURE{group_id.upper()}-{number}"
         return f"ANNEXURE{number}"
@@ -744,6 +761,9 @@ def _normalize_annexure_ref(value: str) -> str | None:
     cleaned = re.sub(r"[\s\-_]+", "", str(value).strip().upper())
     if cleaned.startswith("ANNEXURE") and any(c.isdigit() for c in cleaned):
         return cleaned
+    # Bare "Refer Annexure" / "Annexure" without a number — sentinel for single-sheet resolution
+    if re.search(r"(?i)annex", str(value).strip()):
+        return "ANNEXURE_ANY"
     return None
 
 

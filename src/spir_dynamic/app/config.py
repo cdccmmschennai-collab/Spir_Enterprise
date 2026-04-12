@@ -32,9 +32,28 @@ class Settings(BaseSettings):
     secret_key: str = "insecure-dev-secret-replace-in-production"
     token_expire_hours: int = 8
 
+    # Keywords config
+    keywords_config_path: str = "config/keywords.yaml"
+    omn_target_length: int = 18
+    min_column_map_score: int = 30
+    discovery_min_score: int = 15
+
+    # Batch processing
+    batch_max_files: int = 20
+    batch_ttl_seconds: int = 7200
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
+
+
+@lru_cache(maxsize=1)
+def load_keywords() -> dict:
+    """Load keywords.yaml once. Edit the YAML and restart to pick up changes."""
+    import yaml
+    path = get_settings().keywords_config_path
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}

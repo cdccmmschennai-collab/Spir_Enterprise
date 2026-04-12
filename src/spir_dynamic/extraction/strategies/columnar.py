@@ -428,8 +428,8 @@ class ColumnarStrategy:
         header_row = profile.header_row or 8
 
         meta_keywords = {
-            "model": ["model", "type", "mfr type", "type or model"],
-            "serial": ["serial", "ser no", "mfr ser", "ser'l", "serial no"],
+            "model": ["model number", "model no", "model", "mfr type", "type or model"],
+            "serial": ["serial number", "serial no", "serial", "ser no", "mfr ser", "ser'l"],
             "eqpt_qty": ["no. of units", "no of units", "units", "qty"],
             "manufacturer": ["manufacturer", "make", "mfr name", "mfr"],
         }
