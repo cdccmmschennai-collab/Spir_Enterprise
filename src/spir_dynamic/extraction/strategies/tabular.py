@@ -64,9 +64,19 @@ class TabularStrategy:
             if desc and is_footer_row(desc):
                 break
 
-            # Skip rows with no description and no part number
+            # Skip rows with no description and no part number,
+            # UNLESS the row is a tag-header row carrying equipment metadata
+            # (model/serial/eqpt_qty). These rows are needed so that
+            # _enrich_equipment_data can carry model/serial forward to item rows.
             if not item.get("description") and not item.get("part_number"):
-                continue
+                tag_raw = None
+                if profile.tag_layout == TagLayout.TAG_COLUMN and profile.tag_column_index:
+                    tag_raw = ws.cell(r, profile.tag_column_index).value
+                has_equip_data = any(
+                    item.get(f) for f in ("model", "serial", "eqpt_qty", "manufacturer")
+                )
+                if not (tag_raw and not is_placeholder(tag_raw) and has_equip_data):
+                    continue
 
             # Apply tag
             if profile.tag_layout == TagLayout.GLOBAL_TAG and profile.global_tag:
@@ -114,9 +124,20 @@ class TabularStrategy:
                 ]
                 new_desc_parts = [p for p in parts if p]
                 if new_desc_parts:
-                    row["new_desc"] = " | ".join(new_desc_parts)
+                    row["new_desc"] = ",".join(new_desc_parts)
 
                 rows.append(row)
+
+        # Apply global metadata model/serial as fallback for rows that still lack it.
+        # Handles files where model is in the sheet's header area (not the data table).
+        global_model = profile.metadata.get("model")
+        global_serial = profile.metadata.get("serial")
+        if global_model or global_serial:
+            for row in rows:
+                if global_model and not row.get("model"):
+                    row["model"] = global_model
+                if global_serial and not row.get("serial"):
+                    row["serial"] = global_serial
 
         log.info(
             "TabularStrategy: extracted %d rows from '%s'",

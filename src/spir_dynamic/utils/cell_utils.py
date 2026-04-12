@@ -6,6 +6,7 @@ Consolidates: clean_str, clean_num, split_tags, placeholder detection.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -126,11 +127,26 @@ def split_tags(raw_tag: Any) -> list[str]:
 
 
 # Tag pattern used to detect tag-like values in cells
-TAG_PATTERN = re.compile(r"\b[A-Z0-9]{2,}[-/][A-Z0-9]", re.IGNORECASE)
+# Default: 1-char minimum prefix to catch V-1234, P-001 style tags
+TAG_PATTERN = re.compile(r"\b[A-Z0-9]{1,}[-/][A-Z0-9]", re.IGNORECASE)
+
+
+@lru_cache(maxsize=1)
+def _build_tag_pattern() -> re.Pattern:
+    """Build tag pattern from keywords.yaml config, falling back to default."""
+    try:
+        from spir_dynamic.app.config import load_keywords
+        cfg = load_keywords().get("tag_detection", {})
+        min_len = cfg.get("min_prefix_length", 1)
+        sep = cfg.get("separator_chars", r"[-/]")
+        suf = cfg.get("suffix_pattern", r"[A-Z0-9]")
+        return re.compile(rf"\b[A-Z0-9]{{{min_len},}}{sep}{suf}", re.IGNORECASE)
+    except Exception:
+        return TAG_PATTERN
 
 
 def looks_like_tag(value: Any) -> bool:
     """Return True if value matches a typical equipment tag pattern."""
     if is_placeholder(value):
         return False
-    return bool(TAG_PATTERN.search(str(value).strip()))
+    return bool(_build_tag_pattern().search(str(value).strip()))

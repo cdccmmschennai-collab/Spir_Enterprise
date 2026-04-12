@@ -42,13 +42,19 @@ _ANNEXURE_REF_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Roman numeral to integer mapping
-_ROMAN_TO_INT = {
-    'I': 1, 'II': 2, 'III': 3, 'IV': 4, 'V': 5,
-    'VI': 6, 'VII': 7, 'VIII': 8, 'IX': 9, 'X': 10,
-    'XI': 11, 'XII': 12, 'XIII': 13, 'XIV': 14, 'XV': 15,
-    'XVI': 16, 'XVII': 17, 'XVIII': 18, 'XIX': 19, 'XX': 20,
-}
+def _roman_to_int(s: str) -> int | None:
+    """Convert a roman numeral string to int. Returns None if not valid."""
+    vals = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+    s = s.upper().strip()
+    if not s or not all(c in vals for c in s):
+        return None
+    result = 0
+    prev = 0
+    for ch in reversed(s):
+        curr = vals[ch]
+        result += curr if curr >= prev else -curr
+        prev = curr
+    return result if result > 0 else None
 
 
 def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
@@ -139,6 +145,9 @@ def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
                 "row_count": p.row_count,
                 "confidence": p.confidence,
                 "columns_mapped": list(p.column_map.keys()),
+                "column_map": p.column_map,
+                "extra_columns": p.extra_columns,
+                "discovery_mode": p.discovery_mode,
             }
             for p in profiles
         ],
@@ -255,12 +264,11 @@ def _resolve_spir_no(profiles: list[SheetProfile], filename: str) -> str:
         spir = p.metadata.get("spir_no")
         if spir:
             spir_clean = str(spir).strip()
-            # If SPIR NO has slash or looks broken, fall through to filename
-            if "/" not in spir_clean:
+            # Accept any value that is at least 5 chars and contains alphanumerics
+            if len(spir_clean) >= 5 and re.search(r'[A-Z0-9]', spir_clean, re.I):
                 return spir_clean
 
     if filename:
-        import re
         patterns = [
             r"([A-Z0-9]{2,}-[A-Z0-9]{2,}-[A-Z0-9][\w\-]*)",
             r"(\d{4,}[\-_]\w+[\-_]\w+)",
@@ -311,14 +319,28 @@ def _enrich_equipment_data(
     annexure_registry = _build_annexure_registry(wb, profiles)
     # annexure_registry: {normalized_annexure_key: [{"tag":..,"model":..,"serial":..,"manufacturer":..}, ...]}
 
+    # Step 1b: Resolve bare "ANNEXURE_ANY" references (e.g. "Refer Annexure" without a number).
+    # If exactly one annexure sheet exists, remap all ANNEXURE_ANY tags to its key.
+    _real_keys = {k for k in annexure_registry if k != "ANNEXURE_ANY"}
+    if len(_real_keys) == 1:
+        _single_key = next(iter(_real_keys))
+        for _row in all_rows:
+            _tag = str(_row.get("tag_no") or "").strip()
+            if _tag and _normalize_annexure_ref(_tag) == "ANNEXURE_ANY":
+                _row["tag_no"] = _single_key
+    elif len(_real_keys) > 1:
+        # Multiple annexure sheets — can't auto-resolve bare references unambiguously.
+        # Leave as-is; log so the operator knows.
+        _any_rows = [r for r in all_rows if _normalize_annexure_ref(str(r.get("tag_no") or "")) == "ANNEXURE_ANY"]
+        if _any_rows:
+            log.warning(
+                "Bare annexure reference found (%d rows) but %d annexure sheets exist — "
+                "cannot auto-resolve; tags will be left as-is",
+                len(_any_rows), len(_real_keys),
+            )
+
     # Step 2: Build tag→equipment lookup from annexure + continuation rows
     tag_equip = _build_tag_equipment_lookup(all_rows, profiles, annexure_registry)
-
-    print("TAGS FOUND:", list(tag_equip.keys())[:30],
-          "..." if len(tag_equip) > 30 else "")
-    print("ANNEXURE DATA:", {
-        k: f"{len(v)} tags" for k, v in annexure_registry.items()
-    })
 
     # Step 3: Determine which annexure sheets are being resolved via fan-out
     resolved_annexure_keys: set[str] = set()
@@ -409,6 +431,7 @@ def _enrich_equipment_data(
             # Only enrich model/serial from annexure; manufacturer stays
             # from global metadata (top-right of SPIR = EQPT MAKE)
             _TAG_ENRICH = ("model", "serial")
+            N = len(annex_tags)
             for tdata in annex_tags:
                 # Tag header
                 for hdr in grp["headers"]:
@@ -418,13 +441,22 @@ def _enrich_equipment_data(
                         if tdata.get(field):
                             tag_hdr[field] = tdata[field]
                     enriched.append(tag_hdr)
-                # Tag spare rows
+                # Tag spare rows — divide total qty by N annexure tags
                 for dtl in grp["details"]:
                     tag_dtl = dict(dtl)
                     tag_dtl["tag_no"] = tdata["tag"]
                     for field in _TAG_ENRICH:
                         if tdata.get(field):
                             tag_dtl[field] = tdata[field]
+                    if N > 1:
+                        raw_qty = tag_dtl.get("quantity")
+                        try:
+                            q = float(raw_qty) if raw_qty is not None else None
+                            if q and q > 0:
+                                per_tag = q / N
+                                tag_dtl["quantity"] = int(per_tag) if per_tag == int(per_tag) else per_tag
+                        except (TypeError, ValueError):
+                            pass
                     enriched.append(tag_dtl)
 
     log.info(
@@ -451,7 +483,9 @@ def _build_annexure_registry(
     """
     registry: dict[str, list[dict[str, Any]]] = {}
 
+    print(f"DEBUG _build_annexure_registry: total profiles={len(profiles)}")
     for profile in profiles:
+        print(f"DEBUG _build_annexure_registry: checking sheet={profile.name!r} role={profile.role}")
         if profile.role != SheetRole.ANNEXURE:
             continue
 
@@ -459,13 +493,31 @@ def _build_annexure_registry(
         if not annex_key:
             annex_key = profile.name.strip().upper()
 
+        print(f"DEBUG _build_annexure_registry: processing ANNEXURE sheet={profile.name!r} key={annex_key!r}")
         ws = wb[profile.name]
 
         # Check for a group number column (e.g. "ANNEXURE-P1 NUMBER")
         group_col = _find_annexure_group_col(ws, profile)
 
         entries = _read_annexure_equipment(ws, profile, group_col=group_col)
+        print(f"DEBUG _build_annexure_registry: entries count={len(entries)} for sheet={profile.name!r}")
+
+        # Fallback for COLUMN_HEADERS annexure sheets (tags are column headers, not row data).
+        # _read_annexure_equipment expects ROW_HEADERS style; use columnar tag-header reader instead.
+        if not entries and profile.tag_layout == TagLayout.COLUMN_HEADERS:
+            print(f"DEBUG _build_annexure_registry: trying COLUMN_HEADERS fallback for sheet={profile.name!r}")
+            tag_info = _columnar._read_tag_headers(ws, profile)
+            meta = _columnar._read_tag_metadata(ws, profile, tag_info)
+            for _col_idx, col_tags in tag_info.items():
+                for tag in col_tags:
+                    if tag and not re.search(r"(?i)annex", tag):
+                        entry: dict[str, Any] = {"tag": tag}
+                        entry.update(meta.get(tag, {}))
+                        entries.append(entry)
+            print(f"DEBUG _build_annexure_registry: COLUMN_HEADERS fallback found {len(entries)} tags")
+
         if not entries:
+            print(f"DEBUG _build_annexure_registry: SKIPPING sheet={profile.name!r} - no entries found")
             continue
 
         if group_col:
@@ -523,6 +575,8 @@ def _read_annexure_equipment(
     Uses the profile's column_map when available, otherwise scans headers.
     If group_col is provided, each entry gets a '_group' field for subgrouping.
     """
+    print(f"DEBUG _read_annexure_equipment: sheet={profile.name!r} role={profile.role} layout={profile.tag_layout}")
+    print(f"DEBUG _read_annexure_equipment: profile.column_map={profile.column_map}")
     entries: list[dict[str, Any]] = []
 
     col_map = profile.column_map
@@ -530,6 +584,7 @@ def _read_annexure_equipment(
         col_map = _scan_annexure_headers(ws)
 
     tag_col = col_map.get("tag")
+    print(f"DEBUG _read_annexure_equipment: tag_col={tag_col} col_map={col_map}")
     model_col = col_map.get("model") or col_map.get("manufacturer_model")
     serial_col = col_map.get("serial")
     mfr_col = col_map.get("manufacturer")
@@ -539,13 +594,36 @@ def _read_annexure_equipment(
     if mfr_col and model_col and mfr_col == model_col:
         mfr_col = None
 
-    if not tag_col:
-        return entries
-
     start_row = profile.data_start_row or (
         (profile.header_row + 1) if profile.header_row else 3
     )
     end_row = profile.data_end_row or (ws.max_row or 0)
+
+    if not tag_col:
+        # Fallback: scan data rows to find the column with the most tag-like values.
+        # Handles annexure sheets whose tag column has an unrecognized header (or no header).
+        from spir_dynamic.utils.cell_utils import looks_like_tag as _llt
+        best_col, best_count = None, 0
+        scan_end = min(start_row + 20, end_row + 1)
+        max_col = min((ws.max_column or 5) + 1, 20)
+        for c in range(1, max_col):
+            count = sum(
+                1 for r in range(start_row, scan_end)
+                if _llt(str(ws.cell(r, c).value or ""))
+            )
+            if count > best_count:
+                best_count, best_col = count, c
+        print(f"DEBUG _read_annexure_equipment: data-scan best_col={best_col} best_count={best_count} start_row={start_row} scan_end={scan_end}")
+        if best_col and best_count >= 1:
+            tag_col = best_col
+            log.info(
+                "Annexure '%s': tag column not found by header; using col %d "
+                "(%d tag-like values via data scan)",
+                getattr(profile, "name", "?"), tag_col, best_count,
+            )
+        else:
+            print(f"DEBUG _read_annexure_equipment: GIVING UP - no tag column found")
+            return entries  # truly can't find tags
 
     for r in range(start_row, end_row + 1):
         tag_val = clean_str(ws.cell(r, tag_col).value)
@@ -608,11 +686,12 @@ def _read_annexure_equipment(
 
 def _scan_annexure_headers(ws) -> dict[str, int]:
     """Scan first rows of an annexure sheet to find tag/model/serial columns."""
+    print(f"DEBUG _scan_annexure_headers: sheet={getattr(ws, 'title', '?')} max_row={ws.max_row} max_col={ws.max_column}")
     col_map: dict[str, int] = {}
     keywords = {
-        "tag": ["tag no", "tag number", "valve tag", "equipment tag", "equip"],
-        "model": ["model", "mfr type", "manufacturer model"],
-        "serial": ["serial", "ser no", "sr no", "serial number"],
+        "tag": ["tag no", "tag number", "tag number(s)", "valve tag", "equipment tag", "equip", "tag"],
+        "model": ["model number", "model no", "model", "mfr type", "manufacturer model"],
+        "serial": ["serial number", "serial no", "serial", "ser no", "sr no"],
         "manufacturer": ["manufacturer", "make", "mfr name"],
     }
 
@@ -623,11 +702,14 @@ def _scan_annexure_headers(ws) -> dict[str, int]:
             if v is None:
                 continue
             cell_lower = str(v).lower().strip()
+            print(f"DEBUG _scan_annexure_headers: r={r} c={c} value={repr(v)}")
             for field, kws in keywords.items():
                 if field not in col_map and any(kw in cell_lower for kw in kws):
                     col_map[field] = c
+                    print(f"DEBUG _scan_annexure_headers: matched field={field} col={c} value={repr(v)}")
                     break
 
+    print(f"DEBUG _scan_annexure_headers: result col_map={col_map}")
     return col_map
 
 
@@ -707,12 +789,6 @@ def _build_tag_equipment_lookup(
                 if val:
                     tag_equip[tag_key][field] = val  # Override
 
-    print("SERIAL MAP:", {
-        k: v.get("serial", "")
-        for k, v in list(tag_equip.items())[:10]
-        if v.get("serial")
-    })
-
     return tag_equip
 
 
@@ -735,8 +811,9 @@ def _normalize_annexure_ref(value: str) -> str | None:
         group_id = m.group(1)  # e.g. "P1" from "(P1)", or None
         number = m.group(2)    # e.g. "1" or "I"
         # Convert Roman numeral to integer if needed
-        if number.upper() in _ROMAN_TO_INT:
-            number = str(_ROMAN_TO_INT[number.upper()])
+        roman_val = _roman_to_int(number)
+        if roman_val is not None:
+            number = str(roman_val)
         if group_id:
             return f"ANNEXURE{group_id.upper()}-{number}"
         return f"ANNEXURE{number}"
@@ -744,6 +821,9 @@ def _normalize_annexure_ref(value: str) -> str | None:
     cleaned = re.sub(r"[\s\-_]+", "", str(value).strip().upper())
     if cleaned.startswith("ANNEXURE") and any(c.isdigit() for c in cleaned):
         return cleaned
+    # Bare "Refer Annexure" / "Annexure" without a number — sentinel for single-sheet resolution
+    if re.search(r"(?i)annex", str(value).strip()):
+        return "ANNEXURE_ANY"
     return None
 
 

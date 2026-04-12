@@ -32,3 +32,12 @@ frontend/.next
 templates/input files/
 
 templates/
+
+
+.next/
+.pytest_cache/
+
+.antigravity/
+
+echo "__pycache__/" >> .gitignore
+echo "*.pyc" >> .gitignore

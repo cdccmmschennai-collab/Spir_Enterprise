@@ -22,12 +22,32 @@ import re
 
 log = logging.getLogger(__name__)
 
-TARGET_LEN = 18
+_TARGET_LEN_DEFAULT = 18
+_VENDOR_PREFIXES_DEFAULT = frozenset({"VEN", "DEM", "CON", "EPC", "CTR", "SUB"})
 
-# First SPIR segment treated as vendor (never part of OMN) when present.
-_VENDOR_PREFIXES = frozenset(
-    {"VEN", "DEM", "CON", "EPC", "CTR", "SUB"}
-)
+
+def _get_target_len() -> int:
+    try:
+        from spir_dynamic.app.config import get_settings
+        return get_settings().omn_target_length
+    except Exception:
+        return _TARGET_LEN_DEFAULT
+
+
+def _get_vendor_prefixes() -> frozenset[str]:
+    try:
+        from spir_dynamic.app.config import load_keywords
+        prefixes = load_keywords().get("vendor_prefixes")
+        if prefixes:
+            return frozenset(prefixes)
+    except Exception:
+        pass
+    return _VENDOR_PREFIXES_DEFAULT
+
+
+# Module-level alias for backward compatibility with any direct imports
+TARGET_LEN = _TARGET_LEN_DEFAULT
+_VENDOR_PREFIXES = _VENDOR_PREFIXES_DEFAULT
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +146,7 @@ def _canonical_omn_body_segments(segments: list[str]) -> tuple[list[str], str]:
     if not segments:
         return [], ""
     body = list(segments)
-    if len(body[0]) <= 4 and body[0].upper() in _VENDOR_PREFIXES:
+    if len(body[0]) <= 4 and body[0].upper() in _get_vendor_prefixes():
         body = body[1:]
     if not body:
         return [], ""
@@ -187,13 +207,10 @@ def _try_lz_strip_one_right(segs: list[str]) -> bool:
 
 def _try_fuse_vp_4400_tail(segs: list[str]) -> bool:
     """
-    4400-VP… produces …-3010-53-2: merge the last two numeric tokens (53+2→532)
-    before pulling the multi-main index into the suffix, so we get …-532-1L10
-    not …-53-21L10.
+    VP-style tail: merge the last two numeric tokens when the second segment is a
+    4-digit fused number (e.g. 3010 from VP-30-00-10). Works for any project.
     """
     if len(segs) != 4:
-        return False
-    if segs[0] != "4400":
         return False
     if len(segs[1]) != 4 or not segs[1].isdigit():
         return False
@@ -219,14 +236,17 @@ def _try_fuse_discipline_subgroup(
     a, b = segs[1], segs[2]
     if not (a.isdigit() and b.isdigit() and len(a) <= 2 and len(b) <= 2):
         return False
-    if segs[0].startswith("4391") and a in ("2", "4") and b == "43":
+    # Never fuse single-digit discipline + 2-digit subgroup (e.g. 2-43 → 243):
+    # the merged form looks like a drawing number and loses structural meaning.
+    if len(a) == 1 and len(b) == 2:
         return False
     base = "-".join(segs)
     extra = len(suffix) + (0 if suffix_fused else 1)
-    if len(base) + extra <= TARGET_LEN:
+    target_len = _get_target_len()
+    if len(base) + extra <= target_len:
         return False
     merged_len = len(base) - 1
-    if merged_len + extra < TARGET_LEN:
+    if merged_len + extra < target_len:
         return False
     segs[1] = a + b
     segs.pop(2)
@@ -287,9 +307,10 @@ def _lz_strip_then_maybe_merge_structure(
 
 def _fit_omn_body_and_suffix(body_segs: list[str], suffix: str, _project_token: str) -> str:
     """
-    Shrink base + suffix to at most TARGET_LEN when over; never pad with
+    Shrink base + suffix to at most target_len when over; never pad with
     invented digits or repeated project characters. Result may be shorter than 18.
     """
+    target_len = _get_target_len()
     segs = list(body_segs)
     if not segs:
         segs = [""]
@@ -300,10 +321,8 @@ def _fit_omn_body_and_suffix(body_segs: list[str], suffix: str, _project_token: 
         return _omn_total_len(segs, suf, fused)
 
     guard = 0
-    while tl() > TARGET_LEN and guard < 500:
+    while tl() > target_len and guard < 500:
         guard += 1
-        if _try_shorten_alpha_project(segs):
-            continue
         if _lz_strip_then_maybe_merge_structure(segs, suf, fused):
             continue
         if _try_fuse_discipline_subgroup(segs, suf, fused):
@@ -335,8 +354,8 @@ def _fit_omn_body_and_suffix(body_segs: list[str], suffix: str, _project_token: 
         break
 
     out = _omn_render(segs, suf, fused)
-    if len(out) > TARGET_LEN:
-        out = out[:TARGET_LEN]
+    if len(out) > target_len:
+        out = out[:target_len]
     return out
 
 
@@ -356,13 +375,7 @@ def build_omn(spir_no: str, sheet_idx: int, line_idx: int,
     )
     suffix = _build_suffix(sheet_idx, line_idx, total_main_sheets)
 
-    print("OMN INPUT:", raw_spir)
-    print("MAIN SHEET INDEX:", sheet_idx)
-    print("LINE NUMBER:", suffix)
-
     omn = _fit_omn_body_and_suffix(body_segs, suffix, project_token)
-
-    print("OMN FINAL:", omn)
     return omn
 
 
@@ -442,13 +455,6 @@ class SheetTracker:
             self._current_main_idx = self._main_counter
             if not self._main_names_norm and self._main_counter > self._total_main_sheets:
                 self._total_main_sheets = self._main_counter
-            print(f"Sheet: {key}")
-            print(f"Type: MAIN")
-            print(f"Main Index: {self._current_main_idx}")
-        else:
-            print(f"Sheet: {key}")
-            print(f"Type: CONTINUATION/ANNEXURE")
-            print(f"Main Index: {self._current_main_idx}")
 
         self._sheet_to_idx[key] = self._current_main_idx
         return self._current_main_idx

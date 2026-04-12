@@ -86,6 +86,7 @@ def _is_text_heavy_cell(raw: Any) -> bool:
     return bool(re.search(r"[A-Za-z]", s))
 
 
+
 def _split_separated_value(val: str, expected_count: int) -> list[str]:
     """
     Split a separated value (serial number, model, etc.) into individual parts.
@@ -138,6 +139,7 @@ class ColumnarStrategy:
                       Passed to continuation sheets that lack their own header row.
         """
         rows: list[dict[str, Any]] = []
+        print(f"DEBUG _columnar.extract: sheet={profile.name!r} is_item_source={'YES' if items_dict is None else 'NO'} items_dict_len={len(items_dict) if items_dict else 0}")
 
         if not profile.tag_columns:
             log.warning("ColumnarStrategy: no tag_columns for '%s'", profile.name)
@@ -234,6 +236,25 @@ class ColumnarStrategy:
 
                 # Detail rows — one per applicable item
                 applicable_items = tag_items_map.get(col, {})
+                print(f"DEBUG _columnar.extract: tag={tag!r} col={col} applicable_items={len(applicable_items)} is_item_source={is_item_source}")
+
+                # For continuation sheets (items_dict was passed in from outside),
+                # if a tag column has zero applicable items AND its cells are genuinely
+                # blank (not explicit zeros — those are already filtered by Bug 2 fix),
+                # inherit all items from items_dict with qty=1.
+                if not applicable_items and not is_item_source and items_dict:
+                    col_start = profile.data_start_row or (
+                        (profile.header_row + 1) if profile.header_row else 8
+                    )
+                    col_end = profile.data_end_row or (ws.max_row or 0)
+                    has_any_data = any(
+                        ws.cell(r, col).value is not None
+                        and not is_placeholder(ws.cell(r, col).value)
+                        for r in range(col_start, col_end + 1)
+                    )
+                    if not has_any_data:
+                        applicable_items = {num: 1 for num in items_dict}
+
                 for item_num, per_tag_qty in applicable_items.items():
                     item = items_dict.get(item_num, {})
                     if not item:
@@ -276,7 +297,7 @@ class ColumnarStrategy:
                     ]
                     new_parts = [p for p in parts if p]
                     if new_parts:
-                        detail_row["new_desc"] = " | ".join(new_parts)
+                        detail_row["new_desc"] = ",".join(new_parts)
 
                     rows.append(detail_row)
 
@@ -356,12 +377,110 @@ class ColumnarStrategy:
         # FIX: Changed {2,} to {1,} to accept single-letter prefix tags like "V-8943", "E-8925"
         _TAG_LIKE_PAT = re.compile(r"[A-Z0-9]{1,}[-/][A-Z0-9]", re.IGNORECASE)
 
+        def _normalize_tag_candidate(raw_value: Any) -> str:
+            """Normalise packed multi-tag cells to separators preprocessing can expand."""
+            raw_text = str(raw_value).strip()
+            if not raw_text:
+                return ""
+
+            if "\n" in raw_text or "\r" in raw_text:
+                nl_parts = [p.strip() for p in re.split(r"[\n\r]+", raw_text) if p.strip()]
+                if len(nl_parts) > 1:
+                    raw_text = ", ".join(nl_parts)
+
+            # Some files separate full tags by repeated spaces instead of commas.
+            # Convert only when we can clearly see 2+ tag-like tokens.
+            if not re.search(r"[,/;|]", raw_text):
+                tag_tokens = re.findall(r"[A-Z0-9]{1,}(?:[-/][A-Z0-9]+)+", raw_text, re.IGNORECASE)
+                if len(tag_tokens) > 1:
+                    compact = re.sub(r"\s+", " ", raw_text)
+                    if compact == " ".join(tag_tokens):
+                        raw_text = ", ".join(tag_tokens)
+
+            return raw_text
+
+        def _is_viable_tag_text(raw_text: str) -> bool:
+            """Apply the same tag/header guards used for direct header-cell detection."""
+            if not raw_text:
+                return False
+
+            raw_lower = raw_text.lower()
+            if any(kw in raw_lower for kw in _SKIP_KEYWORDS):
+                return False
+            if raw_text.isdigit() and len(raw_text) <= 2:
+                return False
+            looks_like_packed = (
+                len(raw_text) > 50
+                and re.search(r"[A-Z0-9]{2,}[-/][A-Z0-9]", raw_text, re.IGNORECASE)
+                and re.search(r"[,;/|]", raw_text)
+            )
+            if len(raw_text) > 50 and not looks_like_packed:
+                return False
+            if raw_text == "_":
+                return False
+            if _COLUMN_REF_PAT.match(raw_text):
+                return False
+            if re.search(r"(?i)(see note|pos\.?\s*\d|attachment)", raw_text):
+                return False
+            return True
+
+        def _find_local_multi_tag_companions(
+            anchor_row: int, anchor_col: int
+        ) -> list[tuple[int, str]]:
+            """
+            Search a bounded 2D neighbourhood around an annexure cell for nearby
+            real-tag companion columns that should be emitted in addition to the
+            annexure reference group.
+            """
+            best_by_col: dict[int, tuple[int, str]] = {}
+
+            row_start = max(1, anchor_row - 5)
+            row_end = min(ws.max_row or anchor_row, anchor_row + 5)
+            col_start = max(1, anchor_col - 3)
+            col_end = min(ws.max_column or anchor_col, anchor_col + 3)
+
+            for scan_row in range(row_start, row_end + 1):
+                for scan_col in range(col_start, col_end + 1):
+                    if scan_row == anchor_row and scan_col == anchor_col:
+                        continue
+
+                    cell_value = ws.cell(scan_row, scan_col).value
+                    if cell_value is None or is_placeholder(cell_value):
+                        continue
+
+                    candidate = _normalize_tag_candidate(cell_value)
+                    if not _is_viable_tag_text(candidate):
+                        continue
+                    if _ANNEXURE_PAT.match(candidate):
+                        continue
+
+                    split_candidate = split_tags(candidate)
+                    has_multi_split = len(split_candidate) > 1
+                    has_multi_whitespace = (
+                        len(re.findall(r"[A-Z0-9]{1,}(?:[-/][A-Z0-9]+)+", candidate, re.IGNORECASE)) > 1
+                    )
+                    if not has_multi_split and not has_multi_whitespace:
+                        continue
+                    if not any(looks_like_tag(tag) for tag in split_candidate):
+                        continue
+
+                    distance = abs(scan_row - anchor_row) + abs(scan_col - anchor_col)
+                    score = (10 if has_multi_split else 0) + len(split_candidate) - distance
+                    current = best_by_col.get(scan_col)
+                    if current is None or score > current[0]:
+                        best_by_col[scan_col] = (score, candidate)
+
+            return [
+                (scan_col, candidate)
+                for scan_col, (_, candidate) in sorted(best_by_col.items())
+            ]
+
         for col in profile.tag_columns:
             for r in range(1, min(9, (ws.max_row or 0) + 1)):
                 v = ws.cell(r, col).value
                 if v is None or is_placeholder(v):
                     continue
-                raw = str(v).strip()
+                raw = _normalize_tag_candidate(v)
                 if not raw:
                     continue
 
@@ -372,7 +491,7 @@ class ColumnarStrategy:
                 if raw.isdigit() and len(raw) <= 2:
                     continue
                 # PHASE 2 FIX: Allow long values if they look like packed tags
-                # (comma/semicolon-separated tag values from continuation sheets)
+                # (comma/semicolon/newline-separated tag values from continuation sheets)
                 looks_like_packed = (
                     len(raw) > 50
                     and re.search(r"[A-Z0-9]{2,}[-/][A-Z0-9]", raw, re.IGNORECASE)
@@ -392,8 +511,31 @@ class ColumnarStrategy:
                 if re.search(r"(?i)(see note|pos\.?\s*\d|attachment)", raw):
                     continue
 
-                # Check for annexure reference
+                # Check for annexure reference (numbered: "Annexure 1", "Annexure I", etc.)
                 if _ANNEXURE_PAT.match(raw):
+                    result[col] = [raw]   # annexure_resolver expands this downstream
+                    companion_cols = _find_local_multi_tag_companions(r, col)
+                    for companion_col, companion_raw in companion_cols:
+                        if companion_col in result:
+                            continue
+                        companion_tags = split_tags(companion_raw)
+                        if not companion_tags:
+                            continue
+                        log.info(
+                            "[COLUMNAR TAG OVERRIDE V2] sheet='%s' annexure_anchor=(r=%d,c=%d) companion_col=%d raw='%s'",
+                            profile.name,
+                            r,
+                            col,
+                            companion_col,
+                            companion_raw,
+                        )
+                        result[companion_col] = companion_tags
+                    break
+
+                # Accept bare "Refer Annexure" / "Annexure" without a number.
+                # _normalize_annexure_ref returns ANNEXURE_ANY for these, and
+                # _enrich_equipment_data remaps ANNEXURE_ANY when exactly 1 annexure exists.
+                if re.search(r"(?i)annex", raw):
                     result[col] = [raw]
                     break
 
@@ -428,8 +570,8 @@ class ColumnarStrategy:
         header_row = profile.header_row or 8
 
         meta_keywords = {
-            "model": ["model", "type", "mfr type", "type or model"],
-            "serial": ["serial", "ser no", "mfr ser", "ser'l", "serial no"],
+            "model": ["model number", "model no", "model", "mfr type", "type or model"],
+            "serial": ["serial number", "serial no", "serial", "ser no", "mfr ser", "ser'l"],
             "eqpt_qty": ["no. of units", "no of units", "units", "qty"],
             "manufacturer": ["manufacturer", "make", "mfr name", "mfr"],
         }
@@ -645,6 +787,9 @@ class ColumnarStrategy:
                     tag_count = len(tag_info.get(col, []))
                     if tag_count > 1 and per_tag_qty > 0 and per_tag_qty % tag_count == 0:
                         per_tag_qty = per_tag_qty // tag_count
+
+                    if per_tag_qty <= 0:
+                        continue
 
                     mapping[col][item_num] = per_tag_qty
 
