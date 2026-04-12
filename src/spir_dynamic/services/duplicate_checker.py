@@ -1,24 +1,19 @@
 """
-SPIR ERROR column logic.
+Output ERROR column logic.
 
-Two mutually exclusive rules (checked in priority order):
+Rules are applied independently and a row may carry multiple labels:
 
-  SAP MISMATCH  — file contains SAP numbers AND the same manufacturer part
-                  number appears with two or more distinct SAP numbers.
-                  Every row carrying that part number is flagged.
-                  Takes priority over DUPLICATE.
+  sap mismatch -N   — same PART NUMBER appears with different SAP NUMBER values
+  sap duplicate -N  — same SAP NUMBER appears with different PART NUMBER values
+  spare duplicate -N — same TAG NO + PART NUMBER repeats
 
-  DUPLICATE     — file has NO SAP numbers AND the exact same
-                  (TAG NO, DESCRIPTION OF PARTS, MANUFACTURER PART NUMBER)
-                  triple appears more than once for the same tag.
-                  Rows with different TAG NO values are never flagged,
-                  even if part/description are identical.
-
-  0             — default for every row that does not match either rule.
+Each distinct issue group gets one stable counter value shared by every row in
+that same group. Counters increment only when a new issue group appears.
 """
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 
 log = logging.getLogger(__name__)
 
@@ -28,21 +23,15 @@ def _norm(v) -> str:
 
 
 def deduplicate_rows(rows: list[list], CI: dict) -> list[list]:
-    """
-    Apply SPIR ERROR rules in-place and return the modified rows.
-
-    CI must contain integer column indices for the relevant fields.
-    """
-    tag_col  = CI.get("TAG NO")
-    desc_col = CI.get("DESCRIPTION OF PARTS")
+    """Apply ERROR rules in-place and return the modified rows."""
+    tag_col = CI.get("TAG NO")
     part_col = CI.get("MANUFACTURER PART NUMBER")
-    sap_col  = CI.get("SAP NUMBER")
-    flag_col = CI.get("SPIR ERROR")
+    sap_col = CI.get("SAP NUMBER")
+    flag_col = CI.get("ERROR")
 
     if flag_col is None:
         return rows
 
-    # Default every row to 0
     for row in rows:
         if flag_col < len(row):
             row[flag_col] = 0
@@ -52,104 +41,128 @@ def deduplicate_rows(rows: list[list], CI: dict) -> list[list]:
             return ""
         return _norm(row[col])
 
-    # -----------------------------------------------------------------------
-    # Determine if the file contains real SAP numbers (non-empty, non-zero)
-    # -----------------------------------------------------------------------
-    has_sap = False
-    if sap_col is not None:
-        for row in rows:
-            sap = _get(row, sap_col)
-            if sap and sap not in ("0", "0.0"):
-                has_sap = True
-                break
+    row_labels: list[list[str]] = [[] for _ in rows]
 
-    # -----------------------------------------------------------------------
-    # Rule 1 — SAP MISMATCH (only when file has SAP numbers)
-    # -----------------------------------------------------------------------
-    if has_sap:
-        # Build part_number → {set of distinct SAP values}
-        part_sap: dict[str, set[str]] = {}
-        for row in rows:
+    sap_mismatch_counter = 1
+    sap_duplicate_counter = 1
+    spare_duplicate_counter = 1
+
+    # Rule 1 — same PART NUMBER, different SAP NUMBER
+    part_to_saps: dict[str, set[str]] = defaultdict(set)
+    part_to_rows: dict[str, list[int]] = defaultdict(list)
+    if part_col is not None and sap_col is not None:
+        for idx, row in enumerate(rows):
             part = _get(row, part_col)
-            sap  = _get(row, sap_col)
-            if part and sap and sap not in ("0", "0.0"):
-                part_sap.setdefault(part, set()).add(sap)
+            sap = _get(row, sap_col)
+            if not part or not sap or sap in ("0", "0.0"):
+                continue
+            part_to_saps[part].add(sap)
+            part_to_rows[part].append(idx)
 
-        # Parts that appear with 2+ different SAP numbers
-        mismatch_parts = {p for p, saps in part_sap.items() if len(saps) > 1}
+        for part in sorted(part_to_saps):
+            if len(part_to_saps[part]) <= 1:
+                continue
+            label = f"sap mismatch -{sap_mismatch_counter}"
+            for row_idx in part_to_rows[part]:
+                row_labels[row_idx].append(label)
+            sap_mismatch_counter += 1
 
-        if mismatch_parts:
-            for row in rows:
-                part = _get(row, part_col)
-                if part and part in mismatch_parts:
-                    if flag_col < len(row):
-                        row[flag_col] = "SAP MISMATCH"
+    # Rule 2 — same SAP NUMBER, different PART NUMBER
+    sap_to_parts: dict[str, set[str]] = defaultdict(set)
+    sap_to_rows: dict[str, list[int]] = defaultdict(list)
+    if sap_col is not None and part_col is not None:
+        for idx, row in enumerate(rows):
+            sap = _get(row, sap_col)
+            part = _get(row, part_col)
+            if not sap or sap in ("0", "0.0") or not part:
+                continue
+            sap_to_parts[sap].add(part)
+            sap_to_rows[sap].append(idx)
 
-            log.info(
-                "SAP MISMATCH: %d part number(s) with conflicting SAP codes flagged",
-                len(mismatch_parts),
-            )
-        return rows
+        for sap in sorted(sap_to_parts):
+            if len(sap_to_parts[sap]) <= 1:
+                continue
+            label = f"sap duplicate -{sap_duplicate_counter}"
+            for row_idx in sap_to_rows[sap]:
+                row_labels[row_idx].append(label)
+            sap_duplicate_counter += 1
 
-    # -----------------------------------------------------------------------
-    # Rule 2 — DUPLICATE (only when file has NO SAP numbers)
-    # -----------------------------------------------------------------------
-    seen: set[tuple[str, str, str]] = set()
-    dup_count = 0
+    # Rule 3 — same TAG NO, same PART NUMBER repeated
+    tag_part_to_rows: dict[tuple[str, str], list[int]] = defaultdict(list)
+    if tag_col is not None and part_col is not None:
+        for idx, row in enumerate(rows):
+            tag = _get(row, tag_col)
+            part = _get(row, part_col)
+            if not tag or not part:
+                continue
+            tag_part_to_rows[(tag, part)].append(idx)
 
-    for row in rows:
-        tag  = _get(row, tag_col)
-        desc = _get(row, desc_col)
-        part = _get(row, part_col)
+        for key in sorted(tag_part_to_rows):
+            group_rows = tag_part_to_rows[key]
+            if len(group_rows) <= 1:
+                continue
+            label = f"spare duplicate -{spare_duplicate_counter}"
+            for row_idx in group_rows:
+                row_labels[row_idx].append(label)
+            spare_duplicate_counter += 1
 
-        # Skip rows that are missing any of the three key fields
-        if not tag or not desc or not part:
-            continue
-
-        key = (tag, desc, part)
-        if key in seen:
+    mismatch_count = 0
+    sap_dup_count = 0
+    spare_dup_count = 0
+    for idx, row in enumerate(rows):
+        labels = row_labels[idx]
+        if not labels:
             if flag_col < len(row):
-                row[flag_col] = "DUPLICATE"
-            dup_count += 1
-        else:
-            seen.add(key)
+                row[flag_col] = 0
+            continue
+        mismatch_count += sum(1 for label in labels if label.startswith("sap mismatch"))
+        sap_dup_count += sum(1 for label in labels if label.startswith("sap duplicate"))
+        spare_dup_count += sum(1 for label in labels if label.startswith("spare duplicate"))
+        if flag_col < len(row):
+            row[flag_col] = ", ".join(labels)
 
-    if dup_count:
-        log.info("DUPLICATE: %d duplicate spare row(s) flagged", dup_count)
+    if mismatch_count or sap_dup_count or spare_dup_count:
+        log.info(
+            "ERROR labels applied: sap_mismatch=%d sap_duplicate=%d spare_duplicate=%d",
+            mismatch_count,
+            sap_dup_count,
+            spare_dup_count,
+        )
 
     return rows
 
 
 def analyse_duplicates(rows: list[list]) -> dict:
-    """Return counts of DUPLICATE and SAP MISMATCH flags across all rows."""
+    """Return counts of error labels across all rows."""
     from spir_dynamic.extraction.output_schema import CI
 
-    flag_col = CI.get("SPIR ERROR")
-    tag_col  = CI.get("TAG NO", 0)
+    flag_col = CI.get("ERROR")
+    tag_col = CI.get("TAG NO", 0)
     desc_col = CI.get("DESCRIPTION OF PARTS", 1)
 
     dup1_count = 0
-    sap_count  = 0
+    sap_count = 0
     dup_items: list[dict] = []
 
     for row in rows:
         if flag_col is None or flag_col >= len(row):
             continue
-        flag = str(row[flag_col]).strip()
-        if flag == "DUPLICATE":
-            dup1_count += 1
-            dup_items.append({
-                "type": "DUPLICATE",
+        raw_flag = row[flag_col]
+        if raw_flag in (None, "", 0):
+            continue
+        labels = [part.strip() for part in str(raw_flag).split(",") if part.strip()]
+        for label in labels:
+            lower_label = label.lower()
+            item = {
+                "type": label,
                 "tag": row[tag_col] if tag_col < len(row) else None,
                 "description": row[desc_col] if desc_col < len(row) else None,
-            })
-        elif flag == "SAP MISMATCH":
-            sap_count += 1
-            dup_items.append({
-                "type": "SAP MISMATCH",
-                "tag": row[tag_col] if tag_col < len(row) else None,
-                "description": row[desc_col] if desc_col < len(row) else None,
-            })
+            }
+            dup_items.append(item)
+            if lower_label.startswith("sap mismatch") or lower_label.startswith("sap duplicate"):
+                sap_count += 1
+            if lower_label.startswith("spare duplicate"):
+                dup1_count += 1
 
     return {
         "dup1_count": dup1_count,

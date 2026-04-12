@@ -83,8 +83,8 @@ def run_pipeline(file_bytes: bytes, original_filename: str) -> dict[str, Any]:
     output_rows = deduplicate_rows(output_rows, CI)
     dup_info = analyse_duplicates(output_rows)
 
-    # Step 7b: Ensure SPIR ERROR = 0 on all rows (after dedup which may set "" or "DUPLICATE")
-    error_col = CI.get("SPIR ERROR")
+    # Step 7b: Ensure ERROR = 0 on all rows after duplicate analysis.
+    error_col = CI.get("ERROR")
     if error_col is not None:
         for row in output_rows:
             if error_col < len(row):
