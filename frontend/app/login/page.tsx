@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Gem, Loader2, Eye, EyeOff, AlertCircle, User, Lock } from "lucide-react";
 import { saveToken } from "@/lib/auth";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API_URL = process.env.NEXT_PUBLIC_API_URL!;
 
 export default function LoginPage() {
   const router = useRouter();
