@@ -1,10 +1,35 @@
 """Structured logging configuration using structlog."""
 from __future__ import annotations
 
+import functools
 import logging
 import sys
+import time
 
 import structlog
+
+
+def timed(fn):
+    """
+    Decorator that logs entry, exit, and elapsed wall-clock time for a function.
+
+    Log format:
+        [TIMER START] qualified.name
+        [TIMER END]   qualified.name — X.XXXXs
+    """
+    _log = logging.getLogger(fn.__module__)
+    _name = fn.__qualname__
+
+    @functools.wraps(fn)
+    def _wrapper(*args, **kwargs):
+        _log.info("[TIMER START] %s", _name)
+        _t0 = time.perf_counter()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _log.info("[TIMER END]   %s — %.4fs", _name, time.perf_counter() - _t0)
+
+    return _wrapper
 
 
 def setup_logging(log_level: str = "INFO") -> None:

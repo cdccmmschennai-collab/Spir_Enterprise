@@ -28,6 +28,7 @@ from spir_dynamic.extraction.strategies.columnar import ColumnarStrategy
 from spir_dynamic.extraction.strategies.transposed import TransposedStrategy
 from spir_dynamic.extraction.output_schema import row_from_dict
 from spir_dynamic.utils.cell_utils import clean_str, clean_num, split_tags
+from spir_dynamic.utils.logging import timed
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ def _roman_to_int(s: str) -> int | None:
     return result if result > 0 else None
 
 
+@timed
 def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
     """
     Extract all SPIR data from a workbook using dynamic content analysis.

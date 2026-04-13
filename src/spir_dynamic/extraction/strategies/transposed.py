@@ -16,6 +16,7 @@ from typing import Any
 from spir_dynamic.models.sheet_profile import SheetProfile
 from spir_dynamic.utils.cell_utils import clean_str, clean_num, is_placeholder, split_tags
 from spir_dynamic.analysis.header_detector import is_footer_row
+from spir_dynamic.utils.logging import timed
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ log = logging.getLogger(__name__)
 class TransposedStrategy:
     """Extract from sheets with tags as row headers (annexure layout)."""
 
+    @timed
     def extract(
         self,
         ws,

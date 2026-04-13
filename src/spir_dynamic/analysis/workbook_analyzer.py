@@ -13,10 +13,12 @@ from typing import Any
 
 from spir_dynamic.models.sheet_profile import SheetProfile, SheetRole, TagLayout
 from spir_dynamic.analysis.sheet_analyzer import analyze_sheet
+from spir_dynamic.utils.logging import timed
 
 log = logging.getLogger(__name__)
 
 
+@timed
 def analyze_workbook(wb) -> list[SheetProfile]:
     """
     Analyze all sheets in a workbook and return enriched SheetProfiles.

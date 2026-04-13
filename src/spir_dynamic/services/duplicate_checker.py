@@ -15,6 +15,8 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 
+from spir_dynamic.utils.logging import timed
+
 log = logging.getLogger(__name__)
 
 
@@ -22,6 +24,7 @@ def _norm(v) -> str:
     return str(v or "").strip().upper()
 
 
+@timed
 def deduplicate_rows(rows: list[list], CI: dict) -> list[list]:
     """Apply ERROR rules in-place and return the modified rows."""
     tag_col = CI.get("TAG NO")

@@ -30,6 +30,7 @@ from spir_dynamic.utils.cell_utils import (
     looks_like_tag,
 )
 from spir_dynamic.analysis.header_detector import is_footer_row
+from spir_dynamic.utils.logging import timed
 
 log = logging.getLogger(__name__)
 
@@ -116,6 +117,7 @@ def _split_separated_value(val: str, expected_count: int) -> list[str]:
 class ColumnarStrategy:
     """Extract from sheets with tags as column headers (SPIR matrix)."""
 
+    @timed
     def extract(
         self,
         ws,

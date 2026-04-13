@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     # CORS
     allowed_origins: list[str] = ["*"]
 
+    # Database (optional — set to enable full audit logging)
+    # Format: postgresql+asyncpg://user:pass@host:5432/dbname
+    # Railway / Heroku provide DATABASE_URL in the form postgres://... (auto-converted)
+    database_url: str = ""
+
     # Auth
     app_user: str = "admin"
     app_pass: str = "cdc@2026"
