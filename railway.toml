@@ -1,5 +1,8 @@
-[build]
-builder = "NIXPACKS"
-
-[deploy]
-startCommand = "uvicorn spir_dynamic.app.main:app --host 0.0.0.0 --port $PORT"
+{
+  "build": {
+    "builder": "NIXPACKS"
+  },
+  "deploy": {
+    "startCommand": "python app.py"
+  }
+}

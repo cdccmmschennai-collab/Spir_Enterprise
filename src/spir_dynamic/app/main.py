@@ -2,6 +2,7 @@
 FastAPI application factory.
 """
 from __future__ import annotations
+import os
 
 import logging
 from contextlib import asynccontextmanager
@@ -83,5 +84,5 @@ if __name__ == "__main__":
         reload=cfg.debug,
     )
 
-import os
-print("RAILWAY PORT =", os.getenv("PORT"))
+
+port = int(os.getenv("PORT", 8000))
