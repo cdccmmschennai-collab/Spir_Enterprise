@@ -35,3 +35,6 @@ tzdata==2025.3
 uvicorn==0.42.0
 fastapi
 uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+asyncpg
