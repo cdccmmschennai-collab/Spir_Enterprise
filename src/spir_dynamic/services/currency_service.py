@@ -33,10 +33,12 @@ FALLBACK_RATES: dict[str, float] = {
 }
 
 _cache: dict[str, dict] = {}
+_code_cache: dict[str, str] = {}   # memoize _extract_code; values are pure strings
 
 
 def clear_cache() -> None:
     _cache.clear()
+    _code_cache.clear()
 
 
 def _fetch_rates(base: str) -> Optional[dict[str, float]]:
@@ -74,7 +76,13 @@ def get_rates_to_qar() -> dict[str, float]:
 
     if cached:
         return cached["rates"]
-    return FALLBACK_RATES.copy()
+
+    # FIX: cache the fallback so repeated calls (one per row) don't each
+    # retry the network.  Without this, a failed fetch causes 477+ HTTP
+    # round-trips for a single file — the dominant bottleneck.
+    fallback = FALLBACK_RATES.copy()
+    _cache["USD_to_all"] = {"rates": fallback, "fetched_at": now}
+    return fallback
 
 
 def to_qar(amount: float, currency_code: str) -> Optional[float]:
@@ -93,12 +101,20 @@ def to_qar(amount: float, currency_code: str) -> Optional[float]:
 
 
 def _extract_code(raw: str) -> str:
+    """Extract 3-letter ISO currency code from a raw cell value. Memoized."""
+    cached_code = _code_cache.get(raw)
+    if cached_code is not None:
+        return cached_code
     if not raw:
+        _code_cache[raw] = ""
         return ""
-    raw = str(raw).strip()
-    if len(raw) >= 3 and raw[:3].isalpha():
-        return raw[:3].upper()
-    return raw.upper()
+    s = str(raw).strip()
+    if len(s) >= 3 and s[:3].isalpha():
+        result = s[:3].upper()
+    else:
+        result = s.upper()
+    _code_cache[raw] = result
+    return result
 
 
 def conversion_summary() -> dict:

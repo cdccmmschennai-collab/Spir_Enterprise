@@ -4,8 +4,10 @@ post-processing, and output building.
 """
 from __future__ import annotations
 
+import cProfile
 import io
 import logging
+import pstats
 import re
 import uuid
 from typing import Any, Optional
@@ -23,19 +25,26 @@ from spir_dynamic.extraction.output_schema import (
 from spir_dynamic.extraction.post_processor import post_process_rows
 from spir_dynamic.services.excel_builder import build_xlsx
 from spir_dynamic.services.duplicate_checker import deduplicate_rows, analyse_duplicates
-from spir_dynamic.services.currency_service import to_qar
+from spir_dynamic.services.currency_service import get_rates_to_qar, _extract_code
 from spir_dynamic.services.storage import get_storage
 from spir_dynamic.app.config import get_settings
+from spir_dynamic.utils.logging import timed
 
 log = logging.getLogger(__name__)
 
 
+@timed
 def run_pipeline(file_bytes: bytes, original_filename: str) -> dict[str, Any]:
     """
     Full extraction pipeline: validate -> extract -> post-process -> build xlsx.
 
     Returns a metadata dict with file_id, preview_rows, statistics, etc.
     """
+    # ── cProfile (remove after identifying bottlenecks) ─────────────────────
+    _profiler = cProfile.Profile()
+    _profiler.enable()
+    # ────────────────────────────────────────────────────────────────────────
+
     size_mb = len(file_bytes) / (1024 * 1024)
     log.info("Pipeline start: %s (%.1f MB)", original_filename, size_mb)
 
@@ -83,8 +92,8 @@ def run_pipeline(file_bytes: bytes, original_filename: str) -> dict[str, Any]:
     output_rows = deduplicate_rows(output_rows, CI)
     dup_info = analyse_duplicates(output_rows)
 
-    # Step 7b: Ensure SPIR ERROR = 0 on all rows (after dedup which may set "" or "DUPLICATE")
-    error_col = CI.get("SPIR ERROR")
+    # Step 7b: Ensure ERROR = 0 on all rows after duplicate analysis.
+    error_col = CI.get("ERROR")
     if error_col is not None:
         for row in output_rows:
             if error_col < len(row):
@@ -134,6 +143,15 @@ def run_pipeline(file_bytes: bytes, original_filename: str) -> dict[str, Any]:
         "Pipeline done: %d rows, %d tags, format=%s",
         len(output_rows), result.get("total_tags", 0), result.get("format"),
     )
+
+    # ── cProfile report (remove after identifying bottlenecks) ──────────────
+    if _profiler is not None:
+        _profiler.disable()
+        _s = io.StringIO()
+        pstats.Stats(_profiler, stream=_s).sort_stats("cumulative").print_stats(30)
+        log.info("[PROFILE] top 30 by cumulative time:\n%s", _s.getvalue())
+    # ────────────────────────────────────────────────────────────────────────
+
     return response
 
 
@@ -151,20 +169,36 @@ def _apply_currency_conversion(rows: list[list]) -> None:
     if currency_col is None or price_col is None or qar_col is None:
         return
 
+    # Fetch rate table ONCE for the entire batch.
+    # Previously to_qar() was called per-row, each invoking get_rates_to_qar()
+    # which — when the network is unavailable — retried all 3 APIs on every
+    # call (no fallback caching), producing ~477 HTTP round-trips per file.
+    rates = get_rates_to_qar()
+    min_col = max(currency_col, price_col, qar_col)
+
     for row in rows:
-        if len(row) <= max(currency_col, price_col, qar_col):
+        if len(row) <= min_col:
             continue
 
         currency = row[currency_col]
-        price = row[price_col]
+        price    = row[price_col]
 
-        if currency and price is not None:
-            try:
-                qar_price = to_qar(float(price), str(currency))
-                if qar_price is not None:
-                    row[qar_col] = qar_price
-            except (ValueError, TypeError):
-                pass
+        if not currency or price is None:
+            continue
+
+        try:
+            code = _extract_code(str(currency))
+            if not code:
+                continue
+            flt_price = float(price)
+            if code == "QAR":
+                row[qar_col] = round(flt_price, 2)
+            else:
+                rate = rates.get(code)
+                if rate is not None:
+                    row[qar_col] = round(flt_price * rate, 2)
+        except (ValueError, TypeError):
+            pass
 
 
 def _jsonify(v: Any) -> Any:

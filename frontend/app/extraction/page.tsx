@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import {
-  Upload,
+  CloudUpload,
   FileSpreadsheet,
   X,
   Loader2,
@@ -13,18 +13,22 @@ import {
   Tag,
   Layers,
   AlertTriangle,
-  ChevronDown,
-  ChevronUp,
+  History,
+  BookOpen,
+  ChevronLeft,
+  ChevronRight,
+  ArrowUpRight,
+  RefreshCw,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { SidebarLayout } from "@/components/sidebar";
 import { authHeaders } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-
 const ACCEPTED = ".xlsx,.xlsm,.xls";
+const ROWS_PER_PAGE = 10;
+
+// ─── Types ─────────────────────────────────────────────────────────────────────
 
 interface ExtractResult {
   status: string;
@@ -53,7 +57,28 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// ─── Upload Zone ─────────────────────────────────────────────────────────────
+// ─── Row status helper ─────────────────────────────────────────────────────────
+
+type RowStatus = "VALID" | "ERROR" | "DUPLICATE";
+
+function getRowStatus(row: (string | number | null)[], cols: string[]): RowStatus {
+  const errorIdx = cols.findIndex((c) => c.toUpperCase() === "ERROR");
+  if (errorIdx === -1) return "VALID";
+  const val = row[errorIdx];
+  if (val === null || val === "" || val === 0) return "VALID";
+  const s = String(val).toLowerCase();
+  if (s.includes("spare duplicate")) return "DUPLICATE";
+  return "ERROR";
+}
+
+// Compute a mock integrity score based on filled fields
+function getIntegrityScore(row: (string | number | null)[]): number {
+  if (!row.length) return 0;
+  const filled = row.filter((v) => v !== null && v !== "" && v !== 0).length;
+  return Math.round((filled / row.length) * 100);
+}
+
+// ─── Upload Zone ───────────────────────────────────────────────────────────────
 
 interface UploadZoneProps {
   file: File | null;
@@ -76,72 +101,69 @@ function UploadZone({ file, onFile, disabled }: UploadZoneProps) {
     [disabled, onFile]
   );
 
-  if (file) {
-    return (
-      <div className="flex items-center gap-4 rounded-xl border border-blue-200 bg-blue-50 px-5 py-4">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-100">
-          <FileSpreadsheet className="h-5 w-5 text-blue-600" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-slate-900">
-            {file.name}
-          </p>
-          <p className="text-xs text-slate-500">{formatBytes(file.size)}</p>
-        </div>
-        {!disabled && (
-          <button
-            onClick={() => onFile(null)}
-            className="rounded-md p-1 text-slate-400 hover:bg-blue-100 hover:text-slate-600"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        )}
-      </div>
-    );
-  }
-
   return (
     <div
-      onDragOver={(e) => {
-        e.preventDefault();
-        if (!disabled) setDragging(true);
-      }}
+      onDragOver={(e) => { e.preventDefault(); if (!disabled) setDragging(true); }}
       onDragLeave={() => setDragging(false)}
       onDrop={handleDrop}
       onClick={() => !disabled && inputRef.current?.click()}
       className={cn(
-        "flex cursor-pointer flex-col items-center justify-center gap-4 rounded-xl border-2 border-dashed px-6 py-12 transition-all duration-200",
+        "flex cursor-pointer flex-col items-center justify-center gap-5 rounded-2xl border-2 border-dashed px-6 py-16 transition-all duration-200",
         dragging
-          ? "border-blue-400 bg-blue-50"
-          : "border-slate-200 bg-slate-50 hover:border-blue-300 hover:bg-blue-50/50",
+          ? "border-violet-400 bg-violet-50"
+          : "border-slate-200 bg-white hover:border-violet-300 hover:bg-violet-50/30",
         disabled && "cursor-not-allowed opacity-60"
       )}
     >
-      <div
-        className={cn(
-          "flex h-14 w-14 items-center justify-center rounded-2xl transition-colors",
-          dragging ? "bg-blue-100" : "bg-white shadow-sm"
-        )}
-      >
-        <Upload
-          className={cn(
-            "h-6 w-6 transition-colors",
-            dragging ? "text-blue-600" : "text-slate-400"
+      {file ? (
+        <>
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-violet-100">
+            <FileSpreadsheet className="h-8 w-8 text-violet-600" />
+          </div>
+          <div className="text-center">
+            <p className="text-sm font-semibold text-slate-800">{file.name}</p>
+            <p className="mt-1 text-xs text-slate-500">{formatBytes(file.size)} · Ready to extract</p>
+          </div>
+          {!disabled && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onFile(null); }}
+              className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors"
+            >
+              <X className="h-3.5 w-3.5" /> Remove file
+            </button>
           )}
-        />
-      </div>
-      <div className="text-center">
-        <p className="text-sm font-medium text-slate-700">
-          {dragging ? "Drop to upload" : "Drag & drop your SPIR file"}
-        </p>
-        <p className="mt-1 text-xs text-slate-400">
-          or{" "}
-          <span className="font-medium text-blue-600 hover:underline">
-            click to browse
-          </span>{" "}
-          · .xlsx, .xlsm, .xls
-        </p>
-      </div>
+        </>
+      ) : (
+        <>
+          <div className={cn(
+            "flex h-16 w-16 items-center justify-center rounded-2xl transition-colors",
+            dragging ? "bg-violet-100" : "bg-slate-100"
+          )}>
+            <CloudUpload className={cn(
+              "h-8 w-8 transition-colors",
+              dragging ? "text-violet-600" : "text-slate-400"
+            )} />
+          </div>
+          <div className="text-center">
+            <p className="text-base font-semibold text-slate-700">
+              SPIR Excel File Upload
+            </p>
+            <p className="mt-1 text-sm text-slate-400">
+              Drag and drop your SPIR Excel file here, or click to browse
+            </p>
+            <p className="mt-1 text-xs text-slate-300">
+              Supports .xlsx, .xlsm, .xls · Max 2 GB
+            </p>
+          </div>
+          <button
+            type="button"
+            className="rounded-xl bg-violet-700 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-violet-200 hover:bg-violet-800 transition-colors"
+            onClick={(e) => { e.stopPropagation(); inputRef.current?.click(); }}
+          >
+            Browse Files
+          </button>
+        </>
+      )}
       <input
         ref={inputRef}
         type="file"
@@ -157,120 +179,204 @@ function UploadZone({ file, onFile, disabled }: UploadZoneProps) {
   );
 }
 
-// ─── Stats Card ───────────────────────────────────────────────────────────────
+// ─── Status Badge ──────────────────────────────────────────────────────────────
 
-interface StatCardProps {
-  icon: React.ElementType;
-  label: string;
-  value: string | number;
-  iconClass?: string;
-  bgClass?: string;
-}
-
-function StatCard({ icon: Icon, label, value, iconClass = "text-blue-600", bgClass = "bg-blue-50" }: StatCardProps) {
+function StatusBadge({ status }: { status: RowStatus }) {
+  if (status === "VALID") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700 border border-emerald-200">
+        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+        VALID
+      </span>
+    );
+  }
+  if (status === "DUPLICATE") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-700 border border-amber-200">
+        <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+        DUPLICATE
+      </span>
+    );
+  }
   return (
-    <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-      <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-lg", bgClass)}>
-        <Icon className={cn("h-4 w-4", iconClass)} />
-      </div>
-      <div className="min-w-0">
-        <p className="text-xs text-slate-500">{label}</p>
-        <p className="text-sm font-semibold text-slate-900 truncate">{value}</p>
-      </div>
-    </div>
+    <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red-700 border border-red-200">
+      <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
+      ERROR
+    </span>
   );
 }
 
-// ─── Preview Table ─────────────────────────────────────────────────────────────
+// ─── Data Preview Table ─────────────────────────────────────────────────────────
 
 interface PreviewTableProps {
   cols: string[];
   rows: (string | number | null)[][];
+  totalRows: number;
 }
 
-function PreviewTable({ cols, rows }: PreviewTableProps) {
-  const [expanded, setExpanded] = useState(false);
+function PreviewTable({ cols, rows, totalRows }: PreviewTableProps) {
+  const [page, setPage] = useState(1);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
 
-  const displayRows = expanded ? rows : rows.slice(0, 8);
+  const totalPages = Math.max(1, Math.ceil(rows.length / ROWS_PER_PAGE));
+  const start = (page - 1) * ROWS_PER_PAGE;
+  const pageRows = rows.slice(start, start + ROWS_PER_PAGE);
+
+  // Find key column indices
+  const spirIdx  = cols.findIndex((c) => c.toUpperCase().includes("SPIR NO") || c.toUpperCase() === "SPIR NUMBER");
+  const mfrIdx   = cols.findIndex((c) => c.toUpperCase().includes("MANUFACTURER") && !c.toUpperCase().includes("PART"));
+  const suppIdx  = cols.findIndex((c) => c.toUpperCase().includes("SUPPLIER"));
+
+  function toggleAll() {
+    if (selected.size === pageRows.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(pageRows.map((_, i) => start + i)));
+    }
+  }
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       <div className="overflow-x-auto rounded-xl border border-slate-200 shadow-sm">
         <table className="min-w-full text-xs">
-          <thead className="sticky top-0 z-10">
-            <tr className="bg-slate-50">
-              {cols.map((col, i) => (
-                <th
-                  key={i}
-                  className="whitespace-nowrap border-b border-slate-200 px-3 py-2.5 text-left font-semibold text-slate-600 first:pl-4 last:pr-4"
-                >
-                  {col}
-                </th>
-              ))}
+          <thead>
+            <tr className="bg-slate-50 border-b border-slate-200">
+              <th className="w-10 px-4 py-3">
+                <input
+                  type="checkbox"
+                  checked={selected.size === pageRows.length && pageRows.length > 0}
+                  onChange={toggleAll}
+                  className="h-3.5 w-3.5 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+                />
+              </th>
+              <th className="whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-600 uppercase tracking-wide text-[10px]">
+                SPIRE NUMBER
+              </th>
+              <th className="whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-600 uppercase tracking-wide text-[10px]">
+                MANUFACTURER
+              </th>
+              <th className="whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-600 uppercase tracking-wide text-[10px]">
+                SUPPLIER ENTITY
+              </th>
+              <th className="whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-600 uppercase tracking-wide text-[10px]">
+                INTEGRITY SCORE
+              </th>
+              <th className="whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-600 uppercase tracking-wide text-[10px]">
+                STATUS
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 bg-white">
-            {displayRows.length === 0 ? (
+            {pageRows.length === 0 ? (
               <tr>
-                <td
-                  colSpan={cols.length}
-                  className="px-4 py-8 text-center text-slate-400"
-                >
+                <td colSpan={6} className="px-4 py-8 text-center text-slate-400">
                   No data rows
                 </td>
               </tr>
             ) : (
-              displayRows.map((row, ri) => (
-                <tr
-                  key={ri}
-                  className="transition-colors hover:bg-slate-50"
-                >
-                  {cols.map((_, ci) => {
-                    const val = row[ci];
-                    const isDuplicate = val === "DUPLICATE";
-                    return (
-                      <td
-                        key={ci}
-                        className="max-w-[200px] truncate whitespace-nowrap px-3 py-2 text-slate-700 first:pl-4 last:pr-4"
-                        title={val != null ? String(val) : ""}
-                      >
-                        {isDuplicate ? (
-                          <Badge variant="destructive" className="text-[10px]">
-                            DUPLICATE
-                          </Badge>
-                        ) : val === 0 ? (
-                          <span className="text-slate-300">—</span>
-                        ) : val != null ? (
-                          String(val)
-                        ) : (
-                          <span className="text-slate-200">—</span>
-                        )}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))
+              pageRows.map((row, ri) => {
+                const globalIdx = start + ri;
+                const isSelected = selected.has(globalIdx);
+                const status = getRowStatus(row, cols);
+                const score = getIntegrityScore(row);
+
+                return (
+                  <tr
+                    key={ri}
+                    className={cn(
+                      "transition-colors hover:bg-slate-50",
+                      isSelected && "bg-violet-50/40"
+                    )}
+                  >
+                    <td className="w-10 px-4 py-2.5">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => {
+                          const next = new Set(selected);
+                          if (isSelected) next.delete(globalIdx);
+                          else next.add(globalIdx);
+                          setSelected(next);
+                        }}
+                        className="h-3.5 w-3.5 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+                      />
+                    </td>
+                    <td className="max-w-[160px] truncate px-4 py-2.5 font-medium text-slate-800">
+                      {spirIdx >= 0 && row[spirIdx] != null ? String(row[spirIdx]) : "—"}
+                    </td>
+                    <td className="max-w-[160px] truncate px-4 py-2.5 text-slate-600">
+                      {mfrIdx >= 0 && row[mfrIdx] != null ? String(row[mfrIdx]) : "—"}
+                    </td>
+                    <td className="max-w-[160px] truncate px-4 py-2.5 text-slate-600">
+                      {suppIdx >= 0 && row[suppIdx] != null ? String(row[suppIdx]) : "—"}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <div className="flex items-center gap-2">
+                        <div className="h-1.5 w-16 overflow-hidden rounded-full bg-slate-100">
+                          <div
+                            className={cn(
+                              "h-full rounded-full transition-all",
+                              score >= 80 ? "bg-emerald-500" : score >= 50 ? "bg-amber-400" : "bg-red-400"
+                            )}
+                            style={{ width: `${score}%` }}
+                          />
+                        </div>
+                        <span className="text-[11px] font-medium text-slate-600">{score}%</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-2.5">
+                      <StatusBadge status={status} />
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
       </div>
 
-      {rows.length > 8 && (
-        <button
-          onClick={() => setExpanded((p) => !p)}
-          className="flex w-full items-center justify-center gap-1.5 py-2 text-xs font-medium text-blue-600 hover:text-blue-700"
-        >
-          {expanded ? (
-            <>
-              <ChevronUp className="h-3.5 w-3.5" /> Show fewer rows
-            </>
-          ) : (
-            <>
-              <ChevronDown className="h-3.5 w-3.5" /> Show all {rows.length} preview rows
-            </>
+      {/* Pagination footer */}
+      <div className="flex items-center justify-between px-1">
+        <p className="text-xs text-slate-500">
+          {totalRows.toLocaleString()} Total Entries
+        </p>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page === 1}
+            className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-40 transition-colors"
+          >
+            <ChevronLeft className="h-3.5 w-3.5" />
+          </button>
+          {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => {
+            const p = i + 1;
+            return (
+              <button
+                key={p}
+                onClick={() => setPage(p)}
+                className={cn(
+                  "flex h-7 w-7 items-center justify-center rounded-lg border text-xs font-medium transition-colors",
+                  page === p
+                    ? "border-violet-600 bg-violet-600 text-white"
+                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                )}
+              >
+                {p}
+              </button>
+            );
+          })}
+          {totalPages > 5 && (
+            <span className="text-xs text-slate-400">…{totalPages}</span>
           )}
-        </button>
-      )}
+          <button
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={page === totalPages}
+            className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 disabled:opacity-40 transition-colors"
+          >
+            <ChevronRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -296,7 +402,7 @@ export default function ExtractionPage() {
     try {
       const res = await fetch(`${API_URL}/api/extract`, {
         method: "POST",
-        headers: authHeaders(), // Authorization header only — no Content-Type (multipart)
+        headers: authHeaders(),
         body: form,
       });
 
@@ -355,189 +461,232 @@ export default function ExtractionPage() {
 
   return (
     <SidebarLayout>
-      <div className="mx-auto max-w-6xl space-y-6 p-4 sm:p-6 lg:p-8">
-        {/* Page header */}
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-bold text-slate-900 sm:text-2xl">
-              SPIR Extraction
-            </h1>
-            <p className="mt-1 text-sm text-slate-500">
-              Upload a SPIR Excel file to extract and standardize spare parts data
-            </p>
-          </div>
-          {result && (
-            <Button variant="outline" size="sm" onClick={handleReset}>
-              <X className="h-3.5 w-3.5" />
-              New file
-            </Button>
-          )}
-        </div>
+      {/* ── Dashboard / Upload State ── */}
+      {!result && (
+        <div className="mx-auto max-w-3xl space-y-6 p-4 sm:p-6 lg:p-8">
+          {/* Upload zone */}
+          <UploadZone file={file} onFile={setFile} disabled={loading} />
 
-        {/* Upload + extract card */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm space-y-4 sm:p-6">
-          <div className="flex items-center gap-2">
-            <FileSpreadsheet className="h-4 w-4 text-blue-600" />
-            <h2 className="text-sm font-semibold text-slate-800">
-              Upload SPIR File
-            </h2>
-          </div>
-
-          <UploadZone
-            file={file}
-            onFile={setFile}
-            disabled={loading}
-          />
-
-          <div className="flex flex-col gap-3 pt-1 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-xs text-slate-400">
-              Supported: .xlsx, .xlsm, .xls · Max 2 GB
-            </p>
-            <Button
-              onClick={handleExtract}
-              disabled={!file || loading}
-              size="lg"
-              className="w-full sm:w-auto sm:min-w-[140px]"
-            >
-              {loading ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Extracting…
-                </>
-              ) : (
-                <>
-                  <Upload className="h-4 w-4" />
-                  Extract
-                </>
-              )}
-            </Button>
-          </div>
-        </div>
-
-        {/* Error */}
-        {error && (
-          <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3.5 text-sm text-red-700 animate-fade-in">
-            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>{error}</span>
-          </div>
-        )}
-
-        {/* Results */}
-        {result && (
-          <div className="space-y-6 animate-fade-in">
-            {/* Success banner */}
-            <div className="flex flex-wrap items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3.5 text-sm text-emerald-700">
-              <CheckCircle2 className="h-4 w-4 shrink-0" />
-              <span>
-                Extraction complete —{" "}
-                <strong>{result.total_rows}</strong> rows extracted from{" "}
-                <strong>{file?.name}</strong>
-              </span>
-            </div>
-
-            {/* Stats grid */}
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <StatCard
-                icon={Hash}
-                label="Total Rows"
-                value={result.total_rows.toLocaleString()}
-                iconClass="text-blue-600"
-                bgClass="bg-blue-50"
-              />
-              <StatCard
-                icon={Tag}
-                label="Tags"
-                value={result.total_tags.toLocaleString()}
-                iconClass="text-violet-600"
-                bgClass="bg-violet-50"
-              />
-              <StatCard
-                icon={Layers}
-                label="Spare Items"
-                value={result.spare_items.toLocaleString()}
-                iconClass="text-emerald-600"
-                bgClass="bg-emerald-50"
-              />
-              <StatCard
-                icon={AlertTriangle}
-                label="Duplicates"
-                value={result.dup1_count.toLocaleString()}
-                iconClass={result.dup1_count > 0 ? "text-amber-600" : "text-slate-400"}
-                bgClass={result.dup1_count > 0 ? "bg-amber-50" : "bg-slate-50"}
-              />
-            </div>
-
-            {/* Metadata */}
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-              <h2 className="mb-4 text-sm font-semibold text-slate-800">
-                SPIR Metadata
-              </h2>
-              <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-4 text-sm">
-                {[
-                  { label: "SPIR Number", value: result.spir_no },
-                  { label: "Equipment", value: result.equipment },
-                  { label: "Manufacturer", value: result.manufacturer },
-                  { label: "Supplier", value: result.supplier },
-                  { label: "SPIR Type", value: result.spir_type },
-                  { label: "Format", value: result.format },
-                  { label: "Eqpt Qty", value: result.eqpt_qty || "—" },
-                  { label: "Annexures", value: result.annexure_count || "—" },
-                ].map(({ label, value }) =>
-                  value ? (
-                    <div key={label}>
-                      <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
-                        {label}
-                      </p>
-                      <p className="mt-0.5 truncate font-medium text-slate-800">
-                        {String(value)}
-                      </p>
-                    </div>
-                  ) : null
+          {/* Extract button */}
+          {file && (
+            <div className="flex justify-center">
+              <button
+                onClick={handleExtract}
+                disabled={loading}
+                className="flex h-11 items-center gap-2 rounded-xl bg-violet-700 px-8 text-sm font-semibold text-white shadow-md shadow-violet-200 transition-all hover:bg-violet-800 disabled:opacity-60"
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Extracting…
+                  </>
+                ) : (
+                  <>
+                    <FileSpreadsheet className="h-4 w-4" />
+                    Run Extraction
+                  </>
                 )}
+              </button>
+            </div>
+          )}
+
+          {/* Error */}
+          {error && (
+            <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3.5 text-sm text-red-700">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+
+          {/* Bottom cards */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-3 flex items-center gap-2.5">
+                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-50">
+                  <History className="h-4 w-4 text-violet-600" />
+                </div>
+                <h3 className="text-sm font-semibold text-slate-800">Recent History</h3>
               </div>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                View your previously extracted SPIR files and download past results.
+              </p>
+              <button className="mt-4 flex items-center gap-1.5 text-xs font-semibold text-violet-700 hover:text-violet-800 transition-colors">
+                View History
+                <ArrowUpRight className="h-3.5 w-3.5" />
+              </button>
             </div>
 
-            {/* Preview table */}
-            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-3 flex items-center gap-2.5">
+                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-50">
+                  <BookOpen className="h-4 w-4 text-emerald-600" />
+                </div>
+                <h3 className="text-sm font-semibold text-slate-800">System Guide</h3>
+              </div>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                Learn how to use SPIR Enterprise — formats, column mapping, error codes.
+              </p>
+              <button className="mt-4 flex items-center gap-1.5 text-xs font-semibold text-emerald-700 hover:text-emerald-800 transition-colors">
+                Open Guide
+                <ArrowUpRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Extraction Results State ── */}
+      {result && (
+        <div className="mx-auto max-w-6xl space-y-6 p-4 sm:p-6 lg:p-8">
+          {/* Header bar */}
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2.5">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-700 border border-emerald-200">
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Extraction Complete
+                </span>
+              </div>
+              <p className="mt-2 text-sm text-slate-500">
+                Successfully processed{" "}
+                <span className="font-semibold text-slate-700">{file?.name}</span>
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleReset}
+                className="flex h-9 items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-600 shadow-sm hover:bg-slate-50 transition-colors"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                New File
+              </button>
+              <button
+                onClick={handleDownload}
+                disabled={downloading}
+                className="flex h-9 items-center gap-2 rounded-xl bg-violet-700 px-4 text-sm font-semibold text-white shadow-md shadow-violet-200 hover:bg-violet-800 transition-colors disabled:opacity-60"
+              >
+                {downloading ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Download className="h-3.5 w-3.5" />
+                )}
+                Download Results
+              </button>
+            </div>
+          </div>
+
+          {/* Stats row */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {[
+              {
+                icon: Hash,
+                label: "TOTAL ROWS",
+                value: result.total_rows.toLocaleString(),
+                iconClass: "text-violet-600",
+                bgClass: "bg-violet-50",
+              },
+              {
+                icon: Tag,
+                label: "TAGS",
+                value: result.total_tags.toLocaleString(),
+                iconClass: "text-blue-600",
+                bgClass: "bg-blue-50",
+              },
+              {
+                icon: Layers,
+                label: "SPARE ITEMS",
+                value: result.spare_items.toLocaleString(),
+                iconClass: "text-emerald-600",
+                bgClass: "bg-emerald-50",
+              },
+              {
+                icon: AlertTriangle,
+                label: "DUPLICATES",
+                value: result.dup1_count.toLocaleString(),
+                iconClass: result.dup1_count > 0 ? "text-red-500" : "text-slate-400",
+                bgClass: result.dup1_count > 0 ? "bg-red-50" : "bg-slate-50",
+                warn: result.dup1_count > 0,
+              },
+            ].map(({ icon: Icon, label, value, iconClass, bgClass, warn }) => (
+              <div
+                key={label}
+                className={cn(
+                  "flex items-center gap-3 rounded-xl border px-4 py-3 shadow-sm bg-white",
+                  warn ? "border-red-200" : "border-slate-200"
+                )}
+              >
+                <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-lg", bgClass)}>
+                  <Icon className={cn("h-4 w-4", iconClass)} />
+                </div>
                 <div>
-                  <h2 className="text-sm font-semibold text-slate-800">
-                    Preview
-                  </h2>
-                  <p className="text-xs text-slate-400">
-                    Showing first {Math.min(result.preview_rows.length, 8)} of{" "}
-                    {result.total_rows} rows · {result.preview_cols.length} columns
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">{label}</p>
+                  <p className={cn("text-lg font-bold leading-tight", warn ? "text-red-600" : "text-slate-900")}>
+                    {value}
                   </p>
                 </div>
-                <Button
-                  onClick={handleDownload}
-                  disabled={downloading}
-                  variant="default"
-                  size="sm"
-                  className="w-full min-h-[44px] sm:w-auto sm:min-h-0"
-                >
-                  {downloading ? (
-                    <>
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      Downloading…
-                    </>
-                  ) : (
-                    <>
-                      <Download className="h-3.5 w-3.5" />
-                      Download Excel
-                    </>
-                  )}
-                </Button>
+                {warn && <AlertTriangle className="ml-auto h-4 w-4 text-red-400" />}
               </div>
+            ))}
+          </div>
 
-              <PreviewTable
-                cols={result.preview_cols}
-                rows={result.preview_rows}
-              />
+          {/* SPIR Metadata */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h2 className="mb-4 text-xs font-bold uppercase tracking-wider text-slate-500">
+              SPIR Metadata
+            </h2>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4 text-sm">
+              {[
+                { label: "SPIR NUMBER",  value: result.spir_no },
+                { label: "EQUIPMENT",    value: result.equipment },
+                { label: "MANUFACTURER", value: result.manufacturer },
+                { label: "SUPPLIER",     value: result.supplier },
+                { label: "ITEM TYPE",    value: result.spir_type },
+                { label: "FORMAT",       value: result.format },
+                { label: "SPIR TYPE",    value: result.spir_type },
+                { label: "EQPT QTY",     value: result.eqpt_qty || null },
+              ].map(({ label, value }) =>
+                value ? (
+                  <div key={label}>
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      {label}
+                    </p>
+                    <p className="mt-0.5 truncate font-semibold text-slate-800">
+                      {String(value)}
+                    </p>
+                  </div>
+                ) : null
+              )}
             </div>
           </div>
-        )}
-      </div>
+
+          {/* Download error */}
+          {error && (
+            <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+
+          {/* Data Preview */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                  Data Preview
+                </h2>
+                <p className="mt-0.5 text-xs text-slate-400">
+                  Showing preview of {result.preview_rows.length} rows · {result.preview_cols.length} columns total
+                </p>
+              </div>
+            </div>
+            <PreviewTable
+              cols={result.preview_cols}
+              rows={result.preview_rows}
+              totalRows={result.total_rows}
+            />
+          </div>
+        </div>
+      )}
     </SidebarLayout>
   );
 }

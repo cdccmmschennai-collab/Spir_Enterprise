@@ -20,6 +20,8 @@ from __future__ import annotations
 import logging
 import re
 
+from spir_dynamic.utils.logging import timed
+
 log = logging.getLogger(__name__)
 
 _TARGET_LEN_DEFAULT = 18
@@ -475,6 +477,7 @@ class SheetTracker:
 # Main post-processor
 # ---------------------------------------------------------------------------
 
+@timed
 def post_process_rows(
     rows: list[list],
     spir_no: str,

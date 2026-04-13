@@ -64,7 +64,7 @@ OUTPUT_COLUMNS: list[dict] = [
     {"col": "CLASSIFICATION OF PARTS", "field": "classification","default": None, "width": 20},
 
     # -- System columns --
-    {"col": "SPIR ERROR", "field": "duplicate_id", "default": 0,    "width": 22},
+    {"col": "ERROR",      "field": "duplicate_id", "default": 0,    "width": 22},
     {"col": "SHEET",      "field": "sheet",         "default": None, "width": 22},
     {"col": "SPIR TYPE",  "field": "spir_type",     "default": None, "width": 26},
 ]

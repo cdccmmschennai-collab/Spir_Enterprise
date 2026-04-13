@@ -16,6 +16,7 @@ from spir_dynamic.analysis.header_detector import (
 )
 from spir_dynamic.analysis.column_mapper import map_headers, get_unmapped_columns
 from spir_dynamic.analysis.tag_locator import locate_tags
+from spir_dynamic.utils.logging import timed
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ def _get_utility_keywords() -> frozenset[str]:
     return UTILITY_KEYWORDS
 
 
+@timed
 def analyze_sheet(ws, sheet_name: str) -> SheetProfile:
     """
     Analyze a single worksheet and build a complete SheetProfile.

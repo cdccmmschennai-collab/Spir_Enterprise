@@ -36,6 +36,8 @@ import logging
 import re
 from typing import Any
 
+from spir_dynamic.utils.logging import timed
+
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -66,6 +68,7 @@ _ANNEXURE_ID_RE = re.compile(
 # Public entry point
 # ---------------------------------------------------------------------------
 
+@timed
 def resolve_annexure_refs(
     output_rows: list[list],
     wb,          # openpyxl Workbook (still open when called)
