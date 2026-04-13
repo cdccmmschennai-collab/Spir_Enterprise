@@ -28,24 +28,39 @@ async def create_tables() -> None:
 async def seed_admin(username: str, plain_password: str) -> None:
     """
     Ensure at least one admin user exists.
-    If the username already exists, skip silently.
+    If the username already exists but the password changed, update the hash.
     """
-    from passlib.context import CryptContext
+    import bcrypt as _bcrypt
 
-    pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    def _hash(plain: str) -> str:
+        return _bcrypt.hashpw(plain.encode("utf-8"), _bcrypt.gensalt(rounds=12)).decode("utf-8")
+
+    def _verify(plain: str, hashed: str) -> bool:
+        try:
+            return _bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+        except Exception:
+            return False
+
     factory = get_session_factory()
 
     async with factory() as session:
-        existing = await session.scalar(
+        existing: User | None = await session.scalar(
             select(User).where(User.username == username)
         )
         if existing:
-            log.info("Admin user '%s' already exists — skipping seed", username)
+            existing_hash: str = existing.password_hash
+            if not _verify(plain_password, existing_hash):
+                # APP_PASS changed — update hash so login works after redeploy
+                existing.password_hash = _hash(plain_password)
+                await session.commit()
+                log.info("Admin user '%s' password hash updated", username)
+            else:
+                log.info("Admin user '%s' already exists — no change", username)
             return
 
         admin = User(
             username=username,
-            password_hash=pwd_ctx.hash(plain_password),
+            password_hash=_hash(plain_password),
             role="admin",
             is_active=True,
         )

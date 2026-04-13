@@ -14,10 +14,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import bcrypt as _bcrypt
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 from spir_dynamic.app.config import get_settings
 
@@ -26,7 +27,19 @@ from spir_dynamic.app.config import get_settings
 # ---------------------------------------------------------------------------
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
-pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def _hash_password(plain: str) -> str:
+    """Hash a plain-text password with bcrypt."""
+    return _bcrypt.hashpw(plain.encode("utf-8"), _bcrypt.gensalt(rounds=12)).decode("utf-8")
+
+
+def _verify_password(plain: str, hashed: str) -> bool:
+    """Verify a plain-text password against a bcrypt hash. Never raises."""
+    try:
+        return _bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -184,8 +197,13 @@ async def _login_db(
         user: User | None = await db.scalar(
             select(User).where(User.username == username, User.is_active == True)
         )
+        # Capture all needed fields INSIDE the session — never access a detached
+        # SQLAlchemy object outside an async session (causes MissingGreenlet).
+        user_id: str | None = user.id if user is not None else None
+        user_name: str | None = user.username if user is not None else None
+        password_hash: str | None = user.password_hash if user is not None else None
 
-    if user is None or not pwd_ctx.verify(plain_password, user.password_hash):
+    if password_hash is None or not _verify_password(plain_password, password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -198,7 +216,7 @@ async def _login_db(
 
     async with factory() as db:
         session_row = Session(
-            user_id=user.id,
+            user_id=user_id,
             jti=jti,
             ip_address=ip_address,
             user_agent=user_agent,
@@ -208,7 +226,7 @@ async def _login_db(
         db.add(session_row)
 
         # Update last_login_at
-        user_upd: User | None = await db.get(User, user.id)
+        user_upd: User | None = await db.get(User, user_id)
         if user_upd:
             user_upd.last_login_at = datetime.now(timezone.utc)
 
@@ -218,7 +236,7 @@ async def _login_db(
     import asyncio
     asyncio.ensure_future(
         log_login(
-            user_id=user.id,
+            user_id=user_id,
             session_id=jti,
             ip_address=ip_address,
             user_agent=user_agent,
@@ -226,8 +244,8 @@ async def _login_db(
     )
 
     token = create_access_token(
-        username=user.username,
-        user_id=user.id,
+        username=user_name,
+        user_id=user_id,
         jti=jti,
         expires_delta=timedelta(hours=cfg.token_expire_hours),
     )
