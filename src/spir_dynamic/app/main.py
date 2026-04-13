@@ -82,3 +82,6 @@ if __name__ == "__main__":
         port=cfg.port,
         reload=cfg.debug,
     )
+
+import os
+print("RAILWAY PORT =", os.getenv("PORT"))
