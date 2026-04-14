@@ -13,7 +13,8 @@ export function middleware(request: NextRequest) {
     pathname === "/login" ||
     pathname.startsWith("/_next") ||
     pathname.startsWith("/favicon") ||
-    pathname.startsWith("/api");
+    pathname.startsWith("/api") ||
+    /\.(?:jpg|jpeg|png|svg|gif|webp|ico|css|js|woff2?)$/i.test(pathname);
 
   // If NOT logged in → redirect to login
   if (!token && !isPublic) {
@@ -29,5 +30,8 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: [
+    // Run middleware on all routes EXCEPT Next.js internals and static file extensions
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:jpg|jpeg|png|svg|gif|webp|ico|css|js|woff2?)$).*)",
+  ],
 };

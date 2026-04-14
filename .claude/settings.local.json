@@ -34,7 +34,9 @@
       "Bash(uv run:*)",
       "Bash(py -c \"print\\('hi'\\)\")",
       "Bash(npm run:*)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(dir \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\frontend\")",
+      "Bash(powershell:*)"
     ]
   }
 }

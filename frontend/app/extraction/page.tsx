@@ -71,13 +71,6 @@ function getRowStatus(row: (string | number | null)[], cols: string[]): RowStatu
   return "ERROR";
 }
 
-// Compute a mock integrity score based on filled fields
-function getIntegrityScore(row: (string | number | null)[]): number {
-  if (!row.length) return 0;
-  const filled = row.filter((v) => v !== null && v !== "" && v !== 0).length;
-  return Math.round((filled / row.length) * 100);
-}
-
 // ─── Upload Zone ───────────────────────────────────────────────────────────────
 
 interface UploadZoneProps {
@@ -222,10 +215,8 @@ function PreviewTable({ cols, rows, totalRows }: PreviewTableProps) {
   const start = (page - 1) * ROWS_PER_PAGE;
   const pageRows = rows.slice(start, start + ROWS_PER_PAGE);
 
-  // Find key column indices
-  const spirIdx  = cols.findIndex((c) => c.toUpperCase().includes("SPIR NO") || c.toUpperCase() === "SPIR NUMBER");
-  const mfrIdx   = cols.findIndex((c) => c.toUpperCase().includes("MANUFACTURER") && !c.toUpperCase().includes("PART"));
-  const suppIdx  = cols.findIndex((c) => c.toUpperCase().includes("SUPPLIER"));
+  // Detect if an error/status column exists so we can append a STATUS badge column
+  const errorColIdx = cols.findIndex((c) => c.toUpperCase() === "ERROR" || c.toUpperCase() === "STATUS");
 
   function toggleAll() {
     if (selected.size === pageRows.length) {
@@ -235,13 +226,16 @@ function PreviewTable({ cols, rows, totalRows }: PreviewTableProps) {
     }
   }
 
+  const colCount = cols.length + 2; // +1 checkbox, status badge appended if error col exists
+
   return (
     <div className="space-y-3">
       <div className="overflow-x-auto rounded-xl border border-slate-200 shadow-sm">
         <table className="min-w-full text-xs">
           <thead>
             <tr className="bg-slate-50 border-b border-slate-200">
-              <th className="w-10 px-4 py-3">
+              {/* Checkbox */}
+              <th className="w-10 px-3 py-3 sticky left-0 bg-slate-50">
                 <input
                   type="checkbox"
                   checked={selected.size === pageRows.length && pageRows.length > 0}
@@ -249,18 +243,16 @@ function PreviewTable({ cols, rows, totalRows }: PreviewTableProps) {
                   className="h-3.5 w-3.5 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
                 />
               </th>
-              <th className="whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-600 uppercase tracking-wide text-[10px]">
-                SPIRE NUMBER
-              </th>
-              <th className="whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-600 uppercase tracking-wide text-[10px]">
-                MANUFACTURER
-              </th>
-              <th className="whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-600 uppercase tracking-wide text-[10px]">
-                SUPPLIER ENTITY
-              </th>
-              <th className="whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-600 uppercase tracking-wide text-[10px]">
-                INTEGRITY SCORE
-              </th>
+              {/* All actual Excel column headers */}
+              {cols.map((col) => (
+                <th
+                  key={col}
+                  className="whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-600 uppercase tracking-wide text-[10px]"
+                >
+                  {col}
+                </th>
+              ))}
+              {/* Appended STATUS badge column */}
               <th className="whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-600 uppercase tracking-wide text-[10px]">
                 STATUS
               </th>
@@ -269,7 +261,7 @@ function PreviewTable({ cols, rows, totalRows }: PreviewTableProps) {
           <tbody className="divide-y divide-slate-100 bg-white">
             {pageRows.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-slate-400">
+                <td colSpan={colCount} className="px-4 py-8 text-center text-slate-400">
                   No data rows
                 </td>
               </tr>
@@ -278,7 +270,6 @@ function PreviewTable({ cols, rows, totalRows }: PreviewTableProps) {
                 const globalIdx = start + ri;
                 const isSelected = selected.has(globalIdx);
                 const status = getRowStatus(row, cols);
-                const score = getIntegrityScore(row);
 
                 return (
                   <tr
@@ -288,7 +279,8 @@ function PreviewTable({ cols, rows, totalRows }: PreviewTableProps) {
                       isSelected && "bg-violet-50/40"
                     )}
                   >
-                    <td className="w-10 px-4 py-2.5">
+                    {/* Checkbox */}
+                    <td className="w-10 px-3 py-2.5 sticky left-0 bg-inherit">
                       <input
                         type="checkbox"
                         checked={isSelected}
@@ -301,29 +293,19 @@ function PreviewTable({ cols, rows, totalRows }: PreviewTableProps) {
                         className="h-3.5 w-3.5 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
                       />
                     </td>
-                    <td className="max-w-[160px] truncate px-4 py-2.5 font-medium text-slate-800">
-                      {spirIdx >= 0 && row[spirIdx] != null ? String(row[spirIdx]) : "—"}
-                    </td>
-                    <td className="max-w-[160px] truncate px-4 py-2.5 text-slate-600">
-                      {mfrIdx >= 0 && row[mfrIdx] != null ? String(row[mfrIdx]) : "—"}
-                    </td>
-                    <td className="max-w-[160px] truncate px-4 py-2.5 text-slate-600">
-                      {suppIdx >= 0 && row[suppIdx] != null ? String(row[suppIdx]) : "—"}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <div className="flex items-center gap-2">
-                        <div className="h-1.5 w-16 overflow-hidden rounded-full bg-slate-100">
-                          <div
-                            className={cn(
-                              "h-full rounded-full transition-all",
-                              score >= 80 ? "bg-emerald-500" : score >= 50 ? "bg-amber-400" : "bg-red-400"
-                            )}
-                            style={{ width: `${score}%` }}
-                          />
-                        </div>
-                        <span className="text-[11px] font-medium text-slate-600">{score}%</span>
-                      </div>
-                    </td>
+                    {/* All actual cell values */}
+                    {cols.map((col, ci) => (
+                      <td
+                        key={col}
+                        className="max-w-[180px] truncate px-4 py-2.5 text-slate-700"
+                        title={row[ci] != null ? String(row[ci]) : ""}
+                      >
+                        {row[ci] != null && row[ci] !== "" ? String(row[ci]) : (
+                          <span className="text-slate-300">—</span>
+                        )}
+                      </td>
+                    ))}
+                    {/* STATUS badge */}
                     <td className="px-4 py-2.5">
                       <StatusBadge status={status} />
                     </td>
@@ -338,7 +320,7 @@ function PreviewTable({ cols, rows, totalRows }: PreviewTableProps) {
       {/* Pagination footer */}
       <div className="flex items-center justify-between px-1">
         <p className="text-xs text-slate-500">
-          {totalRows.toLocaleString()} Total Entries
+          {totalRows.toLocaleString()} Total Entries · {rows.length} preview rows · {cols.length} columns
         </p>
         <div className="flex items-center gap-1.5">
           <button
@@ -524,7 +506,7 @@ export default function ExtractionPage() {
                 <h3 className="text-sm font-semibold text-slate-800">System Guide</h3>
               </div>
               <p className="text-xs text-slate-500 leading-relaxed">
-                Learn how to use SPIR Enterprise — formats, column mapping, error codes.
+                Learn how to use SPIR Tool — formats, column mapping, error codes.
               </p>
               <button className="mt-4 flex items-center gap-1.5 text-xs font-semibold text-emerald-700 hover:text-emerald-800 transition-colors">
                 Open Guide
@@ -640,10 +622,10 @@ export default function ExtractionPage() {
                 { label: "EQUIPMENT",    value: result.equipment },
                 { label: "MANUFACTURER", value: result.manufacturer },
                 { label: "SUPPLIER",     value: result.supplier },
-                { label: "ITEM TYPE",    value: result.spir_type },
-                { label: "FORMAT",       value: result.format },
                 { label: "SPIR TYPE",    value: result.spir_type },
+                { label: "FORMAT",       value: result.format },
                 { label: "EQPT QTY",     value: result.eqpt_qty || null },
+                { label: "ANNEXURE",     value: result.annexure_count > 0 ? result.annexure_count : null },
               ].map(({ label, value }) =>
                 value ? (
                   <div key={label}>

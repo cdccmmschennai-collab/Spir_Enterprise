@@ -45,6 +45,19 @@
   }
 }
 
+/* ── Login page background animation ── */
+@keyframes bg-zoom {
+  0%   { transform: scale(1) translateZ(0); }
+  50%  { transform: scale(1.1) translateZ(0); }
+  100% { transform: scale(1) translateZ(0); }
+}
+
+.animate-bg-zoom {
+  animation: bg-zoom 14s ease-in-out infinite;
+  transform-origin: center center;
+  will-change: transform;
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
