@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Gem, Loader2, Eye, EyeOff, AlertCircle, User, Lock } from "lucide-react";
+import { Loader2, Eye, EyeOff, AlertCircle, User, Lock } from "lucide-react";
 import { saveToken } from "@/lib/auth";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL!;
@@ -49,37 +49,53 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-gray-50 px-4">
-      {/* Subtle dot grid */}
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] bg-[size:24px_24px]" />
+    <div className="relative flex min-h-screen flex-col items-center justify-center px-4">
 
-      <div className="relative w-full max-w-sm">
-        {/* Company Logo */}
+      {/* ── Animated background: real <img> so CSS transform actually scales the image ── */}
+      <div className="absolute inset-0 overflow-hidden">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/cdc_cover.jpg"
+          alt=""
+          aria-hidden="true"
+          className="h-full w-full object-cover animate-bg-zoom"
+        />
+      </div>
+
+      {/* ── Dark + purple overlay ── */}
+      <div className="absolute inset-0 bg-black/50" />
+      <div className="absolute inset-0 bg-gradient-to-br from-purple-950/40 to-transparent" />
+
+      {/* ── Content ── */}
+      <div className="relative z-10 w-full max-w-sm">
+        {/* Logo + brand */}
         <div className="mb-8 flex flex-col items-center gap-4 text-center">
-          {/* Logo mark */}
           <div className="relative flex h-20 w-20 items-center justify-center">
-            {/* Outer glow ring */}
-            <div className="absolute inset-0 rounded-3xl bg-gradient-to-br from-violet-400 to-purple-600 opacity-20 blur-xl" />
-            {/* Shadow backdrop */}
-            <div className="absolute inset-1 rounded-2xl bg-gradient-to-br from-violet-500 to-purple-700 opacity-30 blur-md" />
-            {/* Main icon container */}
-            <div className="relative flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-violet-600 via-purple-600 to-indigo-700 shadow-2xl shadow-purple-300">
-              <Gem className="h-10 w-10 text-white drop-shadow" />
+            {/* Soft glow ring */}
+            <div className="absolute inset-0 rounded-3xl bg-white/20 blur-xl" />
+            {/* Logo box — plain img to avoid Next.js Image config requirements */}
+            <div className="relative h-20 w-20 overflow-hidden rounded-2xl bg-white shadow-2xl shadow-purple-900/50">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/cdc_logo.jpg"
+                alt="CDC International"
+                className="h-full w-full object-contain"
+              />
             </div>
           </div>
-          {/* Brand text */}
+
           <div className="space-y-0.5">
-            <h1 className="text-2xl font-extrabold tracking-[0.15em] text-slate-900 uppercase">
-              SPIR ENTERPRISE
+            <h1 className="text-2xl font-extrabold tracking-[0.15em] text-white uppercase drop-shadow">
+              SPIR TOOL
             </h1>
-            <p className="text-xs font-medium tracking-widest text-slate-400 uppercase">
+            <p className="text-xs font-medium tracking-widest text-white/60 uppercase">
               Spare Parts Intelligence Platform
             </p>
           </div>
         </div>
 
-        {/* Card */}
-        <div className="rounded-2xl border border-slate-200 bg-white px-8 py-8 shadow-sm">
+        {/* ── Login card ── */}
+        <div className="rounded-2xl border border-white/20 bg-white/90 px-8 py-8 shadow-2xl backdrop-blur-sm">
           <div className="mb-6">
             <h2 className="text-xl font-bold text-slate-900">Welcome back</h2>
             <p className="mt-1 text-sm text-slate-500">
@@ -168,7 +184,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={loading}
-              className="mt-2 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-700 to-purple-700 text-sm font-semibold text-white shadow-md shadow-purple-200 transition-all hover:from-violet-800 hover:to-purple-800 disabled:opacity-60"
+              className="mt-2 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-700 to-purple-700 text-sm font-semibold text-white shadow-md shadow-purple-300/50 transition-all hover:from-violet-800 hover:to-purple-800 disabled:opacity-60"
             >
               {loading ? (
                 <>
@@ -186,12 +202,12 @@ export default function LoginPage() {
         </div>
 
         {/* Footer */}
-        <div className="mt-6 flex items-center justify-center gap-4 text-xs text-slate-400">
-          <button className="hover:text-slate-600 hover:underline">Privacy Policy</button>
+        <div className="mt-6 flex items-center justify-center gap-4 text-xs text-white/40">
+          <button className="hover:text-white/70 hover:underline transition-colors">Privacy Policy</button>
           <span>·</span>
-          <button className="hover:text-slate-600 hover:underline">Terms of Service</button>
+          <button className="hover:text-white/70 hover:underline transition-colors">Terms of Service</button>
           <span>·</span>
-          <button className="hover:text-slate-600 hover:underline">Support</button>
+          <button className="hover:text-white/70 hover:underline transition-colors">Support</button>
         </div>
       </div>
     </div>

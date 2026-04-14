@@ -7,7 +7,6 @@ import {
   LogOut,
   Menu,
   X,
-  Gem,
   History,
   Settings,
   Bell,
@@ -48,18 +47,23 @@ function SidebarContent({ pathname, onNavigate, onLogout }: SidebarContentProps)
     <div className="flex h-full flex-col">
       {/* Logo */}
       <div className="flex h-16 items-center gap-3 border-b border-slate-100 px-4">
-        <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-violet-600 to-purple-700 shadow-sm">
-          <Gem className="h-4 w-4 text-white" />
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-100">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/cdc_logo.jpg"
+            alt="CDC International"
+            className="h-full w-full object-contain"
+          />
         </div>
         <div className="flex flex-col flex-1 min-w-0">
           <span className="text-sm font-bold leading-tight text-slate-900 tracking-wide uppercase">
-            SPIR ENTERPRISE
+            SPIR TOOL
           </span>
           <span className="text-[10px] leading-tight text-slate-400 tracking-wide">
             Extraction Platform
           </span>
         </div>
-        <span className="shrink-0 rounded-full bg-violet-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-violet-700">
+        <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-700">
           BETA
         </span>
       </div>
@@ -94,7 +98,7 @@ function SidebarContent({ pathname, onNavigate, onLogout }: SidebarContentProps)
               />
               {item.label}
               {isActive && (
-                <span className="ml-auto h-1.5 w-1.5 rounded-full bg-violet-600" />
+                <span className="ml-auto h-1.5 w-1.5 rounded-full bg-amber-500" />
               )}
             </button>
           );
@@ -144,7 +148,7 @@ function TopNavbar({ onMenuClick }: { onMenuClick?: () => void }) {
         {/* Notification bell */}
         <button className="relative rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors">
           <Bell className="h-4 w-4" />
-          <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-violet-600" />
+          <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-amber-500" />
         </button>
 
         {/* Online badge */}
@@ -153,9 +157,9 @@ function TopNavbar({ onMenuClick }: { onMenuClick?: () => void }) {
           <span className="text-xs font-medium text-emerald-700">Online</span>
         </div>
 
-        {/* User avatar placeholder */}
+        {/* User avatar */}
         <div className="flex h-8 w-8 items-center justify-center rounded-full bg-violet-100 text-xs font-bold text-violet-700 cursor-pointer hover:bg-violet-200 transition-colors">
-          SE
+          ST
         </div>
       </div>
     </header>
