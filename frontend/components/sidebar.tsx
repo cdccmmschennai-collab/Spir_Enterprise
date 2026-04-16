@@ -47,7 +47,7 @@ function SidebarContent({ pathname, onNavigate, onLogout }: SidebarContentProps)
   return (
     <div className="flex h-full flex-col">
       {/* Logo */}
-      <div className="flex h-16 items-center gap-3 border-b border-slate-100 px-4">
+      <div className="flex h-16 items-center gap-3 border-b border-slate-100 dark:border-slate-700 px-4">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-100">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
@@ -57,10 +57,10 @@ function SidebarContent({ pathname, onNavigate, onLogout }: SidebarContentProps)
           />
         </div>
         <div className="flex flex-col flex-1 min-w-0">
-          <span className="text-sm font-bold leading-tight text-slate-900 tracking-wide uppercase">
+          <span className="text-sm font-bold leading-tight text-slate-900 dark:text-white tracking-wide uppercase">
             SPIR TOOL
           </span>
-          <span className="text-[10px] leading-tight text-slate-400 tracking-wide">
+          <span className="text-[10px] leading-tight text-slate-400 dark:text-slate-500 tracking-wide">
             Extraction Platform
           </span>
         </div>
@@ -68,7 +68,7 @@ function SidebarContent({ pathname, onNavigate, onLogout }: SidebarContentProps)
 
       {/* Nav */}
       <nav className="flex-1 space-y-0.5 p-3 overflow-y-auto">
-        <p className="mb-2 px-2 text-[10px] font-semibold uppercase tracking-widest text-slate-400">
+        <p className="mb-2 px-2 text-[10px] font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500">
           Navigation
         </p>
         {navItems.map((item) => {
@@ -84,14 +84,14 @@ function SidebarContent({ pathname, onNavigate, onLogout }: SidebarContentProps)
               className={cn(
                 "flex w-full min-h-[40px] items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150",
                 isActive
-                  ? "bg-violet-50 text-violet-700"
-                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                  ? "bg-violet-50 text-violet-700 dark:bg-violet-950/50 dark:text-violet-400"
+                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
               )}
             >
               <Icon
                 className={cn(
                   "h-4 w-4 shrink-0",
-                  isActive ? "text-violet-600" : "text-slate-400"
+                  isActive ? "text-violet-600 dark:text-violet-400" : "text-slate-400 dark:text-slate-500"
                 )}
               />
               {item.label}
@@ -104,10 +104,10 @@ function SidebarContent({ pathname, onNavigate, onLogout }: SidebarContentProps)
       </nav>
 
       {/* Logout */}
-      <div className="border-t border-slate-100 p-3">
+      <div className="border-t border-slate-100 dark:border-slate-700 p-3">
         <button
           onClick={onLogout}
-          className="flex w-full min-h-[40px] items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-500 transition-all duration-150 hover:bg-red-50 hover:text-red-600"
+          className="flex w-full min-h-[40px] items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-500 dark:text-slate-400 transition-all duration-150 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/30 dark:hover:text-red-400"
         >
           <LogOut className="h-4 w-4 shrink-0" />
           Sign out
