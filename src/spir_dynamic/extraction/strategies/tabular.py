@@ -46,6 +46,18 @@ class TabularStrategy:
         )
         end_row = profile.data_end_row or (ws.max_row or 0)
 
+        # Debug: log detected layout and tag column info
+        log.info(
+            "TabularStrategy: sheet='%s' layout=%s tag_col=%s tag_col_idx=%s "
+            "global_tag=%s data_rows=%d-%d",
+            profile.name,
+            profile.tag_layout.value,
+            profile.tag_column_index,
+            profile.column_map.get("tag"),
+            profile.global_tag,
+            start_row, end_row,
+        )
+
         for r in range(start_row, end_row + 1):
             # Skip completely blank rows
             if self._is_blank_row(ws, r, profile.column_map):
@@ -141,9 +153,11 @@ class TabularStrategy:
                 if global_serial and not row.get("serial"):
                     row["serial"] = global_serial
 
+        # Debug: log unique tag values seen in output
+        unique_tags = {r.get("tag_no") for r in rows if r.get("tag_no")}
         log.info(
-            "TabularStrategy: extracted %d rows from '%s'",
-            len(rows), profile.name,
+            "TabularStrategy: sheet='%s' extracted %d rows, unique_tag_no=%d sample=%s",
+            profile.name, len(rows), len(unique_tags), sorted(unique_tags)[:10],
         )
         return rows
 
