@@ -101,6 +101,12 @@ def run_pipeline(file_bytes: bytes, original_filename: str) -> dict[str, Any]:
                 if val is None or val == "":
                     row[error_col] = 0
 
+    # Step 7c: Uppercase all string values
+    for row in output_rows:
+        for i, v in enumerate(row):
+            if isinstance(v, str):
+                row[i] = v.upper()
+
     # Step 8: Build styled Excel (always 27 columns)
     xlsx_bytes = build_xlsx(output_rows, spir_no)
 
@@ -111,10 +117,9 @@ def run_pipeline(file_bytes: bytes, original_filename: str) -> dict[str, Any]:
     out_filename = f"{safe_spir}_Extraction.xlsx" if safe_spir else f"{original_filename}_Extraction.xlsx"
     get_storage().put(file_id, xlsx_bytes, out_filename)
 
-    # Step 10: Build response
-    preview_count = cfg.preview_row_count
+    # Step 10: Build response — full dataset, no row limit
     preview_rows = [
-        [_jsonify(v) for v in row] for row in output_rows[:preview_count]
+        [_jsonify(v) for v in row] for row in output_rows
     ]
 
     response = {
