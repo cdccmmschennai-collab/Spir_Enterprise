@@ -252,10 +252,6 @@ function PreviewTable({ cols, rows, totalRows }: PreviewTableProps) {
                   {col}
                 </th>
               ))}
-              {/* Appended STATUS badge column */}
-              <th className="whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wide text-[10px]">
-                STATUS
-              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-700 bg-white dark:bg-slate-900">
@@ -305,10 +301,6 @@ function PreviewTable({ cols, rows, totalRows }: PreviewTableProps) {
                         )}
                       </td>
                     ))}
-                    {/* STATUS badge */}
-                    <td className="px-4 py-2.5">
-                      <StatusBadge status={status} />
-                    </td>
                   </tr>
                 );
               })
@@ -322,7 +314,7 @@ function PreviewTable({ cols, rows, totalRows }: PreviewTableProps) {
         <p className="text-xs text-slate-500 dark:text-slate-400">
           {totalRows.toLocaleString()} Total Entries · {rows.length} preview rows · {cols.length} columns
         </p>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2">
           <button
             onClick={() => setPage((p) => Math.max(1, p - 1))}
             disabled={page === 1}
@@ -330,26 +322,9 @@ function PreviewTable({ cols, rows, totalRows }: PreviewTableProps) {
           >
             <ChevronLeft className="h-3.5 w-3.5" />
           </button>
-          {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => {
-            const p = i + 1;
-            return (
-              <button
-                key={p}
-                onClick={() => setPage(p)}
-                className={cn(
-                  "flex h-7 w-7 items-center justify-center rounded-lg border text-xs font-medium transition-colors",
-                  page === p
-                    ? "border-violet-600 bg-violet-600 text-white"
-                    : "border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800"
-                )}
-              >
-                {p}
-              </button>
-            );
-          })}
-          {totalPages > 5 && (
-            <span className="text-xs text-slate-400 dark:text-slate-500">…{totalPages}</span>
-          )}
+          <span className="text-xs font-medium text-slate-600 dark:text-slate-400">
+            {page} / {totalPages}
+          </span>
           <button
             onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
             disabled={page === totalPages}
@@ -623,7 +598,6 @@ export default function ExtractionPage() {
                 { label: "MANUFACTURER", value: result.manufacturer },
                 { label: "SUPPLIER",     value: result.supplier },
                 { label: "SPIR TYPE",    value: result.spir_type },
-                { label: "FORMAT",       value: result.format },
                 { label: "EQPT QTY",     value: result.eqpt_qty || null },
                 { label: "ANNEXURE",     value: result.annexure_count > 0 ? result.annexure_count : null },
               ].map(({ label, value }) =>
