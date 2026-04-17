@@ -89,7 +89,7 @@ export default function LoginPage() {
               SPIR TOOL
             </h1>
             <p className="text-xs font-medium tracking-widest text-white/60 uppercase">
-              Spare Parts Intelligence Platform
+              SPARE PARTS INTERCHANGEABILITY RECORD
             </p>
           </div>
         </div>
@@ -97,7 +97,7 @@ export default function LoginPage() {
         {/* ── Login card ── */}
         <div className="rounded-2xl border border-white/20 bg-white/90 px-8 py-8 shadow-2xl backdrop-blur-sm">
           <div className="mb-6">
-            <h2 className="text-xl font-bold text-slate-900">Welcome back</h2>
+            <h2 className="text-xl font-bold text-slate-900">Welcome to CDC</h2>
             <p className="mt-1 text-sm text-slate-500">
               Sign in to access your workspace
             </p>
