@@ -93,6 +93,105 @@ def locate_tags(
     return TagLocationResult(layout=TagLayout.NONE, confidence=0.0)
 
 
+def _tag_column_purity(ws, col: int, start_row: int, max_row: int) -> tuple[set, set]:
+    """
+    Sample up to 200 rows of a column and return (raw_distinct, clean_tags).
+
+    raw_distinct: all non-placeholder distinct string values (uppercased).
+    clean_tags: subset of raw_distinct whose values genuinely look like
+                equipment tags — match TAG_PATTERN, contain a digit, and
+                are not excessively long.
+    """
+    raw_distinct: set[str] = set()
+    for r in range(start_row, min(max_row, start_row + 200) + 1):
+        v = ws.cell(r, col).value
+        if v is not None:
+            s = str(v).strip()
+            if s and not is_placeholder(s):
+                raw_distinct.add(s.upper())
+
+    clean_tags: set[str] = set()
+    for val in raw_distinct:
+        if (
+            looks_like_tag(val)           # matches TAG_PATTERN
+            and re.search(r"\d", val)     # real tags always have digits
+            and len(val) <= 50            # not a long description
+            and "\n" not in val           # no multi-line cells
+        ):
+            clean_tags.add(val)
+
+    return raw_distinct, clean_tags
+
+
+def _rescan_for_tag_column(
+    ws,
+    header_row: int | None,
+    exclude_col: int | None = None,
+) -> TagLocationResult | None:
+    """
+    Secondary scan: find the best tag column by inspecting column headers
+    for "tag"-related text and validating their purity.
+
+    Called when the column_map-supplied tag column fails purity validation.
+    """
+    max_col = min(ws.max_column or 50, 80)
+    start_row = (header_row + 1) if header_row else 2
+    max_row = ws.max_row or 0
+
+    # Keywords indicating a column is likely the tag column
+    _TAG_HEADER_TOKENS = ("tag no", "tag number", "equipment tag", "equip tag",
+                          "tag #", "tag")
+
+    best_col: int | None = None
+    best_clean: set = set()
+    best_purity: float = 0.0
+
+    scan_rows = range(max(1, (header_row or 1) - 2),
+                      min(max_row, (header_row or 1) + 3))
+
+    for hr in scan_rows:
+        for c in range(1, max_col + 1):
+            if c == exclude_col:
+                continue
+            hv = ws.cell(hr, c).value
+            if hv is None:
+                continue
+            hl = str(hv).lower().strip()
+            if not any(kw in hl for kw in _TAG_HEADER_TOKENS):
+                continue
+
+            raw, clean = _tag_column_purity(ws, c, start_row, max_row)
+            if not raw:
+                continue
+            purity = len(clean) / len(raw)
+
+            log.info(
+                "_rescan_for_tag_column: sheet='%s' candidate col=%d "
+                "header='%s' raw=%d clean=%d purity=%.2f",
+                ws.title, c, str(hv).strip()[:40], len(raw), len(clean), purity,
+            )
+
+            if len(clean) >= _MIN_TAG_COLUMN_VALUES and purity > best_purity:
+                best_purity = purity
+                best_col = c
+                best_clean = clean
+
+    if best_col is not None:
+        log.info(
+            "_rescan_for_tag_column: sheet='%s' → selected col=%d "
+            "clean=%d purity=%.2f",
+            ws.title, best_col, len(best_clean), best_purity,
+        )
+        confidence = 0.9 if best_purity >= 0.7 else 0.7
+        return TagLocationResult(
+            layout=TagLayout.TAG_COLUMN,
+            tag_column_index=best_col,
+            confidence=confidence,
+        )
+
+    return None
+
+
 def _check_tag_column(
     ws,
     header_row: int | None,
@@ -101,30 +200,61 @@ def _check_tag_column(
     """
     Check if there's a dedicated tag column with multiple distinct tag values.
     This is the most common layout: a "Tag No" column alongside item data.
+
+    Validation:
+    - Compute tag purity = (tag-like distinct values) / (all distinct values)
+    - Reject the proposed column when raw count > 20 AND purity < 0.30 —
+      this catches cases where column_mapper mapped the wrong column as "tag"
+      (e.g. a description column that happens to contain one tag-like string).
+    - On rejection, re-scan column headers near the header row to find the
+      real tag column.
     """
     tag_col = column_map.get("tag")
     if tag_col is None:
         return None
 
     start_row = (header_row + 1) if header_row else 2
-    max_row = min((ws.max_row or 0), start_row + 200)  # sample first 200 data rows
+    max_row = ws.max_row or 0
 
-    distinct_tags: set[str] = set()
-    for r in range(start_row, max_row + 1):
-        v = ws.cell(r, tag_col).value
-        if v is not None:
-            s = str(v).strip()
-            if s and not is_placeholder(s):
-                distinct_tags.add(s.upper())
+    raw_distinct, clean_tags = _tag_column_purity(ws, tag_col, start_row, max_row)
+    raw_count = len(raw_distinct)
+    clean_count = len(clean_tags)
+    purity = clean_count / raw_count if raw_count else 0.0
 
-    if len(distinct_tags) >= _MIN_TAG_COLUMN_VALUES:
-        # High confidence if values match tag patterns
-        tag_like_count = sum(1 for t in distinct_tags if looks_like_tag(t))
-        confidence = 0.9 if tag_like_count >= 1 else 0.6
+    log.info(
+        "_check_tag_column: sheet='%s' col=%d "
+        "raw_distinct=%d clean_tags=%d purity=%.2f sample_raw=%s sample_clean=%s",
+        ws.title, tag_col,
+        raw_count, clean_count, purity,
+        sorted(raw_distinct)[:5],
+        sorted(clean_tags)[:5],
+    )
 
+    # Purity check: if the column contains mostly non-tag values it is the
+    # wrong column.  Only activate the guard when we have enough samples (> 20)
+    # to be confident; small tag columns (1-20 values) are treated leniently.
+    if raw_count > 20 and purity < 0.30:
+        log.info(
+            "_check_tag_column: sheet='%s' col=%d REJECTED — "
+            "raw=%d clean=%d purity=%.2f; re-scanning",
+            ws.title, tag_col, raw_count, clean_count, purity,
+        )
+        return _rescan_for_tag_column(ws, header_row, exclude_col=tag_col)
+
+    # No tag-like values at all — reject
+    if clean_count == 0 and raw_count > 0:
+        log.info(
+            "_check_tag_column: sheet='%s' col=%d REJECTED — "
+            "no tag-like values found; re-scanning",
+            ws.title, tag_col,
+        )
+        return _rescan_for_tag_column(ws, header_row, exclude_col=tag_col)
+
+    if clean_count >= _MIN_TAG_COLUMN_VALUES:
+        confidence = 0.9 if purity >= 0.70 else 0.7
         log.debug(
-            "TAG_COLUMN detected in '%s' col %d: %d distinct tags",
-            ws.title, tag_col, len(distinct_tags),
+            "TAG_COLUMN accepted: sheet='%s' col=%d clean=%d purity=%.2f",
+            ws.title, tag_col, clean_count, purity,
         )
         return TagLocationResult(
             layout=TagLayout.TAG_COLUMN,
@@ -132,15 +262,13 @@ def _check_tag_column(
             confidence=confidence,
         )
 
-    # Even a single tag value in the column counts if it looks like a real tag
-    if len(distinct_tags) == 1:
-        tag_val = next(iter(distinct_tags))
-        if looks_like_tag(tag_val):
-            return TagLocationResult(
-                layout=TagLayout.TAG_COLUMN,
-                tag_column_index=tag_col,
-                confidence=0.5,
-            )
+    # Single clean tag — accept with lower confidence
+    if clean_count == 1:
+        return TagLocationResult(
+            layout=TagLayout.TAG_COLUMN,
+            tag_column_index=tag_col,
+            confidence=0.5,
+        )
 
     return None
 
