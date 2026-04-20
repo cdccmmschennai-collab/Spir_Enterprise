@@ -72,7 +72,6 @@ def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
     # Step 3: Handle COLUMN_HEADERS sheets with cross-sheet coordination
     all_rows: list[dict[str, Any]] = []
     format_parts: list[str] = []
-    annexure_count = 0
 
     # Separate columnar sheets from other layouts
     columnar_profiles = [
@@ -81,8 +80,11 @@ def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
     ]
     other_profiles = [
         p for p in profiles
-        if p.is_extractable and p.tag_layout != TagLayout.COLUMN_HEADERS
+        if p.is_extractable
+        and p.tag_layout != TagLayout.COLUMN_HEADERS
+        and p.role != SheetRole.ANNEXURE
     ]
+    annexure_count = sum(1 for p in profiles if p.role == SheetRole.ANNEXURE)
 
     # Process COLUMN_HEADERS sheets with cross-sheet item sharing
     if columnar_profiles:
@@ -103,8 +105,6 @@ def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
             all_rows.extend(sheet_rows)
             format_parts.append(f"{profile.name}({profile.tag_layout.value})")
 
-            if profile.role == SheetRole.ANNEXURE:
-                annexure_count += 1
         except Exception as exc:
             log.error("Extraction failed for '%s': %s", profile.name, exc, exc_info=True)
 
@@ -183,13 +183,17 @@ def _extract_columnar_group(
 
     # Read items from the source sheet
     items_dict: dict[int, dict[str, Any]] = {}
+    item_source_name = item_source.name if item_source else ""
     if item_source:
-        ws = wb[item_source.name]
+        ws = wb[item_source_name]
         items_dict = _columnar.read_items(ws, item_source)
         log.info(
             "Item source '%s': %d items read",
-            item_source.name, len(items_dict),
+            item_source_name, len(items_dict),
         )
+
+    # Fix B: capture boundary BEFORE PHASE 2 loop corrupts _last_item_source_row
+    item_source_last_row = getattr(_columnar, "_last_item_source_row", None)
 
     # PHASE 2 FIX: Merge items from other columnar sheets that have
     # description data missing from the item source.
@@ -197,7 +201,7 @@ def _extract_columnar_group(
     # items 19-24 in MAIN SHEET (3)). The item source may have item numbers
     # for 19-24 but no description/part_number data.
     for profile in columnar_profiles:
-        if profile.name == (item_source.name if item_source else ""):
+        if profile.name == item_source_name:
             continue
         ws = wb[profile.name]
         other_items = _columnar.read_items(ws, profile)
@@ -209,11 +213,31 @@ def _extract_columnar_group(
                 # Source has item number but no description — fill from other sheet
                 items_dict[item_num].update(item_data)
 
+    # Fix C: ensure item source is extracted first so its metadata_field_rows
+    # are available for continuation sheets
+    ordered_profiles = sorted(
+        columnar_profiles,
+        key=lambda p: 0 if p.name == item_source_name else 1,
+    )
+
     # Extract from each columnar sheet
-    for profile in columnar_profiles:
+    item_source_metadata_rows: dict[str, int] | None = None
+    for profile in ordered_profiles:
         try:
             ws = wb[profile.name]
-            rows = _columnar.extract(ws, profile, spir_no, items_dict=items_dict)
+            # Fix B: restore boundary so _read_tag_item_mapping uses correct end_row
+            _columnar._last_item_source_row = item_source_last_row
+            is_item_source_sheet = profile.name == item_source_name
+            rows = _columnar.extract(
+                ws,
+                profile,
+                spir_no,
+                items_dict=items_dict,
+                metadata_field_rows=None if is_item_source_sheet else item_source_metadata_rows,
+            )
+            # Fix C: capture field rows from main sheet for continuation sheets
+            if is_item_source_sheet:
+                item_source_metadata_rows = getattr(_columnar, "_last_metadata_field_rows", None)
             all_rows.extend(rows)
         except Exception as exc:
             log.error(
