@@ -65,7 +65,7 @@ def deduplicate_rows(rows: list[list], CI: dict) -> list[list]:
         for part in sorted(part_to_saps):
             if len(part_to_saps[part]) <= 1:
                 continue
-            label = f"sap mismatch -{sap_mismatch_counter}"
+            label = f"sap number mismatch-{sap_mismatch_counter}"
             for row_idx in part_to_rows[part]:
                 row_labels[row_idx].append(label)
             sap_mismatch_counter += 1
@@ -85,26 +85,25 @@ def deduplicate_rows(rows: list[list], CI: dict) -> list[list]:
         for sap in sorted(sap_to_parts):
             if len(sap_to_parts[sap]) <= 1:
                 continue
-            label = f"sap duplicate -{sap_duplicate_counter}"
+            label = f"sap number duplicate-{sap_duplicate_counter}"
             for row_idx in sap_to_rows[sap]:
                 row_labels[row_idx].append(label)
             sap_duplicate_counter += 1
 
-    # Rule 3 — same TAG NO, same PART NUMBER repeated
-    tag_part_to_rows: dict[tuple[str, str], list[int]] = defaultdict(list)
-    if tag_col is not None and part_col is not None:
+    # Rule 3 — same PART NUMBER repeated anywhere across tags/sheets
+    part_only_rows: dict[str, list[int]] = defaultdict(list)
+    if part_col is not None:
         for idx, row in enumerate(rows):
-            tag = _get(row, tag_col)
             part = _get(row, part_col)
-            if not tag or not part:
+            if not part:
                 continue
-            tag_part_to_rows[(tag, part)].append(idx)
+            part_only_rows[part].append(idx)
 
-        for key in sorted(tag_part_to_rows):
-            group_rows = tag_part_to_rows[key]
+        for part in sorted(part_only_rows):
+            group_rows = part_only_rows[part]
             if len(group_rows) <= 1:
                 continue
-            label = f"spare duplicate -{spare_duplicate_counter}"
+            label = f"spare duplicate-{spare_duplicate_counter}"
             for row_idx in group_rows:
                 row_labels[row_idx].append(label)
             spare_duplicate_counter += 1
@@ -118,8 +117,8 @@ def deduplicate_rows(rows: list[list], CI: dict) -> list[list]:
             if flag_col < len(row):
                 row[flag_col] = 0
             continue
-        mismatch_count += sum(1 for label in labels if label.startswith("sap mismatch"))
-        sap_dup_count += sum(1 for label in labels if label.startswith("sap duplicate"))
+        mismatch_count += sum(1 for label in labels if label.startswith("sap number mismatch"))
+        sap_dup_count += sum(1 for label in labels if label.startswith("sap number duplicate"))
         spare_dup_count += sum(1 for label in labels if label.startswith("spare duplicate"))
         if flag_col < len(row):
             row[flag_col] = ", ".join(labels)
@@ -162,7 +161,7 @@ def analyse_duplicates(rows: list[list]) -> dict:
                 "description": row[desc_col] if desc_col < len(row) else None,
             }
             dup_items.append(item)
-            if lower_label.startswith("sap mismatch") or lower_label.startswith("sap duplicate"):
+            if lower_label.startswith("sap number mismatch") or lower_label.startswith("sap number duplicate"):
                 sap_count += 1
             if lower_label.startswith("spare duplicate"):
                 dup1_count += 1
