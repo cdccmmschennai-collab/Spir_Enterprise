@@ -36,7 +36,9 @@
       "Bash(npm run:*)",
       "Bash(pip install:*)",
       "Bash(dir \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\frontend\")",
-      "Bash(powershell:*)"
+      "Bash(powershell:*)",
+      "Bash(dir C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\src\\\\spir_dynamic *)",
+      "Bash(dir *)"
     ]
   }
 }

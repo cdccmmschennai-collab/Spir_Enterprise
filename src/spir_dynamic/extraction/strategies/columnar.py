@@ -125,6 +125,7 @@ class ColumnarStrategy:
         spir_no: str,
         items_dict: dict[int, dict[str, Any]] | None = None,
         item_col: int | None = None,
+        metadata_field_rows: dict[str, int] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Extract data from a columnar/matrix sheet.
@@ -165,7 +166,7 @@ class ColumnarStrategy:
                 return rows
 
         # Step 2: Read per-tag metadata (model, serial, qty from rows 2-7)
-        tag_metadata = self._read_tag_metadata(ws, profile, tag_info)
+        tag_metadata = self._read_tag_metadata(ws, profile, tag_info, field_rows=metadata_field_rows)
 
         # Step 3: Determine if we need to read items from this sheet
         is_item_source = items_dict is None
@@ -173,7 +174,7 @@ class ColumnarStrategy:
             items_dict = self._read_items(ws, profile)
 
         # Step 4: Read tag-to-item mapping (which tags use which items)
-        tag_items_map = self._read_tag_item_mapping(ws, profile, tag_info, item_col=item_col)
+        tag_items_map = self._read_tag_item_mapping(ws, profile, tag_info, item_col=item_col, items_dict=items_dict)
 
         # Step 5: Build output rows — header + details per tag
         global_meta = profile.metadata
@@ -564,10 +565,16 @@ class ColumnarStrategy:
         ws,
         profile: SheetProfile,
         tag_info: dict[int, list[str]],
+        field_rows: dict[str, int] | None = None,
     ) -> dict[str, dict[str, Any]]:
         """
         Read per-tag metadata from rows between row 1 and the header row.
         Looks for model, serial, eqpt_qty by scanning label cells in cols 1-3.
+
+        Args:
+            field_rows: When provided (continuation sheets), maps field name →
+                        row number discovered from the main sheet. Skips label
+                        scanning and reads values from known row positions.
         """
         metadata: dict[str, dict[str, Any]] = {}
         header_row = profile.header_row or 8
@@ -579,20 +586,32 @@ class ColumnarStrategy:
             "manufacturer": ["manufacturer", "make", "mfr name", "mfr"],
         }
 
+        discovered_field_rows: dict[str, int] = {}
+
         for r in range(1, min(header_row + 4, 15)):
-            # Check cols 1-3 for label text
             row_field = None
-            for c in range(1, min(4, (ws.max_column or 3) + 1)):
-                v = ws.cell(r, c).value
-                if v is None:
-                    continue
-                cl = str(v).lower().strip()
-                for field, kws in meta_keywords.items():
-                    if any(kw in cl for kw in kws):
+
+            if field_rows:
+                # Continuation sheet: use known row positions from main sheet
+                for field, known_row in field_rows.items():
+                    if r == known_row:
                         row_field = field
                         break
+            else:
+                # Main sheet: scan cols 1-3 for label text
+                for c in range(1, min(4, (ws.max_column or 3) + 1)):
+                    v = ws.cell(r, c).value
+                    if v is None:
+                        continue
+                    cl = str(v).lower().strip()
+                    for field, kws in meta_keywords.items():
+                        if any(kw in cl for kw in kws):
+                            row_field = field
+                            break
+                    if row_field:
+                        break
                 if row_field:
-                    break
+                    discovered_field_rows[row_field] = r
 
             if not row_field:
                 continue
@@ -630,6 +649,10 @@ class ColumnarStrategy:
                     if tag not in metadata:
                         metadata[tag] = {}
                     metadata[tag][row_field] = val
+
+        # Store discovered field rows so _extract_columnar_group can pass them to continuation sheets
+        if not field_rows:
+            self._last_metadata_field_rows = discovered_field_rows
 
         # PHASE 2 FIX: Fallback for eqpt_qty when "No. OF UNITS" is missing.
         # - Multi-tag cell (e.g., "TAG-1, TAG-2, TAG-3") → eqpt_qty = tag count
@@ -707,6 +730,7 @@ class ColumnarStrategy:
         profile: SheetProfile,
         tag_info: dict[int, list[str]],
         item_col: int | None = None,
+        items_dict: dict[int, dict[str, Any]] | None = None,
     ) -> dict[int, dict[int, int]]:
         """
         Read which items each tag column applies to, with per-tag quantities.
@@ -773,6 +797,11 @@ class ColumnarStrategy:
                     except (ValueError, TypeError):
                         continue
             if item_num is None:
+                continue
+
+            # Whitelist: skip items not present in items_dict (avoids mapping
+            # phantom item numbers beyond the last real item row)
+            if items_dict is not None and item_num not in items_dict:
                 continue
 
             # Check each tag column — read the per-tag quantity
