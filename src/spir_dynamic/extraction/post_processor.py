@@ -369,16 +369,69 @@ def _item_to_line_index(item_value) -> int:
         return 1
 
 
+def _reformat_omn_strict(body_segs: list[str], sheet_idx: int, line_idx: int) -> str | None:
+    """
+    Build strict 18-char OMN: PROJ(4)-DISC(1)SUBG(2)SEQ(4)-SSLYY(2).
+
+    Format: {proj}-{disc}{subg}{seq}-{sheet:02d}L{line:02d}
+    - Project: exactly 4 chars (numeric kept as-is; longer alpha truncated to 4)
+    - Discipline: exactly 1 digit
+    - Subgroup: exactly 2 digits
+    - Sequence: any digits, zero-padded to 4
+    - Sheet index: 2-digit (01 for first/single sheet, 02 for second, etc.)
+    - Line: 2-digit, max 99
+
+    Returns None when segments don't fit the structure so the caller
+    falls back to the existing flexible logic (VP format, lines > 99, etc.).
+    """
+    if len(body_segs) < 4:
+        return None
+
+    proj, disc, subg, seq = body_segs[0], body_segs[1], body_segs[2], body_segs[3]
+
+    # Normalize project to exactly 4 chars
+    if len(proj) > 4:
+        proj = proj[:4]          # e.g. MEWTP → MEWT
+    elif len(proj) < 4:
+        return None              # too short — fall back
+
+    # Discipline must be exactly 1 digit
+    if not (disc.isdigit() and len(disc) == 1):
+        return None
+
+    # Subgroup must be exactly 2 digits
+    if not (subg.isdigit() and len(subg) == 2):
+        return None
+
+    # Sequence must be all digits
+    if not seq.isdigit():
+        return None
+
+    # Line number must fit in 2 digits
+    if line_idx > 99:
+        return None
+
+    middle = disc + subg + seq.zfill(4)            # 1 + 2 + 4 = 7 chars
+    suffix = f"{sheet_idx:02d}L{line_idx:02d}"     # 2 + 1 + 2 = 5 chars
+    return f"{proj}-{middle}-{suffix}"              # 4 + 1 + 7 + 1 + 5 = 18 chars exactly
+
+
 def build_omn(spir_no: str, sheet_idx: int, line_idx: int,
               total_main_sheets: int = 1) -> str:
     raw_spir = spir_no
     body_segs, project_token = _canonical_omn_body_segments(
         _split_spir_segments(raw_spir)
     )
-    suffix = _build_suffix(sheet_idx, line_idx, total_main_sheets)
 
-    omn = _fit_omn_body_and_suffix(body_segs, suffix, project_token)
-    return omn
+    # Try strict 18-char format first
+    strict = _reformat_omn_strict(body_segs, sheet_idx, line_idx)
+    if strict is not None:
+        return strict
+
+    # Fall back to existing flexible logic for non-standard structures
+    # (VP format with fused discipline, lines > 99, short project codes, etc.)
+    suffix = _build_suffix(sheet_idx, line_idx, total_main_sheets)
+    return _fit_omn_body_and_suffix(body_segs, suffix, project_token)
 
 
 # ---------------------------------------------------------------------------
