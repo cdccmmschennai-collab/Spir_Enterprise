@@ -493,6 +493,26 @@ class SheetTracker:
         else:
             self._total_main_sheets = 1
 
+        # Pre-populate index for main sheets using natural sort so fan-out row
+        # reordering cannot cause a later-appearing sheet to claim an earlier index.
+        # Natural sort ensures "MAIN SHEET-2" < "MAIN SHEET-10".
+        if self._main_names_raw:
+            def _nat_key(n: str) -> list:
+                parts = re.split(r"(\d+)", n)
+                return [int(p) if p.isdigit() else p.upper() for p in parts]
+
+            main_only = sorted(
+                [
+                    n for n in self._main_names_raw
+                    if str(n).strip()
+                    and not _sheet_name_is_continuation_or_annexure(self._norm(n))
+                ],
+                key=_nat_key,
+            )
+            for i, name in enumerate(main_only, start=1):
+                self._sheet_to_idx[name.strip()] = i
+            self._main_counter = len(main_only)
+
     @property
     def total_main_sheets(self) -> int:
         return self._total_main_sheets
@@ -501,7 +521,12 @@ class SheetTracker:
         key = (sheet or "MAIN").strip()
         key_norm = self._norm(key)
         if key in self._sheet_to_idx:
-            return self._sheet_to_idx[key]
+            idx = self._sheet_to_idx[key]
+            # Update _current_main_idx so continuation sheets that follow this
+            # pre-mapped main sheet inherit the correct index.
+            if self._is_main(key_norm):
+                self._current_main_idx = idx
+            return idx
 
         is_main = self._is_main(key_norm)
 

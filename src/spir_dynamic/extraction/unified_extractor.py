@@ -37,11 +37,26 @@ _columnar = ColumnarStrategy()
 _transposed = TransposedStrategy()
 
 # Pattern to detect annexure-reference tag values like "Annexure 1", "ANNEXURE-2",
-# "Refer Annexure 3", "ANNEXURE (P1)-1", "ANNEXURE (P2)-3", etc.
+# "Refer Annexure 3", "ANNEXURE (P1)-1", "ANNEXURE (P2)-3", "REFER TO ANNEX 4", etc.
+# Matches both "annexure" and bare "annex" (without the "ure" suffix), and handles
+# "refer to" as well as plain "refer".
 _ANNEXURE_REF_RE = re.compile(
-    r"(?:refer\s+)?annexure[\s\-_]*(?:\(([^)]*)\)[\s\-_]*)?(\d+|[IVX]+)\b",
+    r"(?:refer(?:\s+to)?\s+)?annex(?:ure)?[\s\-_]*(?:\(([^)]*)\)[\s\-_]*)?(\d+|[IVX]+)\b",
     re.IGNORECASE,
 )
+
+# Unicode Roman numeral characters (U+2160–U+217B) → ASCII equivalents.
+# Excel files sometimes use these Unicode glyphs instead of plain I/V/X letters,
+# so "Annexure Ⅵ" (U+2165) would never match the [IVX]+ regex without this map.
+_UNICODE_ROMAN_MAP: dict[str, str] = {
+    'Ⅰ': 'I',   'Ⅱ': 'II',   'Ⅲ': 'III',  'Ⅳ': 'IV',
+    'Ⅴ': 'V',   'Ⅵ': 'VI',   'Ⅶ': 'VII',  'Ⅷ': 'VIII',
+    'Ⅸ': 'IX',  'Ⅹ': 'X',    'Ⅺ': 'XI',   'Ⅻ': 'XII',
+    'ⅰ': 'i',   'ⅱ': 'ii',   'ⅲ': 'iii',  'ⅳ': 'iv',
+    'ⅴ': 'v',   'ⅵ': 'vi',   'ⅶ': 'vii',  'ⅷ': 'viii',
+    'ⅸ': 'ix',  'ⅹ': 'x',    'ⅺ': 'xi',   'ⅻ': 'xii',
+}
+
 
 def _roman_to_int(s: str) -> int | None:
     """Convert a roman numeral string to int. Returns None if not valid."""
@@ -324,6 +339,68 @@ def _collect_metadata(profiles: list[SheetProfile]) -> dict[str, Any]:
 # Equipment enrichment — annexure / continuation → main sheet mapping
 # ---------------------------------------------------------------------------
 
+
+def _resolve_subgroup_key(
+    annex_key: str,
+    registry: dict[str, list],
+    eqpt_qty,
+    prefer_prefix: str | None = None,
+) -> str | None:
+    """Find the correct subgroup registry key (e.g. 'ANNEXURE1-1') for a bare annexure
+    reference (e.g. 'ANNEXURE1') using the numeric suffix and eqpt_qty disambiguation.
+
+    prefer_prefix: when set (e.g. 'ANNEXURE2'), restricts candidates to keys with that
+    exact prefix — used once a sheet's parent annexure has been identified, preventing
+    false matches due to identical eqpt_qty across different annexure sheets.
+    """
+    num_match = re.search(r"(\d+)$", annex_key)
+    if not num_match:
+        return None
+    suffix = f"-{num_match.group(1)}"
+    candidates = [k for k in registry if k.endswith(suffix)]
+    if not candidates:
+        return None
+    # Narrow to preferred prefix if we already know which annexure this sheet uses.
+    # Use prefix + "-" to avoid "ANNEXURE2" falsely matching "ANNEXURE20-1".
+    if prefer_prefix:
+        prefixed = [k for k in candidates if k.startswith(prefer_prefix + "-")]
+        if prefixed:
+            candidates = prefixed
+    if len(candidates) == 1:
+        return candidates[0]
+    # Multiple candidates — disambiguate by entry count matching eqpt_qty
+    if eqpt_qty is not None:
+        try:
+            qty = int(float(eqpt_qty))
+            best = [k for k in candidates if len(registry[k]) == qty]
+            if len(best) == 1:
+                return best[0]
+        except (TypeError, ValueError):
+            pass
+    return None  # still ambiguous — caller decides
+
+
+def _get_annexure_key(tag: str, registry: dict) -> str | None:
+    """Return the registry key matching an annexure tag, or None if not found.
+
+    Handles two cases:
+      1. Raw tag ("REFER TO ANNEX 1") → normalises to "ANNEXURE1" → looks up in registry
+      2. Pre-resolved subgroup key ("ANNEXURE1-1" set by Step 1c) → direct registry lookup,
+         because _normalize_annexure_ref strips the subgroup suffix ("-1") and returns "ANNEXURE1"
+         which is not a valid registry key when subgroups exist.
+    """
+    if not tag:
+        return None
+    annex_key = _normalize_annexure_ref(tag)
+    if annex_key and annex_key in registry:
+        return annex_key
+    # Direct lookup for pre-resolved subgroup keys (e.g. "ANNEXURE1-1")
+    tag_upper = tag.strip().upper()
+    if tag_upper in registry:
+        return tag_upper
+    return None
+
+
 _EQUIPMENT_FIELDS = ("manufacturer", "model", "serial")
 
 
@@ -365,6 +442,87 @@ def _enrich_equipment_data(
                 len(_any_rows), len(_real_keys),
             )
 
+    # Step 1c: Pre-resolve "REFER TO ANNEX N" / subgroup references.
+    #
+    # When a tag normalises to e.g. "ANNEXURE1" but the registry only has subgroup
+    # keys like "ANNEXURE1-1" (grouped annexure sheets), we must find the right
+    # subgroup before the fan-out loop in Step 4.
+    #
+    # Two-pass approach: header rows carry eqpt_qty; item rows do not.
+    # Pass 1 resolves header rows using eqpt_qty + prefix learning, building a
+    # (sheet, original_tag) → resolved_key map.  Pass 2 applies that map to item
+    # rows so they all point to the same subgroup key as their header row.
+    #
+    # Prefix learning: once we've resolved a sheet's first reference unambiguously,
+    # we record which parent annexure it belongs to (e.g. MAIN SHEET-4 → "ANNEXURE2")
+    # and restrict all future candidates for that sheet to that prefix — preventing
+    # false eqpt_qty matches across different annexure sheets.
+    _header_resolved: dict[tuple[str, str], str] = {}  # (sheet, tag_no) → resolved_key
+    _sheet_to_prefix: dict[str, str] = {}              # sheet name → "ANNEXURE1" / "ANNEXURE2" / …
+
+    # Pass 1: header rows (item_num is None) — eqpt_qty is available here
+    for _row in all_rows:
+        if _row.get("item_num") is not None:
+            continue
+        _tag = str(_row.get("tag_no") or "").strip()
+        if not _tag:
+            continue
+        _key = _normalize_annexure_ref(_tag)
+        if _key and _key != "ANNEXURE_ANY" and _key not in annexure_registry:
+            _sheet_name = _row.get("sheet") or ""
+            _prefer = _sheet_to_prefix.get(_sheet_name)
+            _resolved = _resolve_subgroup_key(
+                _key, annexure_registry, _row.get("eqpt_qty"), prefer_prefix=_prefer
+            )
+            if _resolved:
+                _header_resolved[(_sheet_name, _tag)] = _resolved
+                _row["tag_no"] = _resolved
+                # Learn which annexure prefix this sheet uses for future rows
+                if _sheet_name and _sheet_name not in _sheet_to_prefix:
+                    _pfx_match = re.match(r"([A-Z]+\d+)-", _resolved)
+                    if _pfx_match:
+                        _sheet_to_prefix[_sheet_name] = _pfx_match.group(1)
+
+    # Pass 1.5: Re-attempt rows that couldn't be resolved in Pass 1 because the sheet's
+    # prefix hadn't been learned yet (e.g. "REFER TO ANNEX 5" appeared before
+    # "REFER TO ANNEX 1" in the column order, so prefix was unknown).
+    # By now, Pass 1 has learned the prefix for most sheets — try again.
+    for _row in all_rows:
+        if _row.get("item_num") is not None:
+            continue
+        _tag = str(_row.get("tag_no") or "").strip()
+        if not _tag:
+            continue
+        # Skip rows already resolved in Pass 1 (their tag_no is now a direct registry key).
+        # Without this guard, _normalize_annexure_ref("ANNEXURE1-2") returns "ANNEXURE1"
+        # (not in registry), causing Pass 1.5 to overwrite the correct value with ANNEXURE1-1.
+        if _tag in annexure_registry:
+            continue
+        _key = _normalize_annexure_ref(_tag)
+        if not (_key and _key != "ANNEXURE_ANY" and _key not in annexure_registry):
+            continue
+        _sheet_name = _row.get("sheet") or ""
+        _prefer = _sheet_to_prefix.get(_sheet_name)
+        if not _prefer:
+            continue  # still no prefix learned for this sheet — skip
+        _resolved = _resolve_subgroup_key(
+            _key, annexure_registry, _row.get("eqpt_qty"), prefer_prefix=_prefer
+        )
+        if _resolved:
+            _header_resolved[(_sheet_name, _tag)] = _resolved
+            _row["tag_no"] = _resolved
+
+    # Pass 2: item rows (item_num is not None) — apply the map built from header rows
+    for _row in all_rows:
+        if _row.get("item_num") is None:
+            continue
+        _tag = str(_row.get("tag_no") or "").strip()
+        if not _tag:
+            continue
+        _resolved = _header_resolved.get((_row.get("sheet"), _tag))
+        if _resolved:
+            _row["tag_no"] = _resolved
+
     # Step 2: Build tag→equipment lookup from annexure + continuation rows
     tag_equip = _build_tag_equipment_lookup(all_rows, profiles, annexure_registry)
 
@@ -372,8 +530,8 @@ def _enrich_equipment_data(
     resolved_annexure_keys: set[str] = set()
     for row in all_rows:
         tag = row.get("tag_no") or ""
-        annex_key = _normalize_annexure_ref(tag)
-        if annex_key and annex_key in annexure_registry:
+        annex_key = _get_annexure_key(tag, annexure_registry)
+        if annex_key:
             resolved_annexure_keys.add(annex_key)
 
     resolved_annexure_sheets: set[str] = set()
@@ -400,8 +558,8 @@ def _enrich_equipment_data(
         if sheet in resolved_annexure_sheets and not row.get("item_num"):
             continue
 
-        annex_key = _normalize_annexure_ref(tag)
-        if annex_key and annex_key in annexure_registry:
+        annex_key = _get_annexure_key(tag, annexure_registry)
+        if annex_key:
             if annex_key not in annex_groups:
                 annex_groups[annex_key] = {"headers": [], "details": [], "order": idx}
             if row.get("item_num"):
@@ -453,12 +611,30 @@ def _enrich_equipment_data(
             annex_tags = annexure_registry[annex_key]
             grp = annex_groups[annex_key]
 
+            # Deduplicate detail rows by item_num.
+            # When multiple main sheets reference the same annexure, the same spare items
+            # appear in each sheet's continuation and are collected into grp["details"]
+            # multiple times. Keep only the first occurrence per item_num.
+            seen_item_nums: set = set()
+            deduped_details: list[dict[str, Any]] = []
+            for _dtl in grp["details"]:
+                _inum = _dtl.get("item_num")
+                if _inum is not None:
+                    if _inum not in seen_item_nums:
+                        seen_item_nums.add(_inum)
+                        deduped_details.append(_dtl)
+                else:
+                    deduped_details.append(_dtl)
+
             # Per-tag pairs: for each real tag, emit header + spares
             # Only enrich model/serial from annexure; manufacturer stays
             # from global metadata (top-right of SPIR = EQPT MAKE)
             _TAG_ENRICH = ("model", "serial")
             N = len(annex_tags)
             for tdata in annex_tags:
+                # Skip tags that have no associated spare items to avoid header-only rows
+                if not deduped_details:
+                    continue
                 # Tag header
                 for hdr in grp["headers"]:
                     tag_hdr = dict(hdr)
@@ -468,7 +644,7 @@ def _enrich_equipment_data(
                             tag_hdr[field] = tdata[field]
                     enriched.append(tag_hdr)
                 # Tag spare rows — divide total qty by N annexure tags
-                for dtl in grp["details"]:
+                for dtl in deduped_details:
                     tag_dtl = dict(dtl)
                     tag_dtl["tag_no"] = tdata["tag"]
                     for field in _TAG_ENRICH:
@@ -493,6 +669,150 @@ def _enrich_equipment_data(
     return enriched
 
 
+def _try_read_annexure_list_sheet(ws) -> dict[str, list[dict[str, Any]]]:
+    """
+    Parse an "Annexure List" sheet that groups equipment by section headers.
+
+    Format: the sheet has rows whose first cell matches an annexure reference
+    (e.g. "Annexure 1", "REFER TO ANNEX 2") acting as section dividers, followed
+    by data rows with comma/newline-separated tag numbers and a model number column.
+    Example (VEN-4460-DGTYP-5-43-0851-6):
+        Row 1: "Annexure 1"        ← section header
+        Row 2: "TAG NO" | "MODEL"  ← column headers (optional)
+        Row 3: "T-101, T-102"  | "Model-A"
+        Row 4: "Annexure 2"        ← next section header
+        ...
+
+    Returns {normalized_key: [{tag, model, serial}, ...]} or {} if the sheet
+    does not match this format.
+    """
+    result: dict[str, list[dict[str, Any]]] = {}
+
+    max_row = ws.max_row or 0
+    max_col = min(ws.max_column or 5, 20)
+    if max_row < 2:
+        return result
+
+    # Scan the first ~5 columns of all rows to find section headers and data rows.
+    # A section header is a row whose first non-blank cell is an annexure reference.
+    # After a section header, rows with non-blank first cell are data rows.
+
+    # First, detect column positions by looking for a header row with keyword cells.
+    tag_col: int | None = None
+    model_col: int | None = None
+
+    tag_kws = ["tag no", "tag number", "tag", "equipment tag"]
+    model_kws = ["model number", "model no", "model"]
+
+    for r in range(1, min(10, max_row + 1)):
+        for c in range(1, max_col + 1):
+            v = ws.cell(r, c).value
+            if v is None:
+                continue
+            cl = str(v).lower().strip()
+            if tag_col is None and any(kw in cl for kw in tag_kws):
+                tag_col = c
+            if model_col is None and any(kw in cl for kw in model_kws):
+                model_col = c
+
+    # Verify this looks like an annexure-list sheet: at least one section header row.
+    section_header_found = False
+    for r in range(1, min(15, max_row + 1)):
+        first_val = None
+        for c in range(1, min(5, max_col + 1)):
+            v = ws.cell(r, c).value
+            if v is not None:
+                first_val = str(v).strip()
+                break
+        if first_val and _normalize_annexure_ref(first_val) not in (None, "ANNEXURE_ANY"):
+            section_header_found = True
+            break
+
+    if not section_header_found:
+        return result
+
+    # Use col 1 for tags and col 2 for model if no header row was found
+    if tag_col is None:
+        tag_col = 1
+    if model_col is None:
+        model_col = 2 if max_col >= 2 else None
+
+    current_key: str | None = None
+
+    for r in range(1, max_row + 1):
+        # Look for a section header in the first few columns
+        first_val = None
+        first_col = None
+        for c in range(1, min(5, max_col + 1)):
+            v = ws.cell(r, c).value
+            if v is not None:
+                first_val = str(v).strip()
+                first_col = c
+                break
+
+        if not first_val:
+            continue
+
+        # Check if this row is a section header
+        ref_key = _normalize_annexure_ref(first_val)
+        if ref_key and ref_key != "ANNEXURE_ANY":
+            current_key = ref_key
+            result.setdefault(current_key, [])
+            continue
+
+        # Skip column-header rows using EXACT matching so we don't accidentally skip
+        # data rows like "TAG NO. N/A" (which contains "tag no" as a substring).
+        _hdr_exact: frozenset[str] = frozenset({
+            "model / type", "model no", "model no.", "model number",
+            "tag no", "tag no.", "tag number", "tag number(s)",
+            "sl no", "sl no.", "s.no", "s no",
+        })
+        cl = first_val.lower().strip()
+        if cl in _hdr_exact:
+            continue
+        if tag_col:
+            _tag_cell_str = str(ws.cell(r, tag_col).value or "").strip().lower()
+            if _tag_cell_str in _hdr_exact:
+                continue
+
+        # Data row — parse tag(s) and model
+        if current_key is None:
+            continue
+
+        tag_val = clean_str(ws.cell(r, tag_col).value) if tag_col else None
+        model_val = clean_str(ws.cell(r, model_col).value) if model_col else None
+
+        if not tag_val:
+            continue
+
+        # Skip rows whose tag column says "N/A" or similar (no real tag assigned yet)
+        if re.search(r"(?i)\bn/?a\b", tag_val) and len(tag_val.replace(" ", "")) <= 10:
+            continue
+
+        # Normalise "&" and newline separators to commas before splitting so that
+        # patterns like "TAG-A & TAG-B" or multi-line cells are split correctly.
+        tag_val_split = re.sub(r"\s*&\s*|\n", ", ", tag_val)
+
+        # Tags may be comma-, slash-, or newline-separated within a single cell
+        for tag in split_tags(tag_val_split):
+            if tag:
+                entry: dict[str, Any] = {"tag": tag}
+                if model_val:
+                    entry["model"] = model_val
+                result[current_key].append(entry)
+
+    # Drop empty sections
+    result = {k: v for k, v in result.items() if v}
+
+    if result:
+        log.info(
+            "Annexure list sheet: %d sections, %d total entries",
+            len(result), sum(len(v) for v in result.values()),
+        )
+
+    return result
+
+
 def _build_annexure_registry(
     wb, profiles: list[SheetProfile]
 ) -> dict[str, list[dict[str, Any]]]:
@@ -501,11 +821,13 @@ def _build_annexure_registry(
 
     Returns {normalized_key: [{tag, model, serial, manufacturer}, ...]}.
 
-    Handles two patterns:
+    Handles three patterns:
       A) Simple: sheet "Annexure 1" → key "ANNEXURE1", all rows are one group
       B) Grouped: sheet "ANNEXURE-P1" has a group number column (e.g.
          "ANNEXURE-P1 NUMBER" with values 1,2,3,4) → creates keys
          "ANNEXUREP1-1", "ANNEXUREP1-2", etc.
+      C) Annexure List: one sheet with section headers ("Annexure 1 / 2 / …") and
+         comma-separated tag rows — parsed by _try_read_annexure_list_sheet().
     """
     registry: dict[str, list[dict[str, Any]]] = {}
 
@@ -521,6 +843,21 @@ def _build_annexure_registry(
             annex_key = profile.name.strip().upper()
 
         ws = wb[profile.name]
+
+        # Pattern C: unnumbered "list" sheets (annex_key = ANNEXURE_ANY) may contain
+        # multiple sections separated by section-header rows.  Try the list parser first
+        # so we get correctly keyed subgroups rather than one big ANNEXURE_ANY blob.
+        if annex_key == "ANNEXURE_ANY":
+            list_result = _try_read_annexure_list_sheet(ws)
+            if list_result:
+                for lk, lv in list_result.items():
+                    registry[lk] = lv
+                    log.info(
+                        "Annexure '%s' list-format section '%s': %d entries",
+                        profile.name, lk, len(lv),
+                    )
+                continue
+            # Fall through to standard parser if list format not detected
 
         # Check for a group number column (e.g. "ANNEXURE-P1 NUMBER")
         group_col = _find_annexure_group_col(ws, profile)
@@ -583,7 +920,11 @@ def _find_annexure_group_col(ws, profile: SheetProfile) -> int | None:
         if v is None:
             continue
         s = str(v).lower().strip()
-        if "annexure" in s and ("number" in s or "num" in s or "#" in s):
+        # Match plain "ANNEXURE" / "ANNEX" header (group number column in some files)
+        # or qualified "ANNEXURE NUMBER", "ANNEXURE NO", etc.
+        if s in ("annexure", "annex") or (
+            "annexure" in s and any(x in s for x in ("number", "num", "#", "no"))
+        ):
             return c
 
     return None
@@ -597,8 +938,6 @@ def _read_annexure_equipment(
     Uses the profile's column_map when available, otherwise scans headers.
     If group_col is provided, each entry gets a '_group' field for subgrouping.
     """
-    print(f"DEBUG _read_annexure_equipment: sheet={profile.name!r} role={profile.role} layout={profile.tag_layout}")
-    print(f"DEBUG _read_annexure_equipment: profile.column_map={profile.column_map}")
     entries: list[dict[str, Any]] = []
 
     col_map = profile.column_map
@@ -606,7 +945,6 @@ def _read_annexure_equipment(
         col_map = _scan_annexure_headers(ws)
 
     tag_col = col_map.get("tag")
-    print(f"DEBUG _read_annexure_equipment: tag_col={tag_col} col_map={col_map}")
     model_col = col_map.get("model") or col_map.get("manufacturer_model")
     serial_col = col_map.get("serial")
     mfr_col = col_map.get("manufacturer")
@@ -635,7 +973,6 @@ def _read_annexure_equipment(
             )
             if count > best_count:
                 best_count, best_col = count, c
-        print(f"DEBUG _read_annexure_equipment: data-scan best_col={best_col} best_count={best_count} start_row={start_row} scan_end={scan_end}")
         if best_col and best_count >= 1:
             tag_col = best_col
             log.info(
@@ -644,8 +981,11 @@ def _read_annexure_equipment(
                 getattr(profile, "name", "?"), tag_col, best_count,
             )
         else:
-            print(f"DEBUG _read_annexure_equipment: GIVING UP - no tag column found")
             return entries  # truly can't find tags
+
+    # group_val is initialised here (outside the loop) so blank group cells
+    # automatically carry the previous row's group number forward.
+    group_val = None
 
     for r in range(start_row, end_row + 1):
         tag_val = clean_str(ws.cell(r, tag_col).value)
@@ -679,8 +1019,9 @@ def _read_annexure_equipment(
         # Handle serial ranges for multi-tag cells
         serials = _split_serial_range(serial_val, len(tags)) if serial_val else [None] * len(tags)
 
-        # Read group number if group_col is provided
-        group_val = None
+        # Read group number if group_col is provided.
+        # group_val is declared before the loop and only updated when the cell has a value,
+        # so blank cells (continuation rows of the same group) carry the previous value forward.
         if group_col:
             gv = ws.cell(r, group_col).value
             if gv is not None:
@@ -708,7 +1049,6 @@ def _read_annexure_equipment(
 
 def _scan_annexure_headers(ws) -> dict[str, int]:
     """Scan first rows of an annexure sheet to find tag/model/serial columns."""
-    print(f"DEBUG _scan_annexure_headers: sheet={getattr(ws, 'title', '?')} max_row={ws.max_row} max_col={ws.max_column}")
     col_map: dict[str, int] = {}
     keywords = {
         "tag": ["tag no", "tag number", "tag number(s)", "valve tag", "equipment tag", "equip", "tag"],
@@ -724,14 +1064,11 @@ def _scan_annexure_headers(ws) -> dict[str, int]:
             if v is None:
                 continue
             cell_lower = str(v).lower().strip()
-            print(f"DEBUG _scan_annexure_headers: r={r} c={c} value={repr(v)}")
             for field, kws in keywords.items():
                 if field not in col_map and any(kw in cell_lower for kw in kws):
                     col_map[field] = c
-                    print(f"DEBUG _scan_annexure_headers: matched field={field} col={c} value={repr(v)}")
                     break
 
-    print(f"DEBUG _scan_annexure_headers: result col_map={col_map}")
     return col_map
 
 
@@ -820,15 +1157,21 @@ def _normalize_annexure_ref(value: str) -> str | None:
     "Annexure 1"          → "ANNEXURE1"
     "ANNEXURE-2"          → "ANNEXURE2"
     "Refer Annexure 3"    → "ANNEXURE3"
+    "REFER TO ANNEX 4"    → "ANNEXURE4"
     "ANNEXURE (P1)-1"     → "ANNEXUREP1-1"
     "ANNEXURE (P2)-3"     → "ANNEXUREP2-3"
-    "Annexure I"           → "ANNEXURE1"
-    "Annexure II"          → "ANNEXURE2"
+    "Annexure I"          → "ANNEXURE1"
+    "Annexure Ⅵ"          → "ANNEXURE6"   (Unicode Roman → ASCII before regex)
     Returns None if value is not an annexure reference.
     """
     if not value:
         return None
-    m = _ANNEXURE_REF_RE.search(str(value).strip())
+    # Replace Unicode Roman numeral glyphs with their ASCII equivalents so
+    # the regex [IVX]+ can match them (e.g. "Ⅵ" → "VI", "Ⅻ" → "XII").
+    text = str(value).strip()
+    for uni_char, ascii_str in _UNICODE_ROMAN_MAP.items():
+        text = text.replace(uni_char, ascii_str)
+    m = _ANNEXURE_REF_RE.search(text)
     if m:
         group_id = m.group(1)  # e.g. "P1" from "(P1)", or None
         number = m.group(2)    # e.g. "1" or "I"
@@ -840,11 +1183,11 @@ def _normalize_annexure_ref(value: str) -> str | None:
             return f"ANNEXURE{group_id.upper()}-{number}"
         return f"ANNEXURE{number}"
     # Also match exact sheet names like "Annexure 1" without the regex
-    cleaned = re.sub(r"[\s\-_]+", "", str(value).strip().upper())
+    cleaned = re.sub(r"[\s\-_]+", "", text.upper())
     if cleaned.startswith("ANNEXURE") and any(c.isdigit() for c in cleaned):
         return cleaned
     # Bare "Refer Annexure" / "Annexure" without a number — sentinel for single-sheet resolution
-    if re.search(r"(?i)annex", str(value).strip()):
+    if re.search(r"(?i)annex", text):
         return "ANNEXURE_ANY"
     return None
 

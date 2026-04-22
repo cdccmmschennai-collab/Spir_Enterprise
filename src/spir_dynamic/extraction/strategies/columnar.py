@@ -142,7 +142,6 @@ class ColumnarStrategy:
                       Passed to continuation sheets that lack their own header row.
         """
         rows: list[dict[str, Any]] = []
-        print(f"DEBUG _columnar.extract: sheet={profile.name!r} is_item_source={'YES' if items_dict is None else 'NO'} items_dict_len={len(items_dict) if items_dict else 0}")
 
         if not profile.tag_columns:
             log.warning("ColumnarStrategy: no tag_columns for '%s'", profile.name)
@@ -240,7 +239,6 @@ class ColumnarStrategy:
 
                 # Detail rows — one per applicable item
                 applicable_items = tag_items_map.get(col, {})
-                print(f"DEBUG _columnar.extract: tag={tag!r} col={col} applicable_items={len(applicable_items)} is_item_source={is_item_source}")
 
                 # For continuation sheets (items_dict was passed in from outside),
                 # if a tag column has zero applicable items AND its cells are genuinely
