@@ -38,7 +38,22 @@
       "Bash(dir \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\frontend\")",
       "Bash(powershell:*)",
       "Bash(dir C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\src\\\\spir_dynamic *)",
-      "Bash(dir *)"
+      "Bash(dir *)",
+      "PowerShell(cd \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\"; Get-ChildItem -Path \"templates\" -Recurse | Select-Object Name | Where-Object { $_.Name -match \"0115|0851|0001\" })",
+      "PowerShell(cd \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\"; python _test_851.py 2>&1 | Where-Object { $_ -notmatch \"discovery mode\" })",
+      "PowerShell(cd \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\"; python _test_annex_list.py 2>&1 | Where-Object { $_ -notmatch \"discovery mode\" })",
+      "PowerShell(cd \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\"; python -m py_compile src/spir_dynamic/extraction/unified_extractor.py; if \\($?\\) { \"OK\" } else { \"FAILED\" }; python _test_851.py 2>&1 | Where-Object { $_ -notmatch \"discovery mode\" })",
+      "PowerShell(cd \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\"; python _test_regression.py 2>&1 | Where-Object { $_ -notmatch \"discovery mode\" })",
+      "PowerShell(cd \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\"; python _test_0001.py 2>&1 | Where-Object { $_ -notmatch \"discovery mode\" })",
+      "PowerShell(cd \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\"; python -m py_compile src/spir_dynamic/extraction/unified_extractor.py; if \\($?\\) { \"OK\" } else { \"FAILED\" }; python _test_0001.py 2>&1 | Where-Object { $_ -notmatch \"discovery mode\" })",
+      "PowerShell(cd \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\"; python _test_nrv.py 2>&1 | Where-Object { $_ -notmatch \"discovery mode\" })",
+      "Bash(py --version)",
+      "PowerShell(python --version)",
+      "PowerShell(Set-Location \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\"; .\\\\venv\\\\Scripts\\\\python.exe _diag4_0001.py 2>&1 | Where-Object { $_ -notmatch \"UserWarning|warn\\\\\\(msg\\\\\\)\" })",
+      "Bash(echo \"exit: $?\")",
+      "Bash(pip list *)",
+      "PowerShell(head *)",
+      "Bash(echo \"EXIT:$?\")"
     ]
   }
 }

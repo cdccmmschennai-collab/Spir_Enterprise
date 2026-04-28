@@ -142,7 +142,6 @@ class ColumnarStrategy:
                       Passed to continuation sheets that lack their own header row.
         """
         rows: list[dict[str, Any]] = []
-        print(f"DEBUG _columnar.extract: sheet={profile.name!r} is_item_source={'YES' if items_dict is None else 'NO'} items_dict_len={len(items_dict) if items_dict else 0}")
 
         if not profile.tag_columns:
             log.warning("ColumnarStrategy: no tag_columns for '%s'", profile.name)
@@ -240,7 +239,6 @@ class ColumnarStrategy:
 
                 # Detail rows — one per applicable item
                 applicable_items = tag_items_map.get(col, {})
-                print(f"DEBUG _columnar.extract: tag={tag!r} col={col} applicable_items={len(applicable_items)} is_item_source={is_item_source}")
 
                 # For continuation sheets (items_dict was passed in from outside),
                 # if a tag column has zero applicable items AND its cells are genuinely
@@ -349,7 +347,7 @@ class ColumnarStrategy:
             "supplier/ocm", "ocm name", "unit price", "currency",
             "delivery", "lead time", "uom", "unit of measure",
             "sap number", "sap no", "classification", "min max",
-            "stock level", "identical parts", "total no",
+            "stock level", "identical parts", "total no", "total",
             "qty identical", "quantity", "spare parts list",
             "interchangeability", "remarks", "spir number",
             "ref indicator", "authority block", "required on site",
@@ -763,10 +761,14 @@ class ColumnarStrategy:
                 if item_col:
                     break
 
-        # Fallback: find column with sequential integers (1, 2, 3...) in data rows.
+        # Fallback: find column with sequential integers in data rows.
         # Continuation sheets often lack an "ITEM NUMBER" header and may have
         # data_start_row set too early. Scan a wider range to find the actual
         # item number column and adjust start_row accordingly.
+        #
+        # Pass 1 (strict): cols 1-10, must start at 1,2 — original behaviour.
+        # Pass 2 (relaxed): all cols, any sequential start — catches conti sheets
+        #   whose item numbering starts mid-sequence (e.g. 5,6,7 in col 20).
         if item_col is None:
             tag_col_set = set(tag_info.keys())
             for search_start in range(start_row, min(start_row + 6, end_row)):
@@ -780,6 +782,28 @@ class ColumnarStrategy:
                                 and int(float(v1)) == 1 and int(float(v2)) == 2):
                             item_col = c
                             start_row = search_start  # adjust to actual data start
+                            break
+                    except (ValueError, TypeError):
+                        continue
+                if item_col:
+                    break
+
+        # Pass 2: expanded search — any column, any sequential start value.
+        # Only runs when Pass 1 found nothing (item_col still None).
+        if item_col is None:
+            tag_col_set = set(tag_info.keys())
+            max_search_col = ws.max_column or 30
+            for search_start in range(start_row, min(start_row + 6, end_row)):
+                for c in range(1, max_search_col + 1):
+                    if c in tag_col_set:
+                        continue
+                    try:
+                        v1 = ws.cell(search_start, c).value
+                        v2 = ws.cell(search_start + 1, c).value
+                        if (v1 is not None and v2 is not None
+                                and int(float(v2)) == int(float(v1)) + 1):
+                            item_col = c
+                            start_row = search_start
                             break
                     except (ValueError, TypeError):
                         continue
@@ -836,12 +860,15 @@ class ColumnarStrategy:
             if field == "tag":
                 continue
             raw = ws.cell(row, col).value
-            if field in ("quantity", "unit_price", "total_price", "delivery_weeks", "eqpt_qty", "min_max"):
-                # Enforce numeric-like cells for numeric fields.
+            if field in ("quantity", "unit_price", "total_price", "eqpt_qty", "min_max"):
+                # Enforce numeric-like cells for count/price fields.
                 if _is_numeric_like_cell(raw):
                     item[field] = clean_num(raw)
                 else:
                     item[field] = None
+            elif field == "delivery_weeks":
+                # Delivery time may be text ("4-6 weeks", "TBD") — preserve as-is.
+                item[field] = clean_str(raw) if raw is not None else None
             elif field == "description":
                 if _is_text_heavy_cell(raw):
                     item[field] = clean_str(raw)
