@@ -369,16 +369,69 @@ def _item_to_line_index(item_value) -> int:
         return 1
 
 
+def _reformat_omn_strict(body_segs: list[str], sheet_idx: int, line_idx: int) -> str | None:
+    """
+    Build strict 18-char OMN: PROJ(4)-DISC(1)SUBG(2)SEQ(4)-SSLYY(2).
+
+    Format: {proj}-{disc}{subg}{seq}-{sheet:02d}L{line:02d}
+    - Project: exactly 4 chars (numeric kept as-is; longer alpha truncated to 4)
+    - Discipline: exactly 1 digit
+    - Subgroup: exactly 2 digits
+    - Sequence: any digits, zero-padded to 4
+    - Sheet index: 2-digit (01 for first/single sheet, 02 for second, etc.)
+    - Line: 2-digit, max 99
+
+    Returns None when segments don't fit the structure so the caller
+    falls back to the existing flexible logic (VP format, lines > 99, etc.).
+    """
+    if len(body_segs) < 4:
+        return None
+
+    proj, disc, subg, seq = body_segs[0], body_segs[1], body_segs[2], body_segs[3]
+
+    # Normalize project to exactly 4 chars
+    if len(proj) > 4:
+        proj = proj[:4]          # e.g. MEWTP → MEWT
+    elif len(proj) < 4:
+        return None              # too short — fall back
+
+    # Discipline must be exactly 1 digit
+    if not (disc.isdigit() and len(disc) == 1):
+        return None
+
+    # Subgroup must be exactly 2 digits
+    if not (subg.isdigit() and len(subg) == 2):
+        return None
+
+    # Sequence must be all digits
+    if not seq.isdigit():
+        return None
+
+    # Line number must fit in 2 digits
+    if line_idx > 99:
+        return None
+
+    middle = disc + subg + seq.zfill(4)            # 1 + 2 + 4 = 7 chars
+    suffix = f"{sheet_idx:02d}L{line_idx:02d}"     # 2 + 1 + 2 = 5 chars
+    return f"{proj}-{middle}-{suffix}"              # 4 + 1 + 7 + 1 + 5 = 18 chars exactly
+
+
 def build_omn(spir_no: str, sheet_idx: int, line_idx: int,
               total_main_sheets: int = 1) -> str:
     raw_spir = spir_no
     body_segs, project_token = _canonical_omn_body_segments(
         _split_spir_segments(raw_spir)
     )
-    suffix = _build_suffix(sheet_idx, line_idx, total_main_sheets)
 
-    omn = _fit_omn_body_and_suffix(body_segs, suffix, project_token)
-    return omn
+    # Try strict 18-char format first
+    strict = _reformat_omn_strict(body_segs, sheet_idx, line_idx)
+    if strict is not None:
+        return strict
+
+    # Fall back to existing flexible logic for non-standard structures
+    # (VP format with fused discipline, lines > 99, short project codes, etc.)
+    suffix = _build_suffix(sheet_idx, line_idx, total_main_sheets)
+    return _fit_omn_body_and_suffix(body_segs, suffix, project_token)
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +456,12 @@ def _col(ci: dict, *names) -> int | None:
 # ---------------------------------------------------------------------------
 
 _NON_MAIN_PATTERNS = re.compile(
-    r"(?:continuation|cont\.?\s|continued|overflow|annexure|annex\b)",
+    r"(?:"
+    r"continuation|conti(?:nuation)?\b|cont(?:\.|\s|\-)"   # continuation / conti / cont- / cont.
+    r"|continued|overflow"
+    r"|annexure|annex\b"                                    # annexure / annex
+    r"|\bann?x[\s\-_(]"                                    # anx-N / annx-N (abbreviations)
+    r")",
     re.IGNORECASE,
 )
 
@@ -440,6 +498,28 @@ class SheetTracker:
         else:
             self._total_main_sheets = 1
 
+        # Pre-populate index for main sheets using natural sort so fan-out row
+        # reordering cannot cause a later-appearing sheet to claim an earlier index.
+        # Natural sort ensures "MAIN SHEET-2" < "MAIN SHEET-10".
+        if self._main_names_raw:
+            def _nat_key(n: str) -> list:
+                parts = re.split(r"(\d+)", n)
+                return [int(p) if p.isdigit() else p.upper() for p in parts]
+
+            main_only = sorted(
+                [
+                    n for n in self._main_names_raw
+                    if str(n).strip()
+                    and not _sheet_name_is_continuation_or_annexure(self._norm(n))
+                ],
+                key=_nat_key,
+            )
+            for i, name in enumerate(main_only, start=1):
+                # Store with normalized (uppercase) key so case-insensitive lookup
+                # works even when output rows store sheet names in uppercase.
+                self._sheet_to_idx[self._norm(name)] = i
+            self._main_counter = len(main_only)
+
     @property
     def total_main_sheets(self) -> int:
         return self._total_main_sheets
@@ -447,8 +527,15 @@ class SheetTracker:
     def get_sheet_idx(self, sheet: str | None) -> int:
         key = (sheet or "MAIN").strip()
         key_norm = self._norm(key)
-        if key in self._sheet_to_idx:
-            return self._sheet_to_idx[key]
+        # Use normalized (uppercase) key for lookup — consistent with how pre-population
+        # stores keys so that uppercase sheet names from output rows always match.
+        if key_norm in self._sheet_to_idx:
+            idx = self._sheet_to_idx[key_norm]
+            # Update _current_main_idx so continuation sheets that follow this
+            # pre-mapped main sheet inherit the correct index.
+            if self._is_main(key_norm):
+                self._current_main_idx = idx
+            return idx
 
         is_main = self._is_main(key_norm)
 
@@ -458,7 +545,7 @@ class SheetTracker:
             if not self._main_names_norm and self._main_counter > self._total_main_sheets:
                 self._total_main_sheets = self._main_counter
 
-        self._sheet_to_idx[key] = self._current_main_idx
+        self._sheet_to_idx[key_norm] = self._current_main_idx
         return self._current_main_idx
 
     @staticmethod

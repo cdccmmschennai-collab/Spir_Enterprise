@@ -125,6 +125,7 @@ class ColumnarStrategy:
         spir_no: str,
         items_dict: dict[int, dict[str, Any]] | None = None,
         item_col: int | None = None,
+        metadata_field_rows: dict[str, int] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Extract data from a columnar/matrix sheet.
@@ -141,7 +142,6 @@ class ColumnarStrategy:
                       Passed to continuation sheets that lack their own header row.
         """
         rows: list[dict[str, Any]] = []
-        print(f"DEBUG _columnar.extract: sheet={profile.name!r} is_item_source={'YES' if items_dict is None else 'NO'} items_dict_len={len(items_dict) if items_dict else 0}")
 
         if not profile.tag_columns:
             log.warning("ColumnarStrategy: no tag_columns for '%s'", profile.name)
@@ -165,7 +165,7 @@ class ColumnarStrategy:
                 return rows
 
         # Step 2: Read per-tag metadata (model, serial, qty from rows 2-7)
-        tag_metadata = self._read_tag_metadata(ws, profile, tag_info)
+        tag_metadata = self._read_tag_metadata(ws, profile, tag_info, field_rows=metadata_field_rows)
 
         # Step 3: Determine if we need to read items from this sheet
         is_item_source = items_dict is None
@@ -173,7 +173,7 @@ class ColumnarStrategy:
             items_dict = self._read_items(ws, profile)
 
         # Step 4: Read tag-to-item mapping (which tags use which items)
-        tag_items_map = self._read_tag_item_mapping(ws, profile, tag_info, item_col=item_col)
+        tag_items_map = self._read_tag_item_mapping(ws, profile, tag_info, item_col=item_col, items_dict=items_dict)
 
         # Step 5: Build output rows — header + details per tag
         global_meta = profile.metadata
@@ -239,7 +239,6 @@ class ColumnarStrategy:
 
                 # Detail rows — one per applicable item
                 applicable_items = tag_items_map.get(col, {})
-                print(f"DEBUG _columnar.extract: tag={tag!r} col={col} applicable_items={len(applicable_items)} is_item_source={is_item_source}")
 
                 # For continuation sheets (items_dict was passed in from outside),
                 # if a tag column has zero applicable items AND its cells are genuinely
@@ -348,7 +347,7 @@ class ColumnarStrategy:
             "supplier/ocm", "ocm name", "unit price", "currency",
             "delivery", "lead time", "uom", "unit of measure",
             "sap number", "sap no", "classification", "min max",
-            "stock level", "identical parts", "total no",
+            "stock level", "identical parts", "total no", "total",
             "qty identical", "quantity", "spare parts list",
             "interchangeability", "remarks", "spir number",
             "ref indicator", "authority block", "required on site",
@@ -564,10 +563,16 @@ class ColumnarStrategy:
         ws,
         profile: SheetProfile,
         tag_info: dict[int, list[str]],
+        field_rows: dict[str, int] | None = None,
     ) -> dict[str, dict[str, Any]]:
         """
         Read per-tag metadata from rows between row 1 and the header row.
         Looks for model, serial, eqpt_qty by scanning label cells in cols 1-3.
+
+        Args:
+            field_rows: When provided (continuation sheets), maps field name →
+                        row number discovered from the main sheet. Skips label
+                        scanning and reads values from known row positions.
         """
         metadata: dict[str, dict[str, Any]] = {}
         header_row = profile.header_row or 8
@@ -579,20 +584,32 @@ class ColumnarStrategy:
             "manufacturer": ["manufacturer", "make", "mfr name", "mfr"],
         }
 
+        discovered_field_rows: dict[str, int] = {}
+
         for r in range(1, min(header_row + 4, 15)):
-            # Check cols 1-3 for label text
             row_field = None
-            for c in range(1, min(4, (ws.max_column or 3) + 1)):
-                v = ws.cell(r, c).value
-                if v is None:
-                    continue
-                cl = str(v).lower().strip()
-                for field, kws in meta_keywords.items():
-                    if any(kw in cl for kw in kws):
+
+            if field_rows:
+                # Continuation sheet: use known row positions from main sheet
+                for field, known_row in field_rows.items():
+                    if r == known_row:
                         row_field = field
                         break
+            else:
+                # Main sheet: scan cols 1-3 for label text
+                for c in range(1, min(4, (ws.max_column or 3) + 1)):
+                    v = ws.cell(r, c).value
+                    if v is None:
+                        continue
+                    cl = str(v).lower().strip()
+                    for field, kws in meta_keywords.items():
+                        if any(kw in cl for kw in kws):
+                            row_field = field
+                            break
+                    if row_field:
+                        break
                 if row_field:
-                    break
+                    discovered_field_rows[row_field] = r
 
             if not row_field:
                 continue
@@ -630,6 +647,10 @@ class ColumnarStrategy:
                     if tag not in metadata:
                         metadata[tag] = {}
                     metadata[tag][row_field] = val
+
+        # Store discovered field rows so _extract_columnar_group can pass them to continuation sheets
+        if not field_rows:
+            self._last_metadata_field_rows = discovered_field_rows
 
         # PHASE 2 FIX: Fallback for eqpt_qty when "No. OF UNITS" is missing.
         # - Multi-tag cell (e.g., "TAG-1, TAG-2, TAG-3") → eqpt_qty = tag count
@@ -707,6 +728,7 @@ class ColumnarStrategy:
         profile: SheetProfile,
         tag_info: dict[int, list[str]],
         item_col: int | None = None,
+        items_dict: dict[int, dict[str, Any]] | None = None,
     ) -> dict[int, dict[int, int]]:
         """
         Read which items each tag column applies to, with per-tag quantities.
@@ -739,10 +761,14 @@ class ColumnarStrategy:
                 if item_col:
                     break
 
-        # Fallback: find column with sequential integers (1, 2, 3...) in data rows.
+        # Fallback: find column with sequential integers in data rows.
         # Continuation sheets often lack an "ITEM NUMBER" header and may have
         # data_start_row set too early. Scan a wider range to find the actual
         # item number column and adjust start_row accordingly.
+        #
+        # Pass 1 (strict): cols 1-10, must start at 1,2 — original behaviour.
+        # Pass 2 (relaxed): all cols, any sequential start — catches conti sheets
+        #   whose item numbering starts mid-sequence (e.g. 5,6,7 in col 20).
         if item_col is None:
             tag_col_set = set(tag_info.keys())
             for search_start in range(start_row, min(start_row + 6, end_row)):
@@ -762,6 +788,28 @@ class ColumnarStrategy:
                 if item_col:
                     break
 
+        # Pass 2: expanded search — any column, any sequential start value.
+        # Only runs when Pass 1 found nothing (item_col still None).
+        if item_col is None:
+            tag_col_set = set(tag_info.keys())
+            max_search_col = ws.max_column or 30
+            for search_start in range(start_row, min(start_row + 6, end_row)):
+                for c in range(1, max_search_col + 1):
+                    if c in tag_col_set:
+                        continue
+                    try:
+                        v1 = ws.cell(search_start, c).value
+                        v2 = ws.cell(search_start + 1, c).value
+                        if (v1 is not None and v2 is not None
+                                and int(float(v2)) == int(float(v1)) + 1):
+                            item_col = c
+                            start_row = search_start
+                            break
+                    except (ValueError, TypeError):
+                        continue
+                if item_col:
+                    break
+
         for r in range(start_row, end_row + 1):
             # Get item number for this row
             item_num = None
@@ -773,6 +821,11 @@ class ColumnarStrategy:
                     except (ValueError, TypeError):
                         continue
             if item_num is None:
+                continue
+
+            # Whitelist: skip items not present in items_dict (avoids mapping
+            # phantom item numbers beyond the last real item row)
+            if items_dict is not None and item_num not in items_dict:
                 continue
 
             # Check each tag column — read the per-tag quantity
@@ -807,12 +860,15 @@ class ColumnarStrategy:
             if field == "tag":
                 continue
             raw = ws.cell(row, col).value
-            if field in ("quantity", "unit_price", "total_price", "delivery_weeks", "eqpt_qty", "min_max"):
-                # Enforce numeric-like cells for numeric fields.
+            if field in ("quantity", "unit_price", "total_price", "eqpt_qty", "min_max"):
+                # Enforce numeric-like cells for count/price fields.
                 if _is_numeric_like_cell(raw):
                     item[field] = clean_num(raw)
                 else:
                     item[field] = None
+            elif field == "delivery_weeks":
+                # Delivery time may be text ("4-6 weeks", "TBD") — preserve as-is.
+                item[field] = clean_str(raw) if raw is not None else None
             elif field == "description":
                 if _is_text_heavy_cell(raw):
                     item[field] = clean_str(raw)
