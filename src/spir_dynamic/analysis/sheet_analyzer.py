@@ -7,6 +7,7 @@ a complete SheetProfile for a single worksheet.
 from __future__ import annotations
 
 import logging
+import re
 
 from spir_dynamic.models.sheet_profile import SheetProfile, SheetRole, TagLayout
 from spir_dynamic.analysis.header_detector import (
@@ -19,6 +20,15 @@ from spir_dynamic.analysis.tag_locator import locate_tags
 from spir_dynamic.utils.logging import timed
 
 log = logging.getLogger(__name__)
+
+# Matches sheet names that identify an annexure sheet:
+# "annexure", "annex" (without "ure"), or the common "Anx-N" / "ANX N" abbreviation.
+# Requires a non-word char after "anx/annx" so generic words like "maximum" don't match.
+# ann?x covers both "anx-1" and "annx-11" (double-n variant).
+_ANNEXURE_NAME_RE = re.compile(
+    r"annex(?:ure)?|\bann?x[\s\-_(]",
+    re.IGNORECASE,
+)
 
 # Sheet names that indicate non-data utility sheets (fallback defaults)
 UTILITY_KEYWORDS = frozenset(
@@ -100,6 +110,13 @@ def analyze_sheet(ws, sheet_name: str) -> SheetProfile:
         _apply_tag_result(profile, tag_result)
         profile.role = SheetRole.DATA
         profile.confidence = tag_result.confidence * 0.7
+        # Name-based annexure promotion for no-header sheets (e.g. "Anx-9", "Anx-10").
+        # These sheets have recognized tags but no standard header row, so they exit
+        # before the name check at Step 7.  We must check here so they enter the
+        # annexure registry rather than the columnar extraction pipeline.
+        if _ANNEXURE_NAME_RE.search(name_lower):
+            profile.role = SheetRole.ANNEXURE
+            profile.confidence = min(profile.confidence + 0.1, 1.0)
         return profile
 
     # Step 3: Map columns
@@ -152,7 +169,7 @@ def analyze_sheet(ws, sheet_name: str) -> SheetProfile:
     # Promote DATA sheets whose name contains "annexure" to ANNEXURE,
     # but NOT if the sheet has COLUMN_HEADERS layout WITH a description column —
     # those are spare-data sheets that happen to be named "Annexure", not tag-list sheets.
-    if "annexure" in name_lower and profile.role == SheetRole.DATA:
+    if _ANNEXURE_NAME_RE.search(name_lower) and profile.role == SheetRole.DATA:
         is_spare_data_sheet = (
             tag_result.layout == TagLayout.COLUMN_HEADERS
             and bool(profile.column_map.get("description"))

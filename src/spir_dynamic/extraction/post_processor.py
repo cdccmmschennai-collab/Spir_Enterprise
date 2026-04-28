@@ -456,7 +456,12 @@ def _col(ci: dict, *names) -> int | None:
 # ---------------------------------------------------------------------------
 
 _NON_MAIN_PATTERNS = re.compile(
-    r"(?:continuation|cont\.?\s|continued|overflow|annexure|annex\b)",
+    r"(?:"
+    r"continuation|conti(?:nuation)?\b|cont(?:\.|\s|\-)"   # continuation / conti / cont- / cont.
+    r"|continued|overflow"
+    r"|annexure|annex\b"                                    # annexure / annex
+    r"|\bann?x[\s\-_(]"                                    # anx-N / annx-N (abbreviations)
+    r")",
     re.IGNORECASE,
 )
 
@@ -510,7 +515,9 @@ class SheetTracker:
                 key=_nat_key,
             )
             for i, name in enumerate(main_only, start=1):
-                self._sheet_to_idx[name.strip()] = i
+                # Store with normalized (uppercase) key so case-insensitive lookup
+                # works even when output rows store sheet names in uppercase.
+                self._sheet_to_idx[self._norm(name)] = i
             self._main_counter = len(main_only)
 
     @property
@@ -520,8 +527,10 @@ class SheetTracker:
     def get_sheet_idx(self, sheet: str | None) -> int:
         key = (sheet or "MAIN").strip()
         key_norm = self._norm(key)
-        if key in self._sheet_to_idx:
-            idx = self._sheet_to_idx[key]
+        # Use normalized (uppercase) key for lookup — consistent with how pre-population
+        # stores keys so that uppercase sheet names from output rows always match.
+        if key_norm in self._sheet_to_idx:
+            idx = self._sheet_to_idx[key_norm]
             # Update _current_main_idx so continuation sheets that follow this
             # pre-mapped main sheet inherit the correct index.
             if self._is_main(key_norm):
@@ -536,7 +545,7 @@ class SheetTracker:
             if not self._main_names_norm and self._main_counter > self._total_main_sheets:
                 self._total_main_sheets = self._main_counter
 
-        self._sheet_to_idx[key] = self._current_main_idx
+        self._sheet_to_idx[key_norm] = self._current_main_idx
         return self._current_main_idx
 
     @staticmethod

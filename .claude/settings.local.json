@@ -49,7 +49,11 @@
       "PowerShell(cd \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\"; python _test_nrv.py 2>&1 | Where-Object { $_ -notmatch \"discovery mode\" })",
       "Bash(py --version)",
       "PowerShell(python --version)",
-      "PowerShell(Set-Location \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\"; .\\\\venv\\\\Scripts\\\\python.exe _diag4_0001.py 2>&1 | Where-Object { $_ -notmatch \"UserWarning|warn\\\\\\(msg\\\\\\)\" })"
+      "PowerShell(Set-Location \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\"; .\\\\venv\\\\Scripts\\\\python.exe _diag4_0001.py 2>&1 | Where-Object { $_ -notmatch \"UserWarning|warn\\\\\\(msg\\\\\\)\" })",
+      "Bash(echo \"exit: $?\")",
+      "Bash(pip list *)",
+      "PowerShell(head *)",
+      "Bash(echo \"EXIT:$?\")"
     ]
   }
 }
