@@ -53,7 +53,9 @@
       "Bash(echo \"exit: $?\")",
       "Bash(pip list *)",
       "PowerShell(head *)",
-      "Bash(echo \"EXIT:$?\")"
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(pip show *)",
+      "PowerShell(python --version; python -c \"import openpyxl; print\\(openpyxl.__version__\\)\")"
     ]
   }
 }

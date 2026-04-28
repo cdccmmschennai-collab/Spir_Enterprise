@@ -581,7 +581,7 @@ class ColumnarStrategy:
         meta_keywords = {
             "model": ["model number", "model no", "model", "mfr type", "type or model"],
             "serial": ["serial number", "serial no", "serial", "ser no", "mfr ser", "ser'l"],
-            "eqpt_qty": ["no. of units", "no of units", "units", "qty"],
+            "eqpt_qty": ["no. of units", "no of units", "qty"],
             "manufacturer": ["manufacturer", "make", "mfr name", "mfr"],
         }
 
