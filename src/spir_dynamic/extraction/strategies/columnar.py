@@ -478,7 +478,8 @@ class ColumnarStrategy:
             ]
 
         for col in profile.tag_columns:
-            for r in range(1, min(9, (ws.max_row or 0) + 1)):
+            scan_row_limit = min((profile.header_row or 9), 15, (ws.max_row or 0) + 1)
+            for r in range(1, scan_row_limit):
                 v = ws.cell(r, col).value
                 if v is None or is_placeholder(v):
                     continue
@@ -596,8 +597,10 @@ class ColumnarStrategy:
                         row_field = field
                         break
             else:
-                # Main sheet: scan cols 1-3 for label text
-                for c in range(1, min(4, (ws.max_column or 3) + 1)):
+                # Main sheet: scan all columns left of the first tag column for labels.
+                first_tag_col = min(tag_info.keys()) if tag_info else 4
+                label_scan_end = min(first_tag_col, (ws.max_column or 3) + 1)
+                for c in range(1, label_scan_end):
                     v = ws.cell(r, c).value
                     if v is None:
                         continue
