@@ -219,25 +219,7 @@ class ColumnarStrategy:
             for tag in tag_list:
                 tmeta = tag_metadata.get(tag, {})
 
-                # Equipment description (from first item or generic)
-                eqpt_desc = global_meta.get("equipment") or tmeta.get("equipment")
-
-                # Header row (equipment metadata, no ITEM NUMBER)
-                header_row: dict[str, Any] = {
-                    "sheet": sheet_name,
-                    "spir_no": spir_no or global_meta.get("spir_no"),
-                    "tag_no": tag,
-                    "manufacturer": global_mfr,
-                    "supplier": global_supplier,
-                    "model": tmeta.get("model"),
-                    "serial": tmeta.get("serial"),
-                    "eqpt_qty": tmeta.get("eqpt_qty"),
-                    "desc": eqpt_desc,
-                    "spir_type": global_meta.get("spir_type"),
-                }
-                rows.append(header_row)
-
-                # Detail rows — one per applicable item
+                # Resolve applicable items before deciding to emit this tag section.
                 applicable_items = tag_items_map.get(col, {})
 
                 # For continuation sheets (items_dict was passed in from outside),
@@ -256,6 +238,28 @@ class ColumnarStrategy:
                     )
                     if not has_any_data:
                         applicable_items = {num: 1 for num in items_dict}
+
+                # Skip this tag entirely when no spare items apply to it.
+                if not applicable_items:
+                    continue
+
+                # Equipment description (from first item or generic)
+                eqpt_desc = global_meta.get("equipment") or tmeta.get("equipment")
+
+                # Header row (equipment metadata, no ITEM NUMBER)
+                header_row: dict[str, Any] = {
+                    "sheet": sheet_name,
+                    "spir_no": spir_no or global_meta.get("spir_no"),
+                    "tag_no": tag,
+                    "manufacturer": global_mfr,
+                    "supplier": global_supplier,
+                    "model": tmeta.get("model"),
+                    "serial": tmeta.get("serial"),
+                    "eqpt_qty": tmeta.get("eqpt_qty"),
+                    "desc": eqpt_desc,
+                    "spir_type": global_meta.get("spir_type"),
+                }
+                rows.append(header_row)
 
                 for item_num, per_tag_qty in applicable_items.items():
                     item = items_dict.get(item_num, {})
