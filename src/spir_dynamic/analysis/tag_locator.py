@@ -299,17 +299,16 @@ def _check_column_headers(
             vl = str(v).lower().strip()
             if any(kw in vl for kw in _TAG_LABEL_KWS):
                 # Found the label — scan columns to the right for tag values.
-                # Stop at section breaks or after 3+ consecutive empty columns.
+                # Empty slots (unused tag positions) are skipped freely so that
+                # files where only some tag slots are filled (e.g. 1 of 4 slots
+                # occupied, leaving 3 empty columns before the real tag) are
+                # handled correctly. The scan stops only at content-based section
+                # breaks (long text, notes, "spare parts", etc.), not at empty cells.
                 tag_cols: list[int] = []
-                empty_streak = 0
                 for tc in range(c + 1, max_col + 1):
                     tv = ws.cell(r, tc).value
                     if tv is None or is_placeholder(tv) or str(tv).strip() == "_":
-                        empty_streak += 1
-                        if empty_streak >= 3:
-                            break  # too many empties = end of tag section
-                        continue
-                    empty_streak = 0
+                        continue  # skip empty tag slots freely
                     s = str(tv).strip()
                     # PHASE 2 FIX: Allow longer values if they look like
                     # comma/semicolon-separated tags (e.g., 10 tags in one cell).

@@ -95,15 +95,18 @@ def split_tags(raw_tag: Any) -> list[str]:
 
     first = parts[0]
     if len(parts) > 1:
-        # Case 1: Letter suffix pattern — "P-3425 A/B" or "6834-P-50 A/B"
-        # First part ends with " <letter>", remaining parts are single letters
-        letter_suffix_match = re.match(r"^(.+\s)([A-Za-z])$", first)
-        if letter_suffix_match:
-            remaining_are_letters = all(
-                re.match(r"^[A-Za-z]$", p) for p in parts[1:]
+        # Case 1: Alphanumeric suffix pattern
+        # Handles single-letter suffixes ("P-3425 A/B") and multi-char codes
+        # ("23-P-7100 XA/XB", "TAG-001 1A/1B", etc.)
+        # First part ends with "<space><1-4 char alphanum starting with letter>".
+        # All remaining parts must follow the same short-code pattern.
+        suffix_match = re.match(r"^(.+\s)([A-Za-z][A-Za-z0-9]{0,3})$", first)
+        if suffix_match:
+            remaining_are_short_alphanum = all(
+                re.match(r"^[A-Za-z][A-Za-z0-9]{0,3}$", p) for p in parts[1:]
             )
-            if remaining_are_letters:
-                base = letter_suffix_match.group(1)  # "P-3425 "
+            if remaining_are_short_alphanum:
+                base = suffix_match.group(1)  # "P-3425 " or "23-P-7100 "
                 result = [first]
                 for p in parts[1:]:
                     result.append(base + p)

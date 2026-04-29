@@ -53,7 +53,12 @@
       "Bash(echo \"exit: $?\")",
       "Bash(pip list *)",
       "PowerShell(head *)",
-      "Bash(echo \"EXIT:$?\")"
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(pip show *)",
+      "PowerShell(python --version; python -c \"import openpyxl; print\\(openpyxl.__version__\\)\")",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\" -Recurse -Directory | ForEach-Object { $_.FullName } | Sort-Object)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\" -Recurse -Directory | Where-Object { $_.Name -match \"look for it|templates|outputs|OUTPUT\" })",
+      "PowerShell(\\(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\templates\" -Directory\\).FullName; \\(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\templates\" -File\\).FullName)"
     ]
   }
 }

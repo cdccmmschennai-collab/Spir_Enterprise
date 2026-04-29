@@ -219,25 +219,7 @@ class ColumnarStrategy:
             for tag in tag_list:
                 tmeta = tag_metadata.get(tag, {})
 
-                # Equipment description (from first item or generic)
-                eqpt_desc = global_meta.get("equipment") or tmeta.get("equipment")
-
-                # Header row (equipment metadata, no ITEM NUMBER)
-                header_row: dict[str, Any] = {
-                    "sheet": sheet_name,
-                    "spir_no": spir_no or global_meta.get("spir_no"),
-                    "tag_no": tag,
-                    "manufacturer": global_mfr,
-                    "supplier": global_supplier,
-                    "model": tmeta.get("model"),
-                    "serial": tmeta.get("serial"),
-                    "eqpt_qty": tmeta.get("eqpt_qty"),
-                    "desc": eqpt_desc,
-                    "spir_type": global_meta.get("spir_type"),
-                }
-                rows.append(header_row)
-
-                # Detail rows — one per applicable item
+                # Resolve applicable items before deciding to emit this tag section.
                 applicable_items = tag_items_map.get(col, {})
 
                 # For continuation sheets (items_dict was passed in from outside),
@@ -256,6 +238,28 @@ class ColumnarStrategy:
                     )
                     if not has_any_data:
                         applicable_items = {num: 1 for num in items_dict}
+
+                # Skip this tag entirely when no spare items apply to it.
+                if not applicable_items:
+                    continue
+
+                # Equipment description (from first item or generic)
+                eqpt_desc = global_meta.get("equipment") or tmeta.get("equipment")
+
+                # Header row (equipment metadata, no ITEM NUMBER)
+                header_row: dict[str, Any] = {
+                    "sheet": sheet_name,
+                    "spir_no": spir_no or global_meta.get("spir_no"),
+                    "tag_no": tag,
+                    "manufacturer": global_mfr,
+                    "supplier": global_supplier,
+                    "model": tmeta.get("model"),
+                    "serial": tmeta.get("serial"),
+                    "eqpt_qty": tmeta.get("eqpt_qty"),
+                    "desc": eqpt_desc,
+                    "spir_type": global_meta.get("spir_type"),
+                }
+                rows.append(header_row)
 
                 for item_num, per_tag_qty in applicable_items.items():
                     item = items_dict.get(item_num, {})
@@ -478,7 +482,8 @@ class ColumnarStrategy:
             ]
 
         for col in profile.tag_columns:
-            for r in range(1, min(9, (ws.max_row or 0) + 1)):
+            scan_row_limit = min((profile.header_row or 9), 15, (ws.max_row or 0) + 1)
+            for r in range(1, scan_row_limit):
                 v = ws.cell(r, col).value
                 if v is None or is_placeholder(v):
                     continue
@@ -580,7 +585,7 @@ class ColumnarStrategy:
         meta_keywords = {
             "model": ["model number", "model no", "model", "mfr type", "type or model"],
             "serial": ["serial number", "serial no", "serial", "ser no", "mfr ser", "ser'l"],
-            "eqpt_qty": ["no. of units", "no of units", "units", "qty"],
+            "eqpt_qty": ["no. of units", "no of units", "qty"],
             "manufacturer": ["manufacturer", "make", "mfr name", "mfr"],
         }
 
@@ -596,8 +601,10 @@ class ColumnarStrategy:
                         row_field = field
                         break
             else:
-                # Main sheet: scan cols 1-3 for label text
-                for c in range(1, min(4, (ws.max_column or 3) + 1)):
+                # Main sheet: scan all columns left of the first tag column for labels.
+                first_tag_col = min(tag_info.keys()) if tag_info else 4
+                label_scan_end = min(first_tag_col, (ws.max_column or 3) + 1)
+                for c in range(1, label_scan_end):
                     v = ws.cell(r, c).value
                     if v is None:
                         continue
