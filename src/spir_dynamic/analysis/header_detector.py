@@ -450,62 +450,113 @@ def _detect_spir_type(ws, scan_rows: int, max_col: int) -> str | None:
     type_row = type_cells[0][0]  # all labels are in the same row
     type_cols = [(c, normalized) for _, c, normalized in type_cells]
 
-    # Phase 2: Scan ONLY rows 2-3 below the labels for tick values.
-    # Tick values appear immediately below the type labels in the header area.
-    # Do NOT scan further down — data rows may have 0/1 values that are
-    # NOT SPIR type ticks.
-    for offset in range(2, 4):
-        check_row = type_row + offset
-        if check_row > (ws.max_row or 0):
-            break
+    # Shared helper: detect whether a type label at (row, col) is actually a
+    # data-table column header rather than a SPIR type checkbox label.
+    # Column headers have "recommended by" / "authorised" sub-text in the
+    # 1-2 rows below them. Check both offsets +1 and +2 because some forms
+    # insert a blank row between the type-header row and the sub-header row.
+    _COL_HDR_KW = ("recommended", "authorised", "authorized")
 
-        col_vals: list[tuple[float, str]] = []
-        all_numeric = True
-        for c, normalized in type_cols:
-            cv = ws.cell(check_row, c).value
-            if cv is True:
-                return normalized
-            try:
-                num_val = float(cv) if cv is not None else 0
-                col_vals.append((num_val, normalized))
-            except (ValueError, TypeError):
-                all_numeric = False
+    def _is_col_header_label(row: int, col: int) -> bool:
+        for off in (1, 2):
+            below = str(ws.cell(row + off, col).value or "").lower()
+            if any(kw in below for kw in _COL_HDR_KW):
+                return True
+        return False
+
+    # Phase 2: Scan rows 1-5 below the labels for tick values.
+    # Covers layouts where the tick row is immediately below (offset 1) or
+    # separated by blank/header rows (offsets 2-5). Offset 5 still stays
+    # within the header area — data rows typically start at row 20+.
+    # IMPORTANT: exclude data-column-header labels — their "below" rows contain
+    # item quantities that mimic the tick pattern and cause false detections.
+    tick_type_cols = [(c, n) for c, n in type_cols if not _is_col_header_label(type_row, c)]
+
+    if tick_type_cols:
+        for offset in range(1, 6):
+            check_row = type_row + offset
+            if check_row > (ws.max_row or 0):
                 break
 
-        if not all_numeric or not col_vals:
-            continue
+            col_vals: list[tuple[float, str]] = []
+            all_numeric = True
+            for c, normalized in tick_type_cols:
+                cv = ws.cell(check_row, c).value
+                if cv is True:
+                    return normalized
+                try:
+                    num_val = float(cv) if cv is not None else 0
+                    col_vals.append((num_val, normalized))
+                except (ValueError, TypeError):
+                    all_numeric = False
+                    break
 
-        # Check if this row has a tick pattern: exactly ONE > 0, rest = 0
-        positive = [(v, n) for v, n in col_vals if v > 0]
-        zeros = [v for v, _ in col_vals if v == 0]
+            if not all_numeric or not col_vals:
+                continue
 
-        if len(positive) == 1 and len(zeros) >= 1:
-            return positive[0][1]
+            # Check if this row has a tick pattern: exactly ONE > 0, rest = 0
+            positive = [(v, n) for v, n in col_vals if v > 0]
+            zeros = [v for v, _ in col_vals if v == 0]
 
-    # Phase 3: No data-row tick found. Check for boolean True in same row
+            if len(positive) == 1 and len(zeros) >= 1:
+                return positive[0][1]
+
+    # Phase 3: No below-row tick found.
+    # Check right of each label for a True/numeric tick — but skip column-header
+    # labels (they have "recommended" sub-headers 1-2 rows below; their boolean
+    # neighbours belong to an unrelated form section).
+    type_rows_set = {r for r, _, _ in type_cells}
+    is_vertical = len(type_rows_set) > 1
+
     for r, c, normalized in type_cells:
+        if _is_col_header_label(r, c):
+            continue  # column-header label — not a checkbox label
         for check_c in range(c + 1, min(c + 12, max_col + 1)):
             tv = ws.cell(r, check_c).value
             if tv is True:
                 return normalized
+            if is_vertical:
+                try:
+                    if float(tv) > 0:
+                        return normalized
+                except (TypeError, ValueError):
+                    pass
 
-    # If only ONE type label is found, use it directly (text-only format).
-    unique_types = set(n for _, _, n in type_cells)
-    if len(unique_types) == 1:
-        return unique_types.pop()
+    # Phase 4: Boolean-column detection.
+    # In some QatarEnergy SPIR formats the SPIR type is encoded as a boolean
+    # True/False in a dedicated column (form-control checkboxes linked to cells).
+    # Pattern: 3-4 consecutive rows in the header area, exactly one True, rest
+    # False. The True row's 0-based index in the sorted sequence maps to the
+    # standard type order (commissioning → initial → normal operating → life cycle).
+    # Cross-validated: index 2 True → Normal Operating; data column for Normal
+    # Operating has non-zero qty in those files — confirms the ordering.
+    _BOOL_COL_TYPE_ORDER = [
+        "commissioning spare",
+        "initial spares",
+        "normal operating spares",
+        "life cycle spares",
+    ]
+    for col in range(max_col, max(max_col - 12, 0), -1):
+        bool_rows: list[tuple[int, bool]] = []
+        for row in range(1, min(scan_rows + 2, 15)):
+            v = ws.cell(row, col).value
+            if isinstance(v, bool):
+                bool_rows.append((row, v))
+        if len(bool_rows) < 3:
+            continue
+        true_list = [row for row, v in bool_rows if v is True]
+        false_list = [row for row, v in bool_rows if v is False]
+        if len(true_list) != 1 or len(false_list) < 2:
+            continue
+        # Require consecutive rows (no gaps) to avoid false positives
+        sorted_rows = sorted(row for row, _ in bool_rows)
+        if sorted_rows[-1] - sorted_rows[0] != len(sorted_rows) - 1:
+            continue
+        true_idx = sorted_rows.index(true_list[0])
+        if true_idx < len(_BOOL_COL_TYPE_ORDER):
+            return _BOOL_COL_TYPE_ORDER[true_idx]
 
-    # If ALL type cells contain only a bare type keyword, this is a text-only
-    # format (no checkbox grid). Return the first type found.
-    all_standalone = True
-    for r, c, normalized in type_cells:
-        cell_val = str(ws.cell(r, c).value or "").strip().lower()
-        if cell_val not in _SPIR_TYPE_MAP:
-            all_standalone = False
-            break
-    if all_standalone:
-        return type_cells[0][2]
-
-    # No type ticked — return None (blank). Do NOT guess or default.
+    # No tick found — return None (blank). Do NOT guess or default.
     return None
 
 

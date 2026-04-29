@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 
 # Fields that should be read as numbers
 _NUMERIC_FIELDS = frozenset(
-    {"quantity", "unit_price", "total_price", "delivery_weeks", "eqpt_qty", "min_max"}
+    {"quantity", "unit_price", "total_price", "eqpt_qty", "min_max"}
 )
 
 

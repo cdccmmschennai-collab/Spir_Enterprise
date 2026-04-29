@@ -209,7 +209,7 @@ def map_headers(
     data_row_end = min((ws.max_row or 0), header_row + sample_rows)
     sample_range = range(data_row_start, data_row_end + 1)
 
-    numeric_like_fields = {"quantity", "unit_price", "total_price", "delivery_weeks", "eqpt_qty", "min_max"}
+    numeric_like_fields = {"quantity", "unit_price", "total_price", "eqpt_qty", "min_max"}
     text_heavy_fields = {"description"}
 
     col_stats: dict[int, dict[str, float]] = {}

@@ -58,7 +58,11 @@
       "PowerShell(python --version; python -c \"import openpyxl; print\\(openpyxl.__version__\\)\")",
       "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\" -Recurse -Directory | ForEach-Object { $_.FullName } | Sort-Object)",
       "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\" -Recurse -Directory | Where-Object { $_.Name -match \"look for it|templates|outputs|OUTPUT\" })",
-      "PowerShell(\\(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\templates\" -Directory\\).FullName; \\(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\templates\" -File\\).FullName)"
+      "PowerShell(\\(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\templates\" -Directory\\).FullName; \\(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\templates\" -File\\).FullName)",
+      "Bash(venv/Scripts/python.exe *)",
+      "PowerShell(python --version 2>&1; where.exe python 2>&1 | Select-Object -First 3)",
+      "PowerShell(Get-Content *)",
+      "Bash(PYTHONPATH=src \"C:/Users/softuser1/Downloads/spir_dynamic/venv/Scripts/python.exe\" -W ignore -c \"print\\('ok'\\)\")"
     ]
   }
 }
