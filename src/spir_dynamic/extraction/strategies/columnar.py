@@ -392,7 +392,16 @@ class ColumnarStrategy:
             if "\n" in raw_text or "\r" in raw_text:
                 nl_parts = [p.strip() for p in re.split(r"[\n\r]+", raw_text) if p.strip()]
                 if len(nl_parts) > 1:
-                    raw_text = ", ".join(nl_parts)
+                    # Only treat as multiple packed tags when every part looks like
+                    # a real tag (has the prefix-separator-suffix structure).
+                    # Parts like "(Existing)" or "New" are annotations — keep only
+                    # the tag-like parts and collapse to a single canonical tag.
+                    all_tag_like = all(_TAG_LIKE_PAT.search(p) for p in nl_parts)
+                    if all_tag_like:
+                        raw_text = ", ".join(nl_parts)
+                    else:
+                        tag_parts = [p for p in nl_parts if _TAG_LIKE_PAT.search(p)]
+                        raw_text = tag_parts[0] if tag_parts else nl_parts[0]
 
             # Some files separate full tags by repeated spaces instead of commas.
             # Convert only when we can clearly see 2+ tag-like tokens.
