@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CloudUpload,
   FileSpreadsheet,
@@ -19,6 +19,7 @@ import {
   ChevronRight,
   ArrowUpRight,
   RefreshCw,
+  XCircle,
 } from "lucide-react";
 import { SidebarLayout } from "@/components/sidebar";
 import { authHeaders } from "@/lib/auth";
@@ -27,6 +28,7 @@ import { cn } from "@/lib/utils";
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const ACCEPTED = ".xlsx,.xlsm,.xls";
 const ROWS_PER_PAGE = 10;
+const JOB_KEY = "spir_active_job_id";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -346,9 +348,89 @@ export default function ExtractionPage() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ExtractResult | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const jobIdRef = useRef<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  function _stopPolling() {
+    if (pollRef.current !== null) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }
+
+  function _startPolling(job_id: string) {
+    _stopPolling();
+    const intervalId = setInterval(async () => {
+      try {
+        const pr = await fetch(`${API_URL}/api/status/${job_id}`, {
+          headers: authHeaders(),
+          credentials: "include",
+        });
+
+        if (pr.status === 401) {
+          _stopPolling(); localStorage.removeItem(JOB_KEY); jobIdRef.current = null;
+          setError("Session expired. Please log in again."); setLoading(false); return;
+        }
+        if (pr.status === 403 || pr.status === 404) {
+          _stopPolling(); localStorage.removeItem(JOB_KEY); jobIdRef.current = null;
+          setLoading(false); return;
+        }
+        if (!pr.ok) return; // 5xx transient — keep retrying
+
+        const poll = await pr.json();
+
+        if (poll.status === "completed") {
+          _stopPolling(); localStorage.removeItem(JOB_KEY); jobIdRef.current = null;
+          setResult(poll as ExtractResult); setLoading(false);
+        } else if (poll.status === "failed") {
+          _stopPolling(); localStorage.removeItem(JOB_KEY); jobIdRef.current = null;
+          setError(poll.error ?? "Extraction failed."); setLoading(false);
+        } else if (poll.status === "cancelled") {
+          _stopPolling(); localStorage.removeItem(JOB_KEY); jobIdRef.current = null;
+          setLoading(false);
+        }
+        // pending | processing | queued — keep polling
+      } catch {
+        // Network failure — keep retrying
+      }
+    }, 2500);
+    pollRef.current = intervalId;
+  }
+
+  // On mount: if a job_id was persisted, fetch status once then resume or show result.
+  useEffect(() => {
+    const stored = localStorage.getItem(JOB_KEY);
+    if (!stored) return () => _stopPolling();
+
+    jobIdRef.current = stored;
+    setLoading(true);
+
+    fetch(`${API_URL}/api/status/${stored}`, { headers: authHeaders(), credentials: "include" })
+      .then(pr => pr.ok ? pr.json() : null)
+      .then(data => {
+        if (!data) { _startPolling(stored); return; }
+        const st: string = data.status ?? "pending";
+        if (st === "completed") {
+          localStorage.removeItem(JOB_KEY); jobIdRef.current = null;
+          setResult(data as ExtractResult); setLoading(false);
+        } else if (st === "failed") {
+          localStorage.removeItem(JOB_KEY); jobIdRef.current = null;
+          setError(data.error ?? "Extraction failed."); setLoading(false);
+        } else if (st === "cancelled") {
+          localStorage.removeItem(JOB_KEY); jobIdRef.current = null;
+          setLoading(false);
+        } else {
+          _startPolling(stored);
+        }
+      })
+      .catch(() => _startPolling(stored));
+
+    return () => _stopPolling();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleExtract() {
     if (!file) return;
+    _stopPolling();
     setLoading(true);
     setError(null);
     setResult(null);
@@ -360,27 +442,47 @@ export default function ExtractionPage() {
       const res = await fetch(`${API_URL}/api/extract`, {
         method: "POST",
         headers: authHeaders(),
+        credentials: "include",
         body: form,
       });
 
       if (res.status === 401) {
         setError("Session expired. Please log in again.");
+        setLoading(false);
         return;
       }
-
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(data.detail ?? `Extraction failed (${res.status})`);
+        setError(data.detail ?? `Upload failed (${res.status})`);
+        setLoading(false);
         return;
       }
 
-      const data: ExtractResult = await res.json();
-      setResult(data);
+      const { job_id } = await res.json();
+      localStorage.setItem(JOB_KEY, job_id);
+      jobIdRef.current = job_id;
+      _startPolling(job_id);
+
     } catch {
       setError("Could not reach the server. Is the backend running?");
-    } finally {
       setLoading(false);
     }
+  }
+
+  async function handleCancel() {
+    const job_id = jobIdRef.current ?? localStorage.getItem(JOB_KEY);
+    if (!job_id) return;
+    _stopPolling();
+    localStorage.removeItem(JOB_KEY);
+    jobIdRef.current = null;
+    setLoading(false);
+    try {
+      await fetch(`${API_URL}/api/cancel/${job_id}`, {
+        method: "POST",
+        headers: authHeaders(),
+        credentials: "include",
+      });
+    } catch { /* ignore */ }
   }
 
   async function handleDownload() {
@@ -411,9 +513,13 @@ export default function ExtractionPage() {
   }
 
   function handleReset() {
+    _stopPolling();
+    localStorage.removeItem(JOB_KEY);
+    jobIdRef.current = null;
     setFile(null);
     setResult(null);
     setError(null);
+    setLoading(false);
   }
 
   return (
@@ -424,26 +530,31 @@ export default function ExtractionPage() {
           {/* Upload zone */}
           <UploadZone file={file} onFile={setFile} disabled={loading} />
 
-          {/* Extract button */}
-          {file && (
-            <div className="flex justify-center">
-              <button
-                onClick={handleExtract}
-                disabled={loading}
-                className="flex h-11 items-center gap-2 rounded-xl bg-violet-700 px-8 text-sm font-semibold text-white shadow-md shadow-violet-200 transition-all hover:bg-violet-800 disabled:opacity-60"
-              >
-                {loading ? (
-                  <>
+          {(file || loading) && (
+            <div className="flex justify-center items-center gap-3">
+              {file && (
+                <button
+                  onClick={handleExtract}
+                  disabled={loading}
+                  className="flex h-11 items-center gap-2 rounded-xl bg-violet-700 px-8 text-sm font-semibold text-white shadow-md shadow-violet-200 transition-all hover:bg-violet-800 disabled:opacity-60"
+                >
+                  {loading ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    Extracting…
-                  </>
-                ) : (
-                  <>
+                  ) : (
                     <FileSpreadsheet className="h-4 w-4" />
-                    Run Extraction
-                  </>
-                )}
-              </button>
+                  )}
+                  Run Extraction
+                </button>
+              )}
+              {loading && (
+                <button
+                  onClick={handleCancel}
+                  className="flex h-11 items-center gap-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-6 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-red-50 hover:text-red-600 hover:border-red-200 dark:hover:bg-red-950/30 dark:hover:text-red-400 transition-colors"
+                >
+                  <XCircle className="h-4 w-4" />
+                  Cancel
+                </button>
+              )}
             </div>
           )}
 
@@ -506,7 +617,7 @@ export default function ExtractionPage() {
               </div>
               <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
                 Successfully processed{" "}
-                <span className="font-semibold text-slate-700 dark:text-slate-300">{file?.name}</span>
+                <span className="font-semibold text-slate-700 dark:text-slate-300">{result.filename ?? file?.name}</span>
               </p>
             </div>
             <div className="flex items-center gap-2">

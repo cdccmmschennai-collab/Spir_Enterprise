@@ -2,7 +2,10 @@
 FastAPI application factory.
 """
 from __future__ import annotations
-import os
+from dotenv import load_dotenv
+load_dotenv()
+
+import os                                           
 
 import logging
 from contextlib import asynccontextmanager

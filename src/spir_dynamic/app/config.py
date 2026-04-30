@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     min_column_map_score: int = 30
     discovery_min_score: int = 15
 
+    # Redis (required for Celery background processing)
+    # Set to empty string to disable Celery and use synchronous in-process extraction
+    redis_url: str = ""
+
     # Batch processing
     batch_max_files: int = 20
     batch_ttl_seconds: int = 7200
