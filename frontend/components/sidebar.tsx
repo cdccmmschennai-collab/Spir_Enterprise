@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import {
   FileSpreadsheet,
@@ -14,7 +14,9 @@ import {
   Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { clearToken } from "@/lib/auth";
+import { clearToken, authHeaders } from "@/lib/auth";
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 interface NavItem {
   label: string;
@@ -123,11 +125,30 @@ function TopNavbar({
   onMenuClick,
   darkMode,
   onToggleDark,
+  userInitials,
+  username,
+  count,
 }: {
   onMenuClick?: () => void;
   darkMode: boolean;
   onToggleDark: () => void;
+  userInitials: string;
+  username: string;
+  count: number;
 }) {
+  const [showProfile, setShowProfile] = useState(false);
+  const profileRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (profileRef.current && !profileRef.current.contains(e.target as Node)) {
+        setShowProfile(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
   return (
     <header className="flex h-14 items-center gap-3 border-b border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 px-4 lg:px-6">
       {/* Mobile menu */}
@@ -166,9 +187,23 @@ function TopNavbar({
           <span className="text-xs font-medium text-emerald-700 dark:text-emerald-400">Online</span>
         </div>
 
-        {/* User avatar */}
-        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-violet-100 text-xs font-bold text-violet-700 cursor-pointer hover:bg-violet-200 dark:bg-violet-900 dark:text-violet-300 dark:hover:bg-violet-800 transition-colors">
-          ST
+        {/* User avatar + profile dropdown */}
+        <div className="relative" ref={profileRef}>
+          <button
+            onClick={() => setShowProfile((p) => !p)}
+            title={username}
+            className="flex h-8 w-8 items-center justify-center rounded-full bg-violet-100 text-xs font-bold text-violet-700 cursor-pointer hover:bg-violet-200 dark:bg-violet-900 dark:text-violet-300 dark:hover:bg-violet-800 transition-colors"
+          >
+            {userInitials}
+          </button>
+          {showProfile && (
+            <div className="absolute right-0 top-10 z-50 w-48 rounded-xl border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-800 p-3 space-y-1">
+              <p className="text-xs font-semibold text-slate-700 dark:text-slate-200 truncate">{username || "—"}</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {count} file{count !== 1 ? "s" : ""} extracted
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </header>
@@ -184,6 +219,9 @@ interface SidebarProps {
 export function SidebarLayout({ children }: SidebarProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
+  const [userInitials, setUserInitials] = useState("??");
+  const [username, setUsername] = useState("");
+  const [count, setCount] = useState(0);
   const router = useRouter();
   const pathname = usePathname();
 
@@ -193,15 +231,51 @@ export function SidebarLayout({ children }: SidebarProps) {
     if (saved === "dark") setDarkMode(true);
   }, []);
 
+  // Fetch current user profile and extraction count — force logout if token invalid/expired
+  useEffect(() => {
+    async function fetchMe() {
+      try {
+        const [meRes, histRes] = await Promise.all([
+          fetch(`${API_URL}/api/me`, { headers: { ...authHeaders() } }),
+          fetch(`${API_URL}/api/history`, { headers: { ...authHeaders() } }),
+        ]);
+        if (meRes.status === 401) {
+          clearToken();
+          window.location.href = "/login";
+          return;
+        }
+        const data = await meRes.json();
+        const name: string = data.username ?? "";
+        setUsername(name);
+        setUserInitials(name.slice(0, 2).toUpperCase() || "??");
+        if (histRes.ok) {
+          const hist = await histRes.json();
+          setCount(Array.isArray(hist) ? hist.length : 0);
+        }
+      } catch {
+        // network error — don't force logout
+      }
+    }
+    fetchMe();
+  }, []);
+
   // Persist theme and apply class to <html>
   useEffect(() => {
     localStorage.setItem("theme", darkMode ? "dark" : "light");
     document.documentElement.classList.toggle("dark", darkMode);
   }, [darkMode]);
 
-  function handleLogout() {
+  async function handleLogout() {
+    try {
+      await fetch(`${API_URL}/auth/logout`, {
+        method: "POST",
+        headers: { ...authHeaders() },
+      });
+    } catch {
+      // ignore network errors — clear token regardless
+    }
     clearToken();
-    router.push("/login");
+    window.location.href = "/login";
   }
 
   return (
@@ -245,6 +319,9 @@ export function SidebarLayout({ children }: SidebarProps) {
           onMenuClick={() => setMobileOpen(true)}
           darkMode={darkMode}
           onToggleDark={() => setDarkMode((d) => !d)}
+          userInitials={userInitials}
+          username={username}
+          count={count}
         />
         <main className="flex-1 overflow-y-auto">{children}</main>
       </div>

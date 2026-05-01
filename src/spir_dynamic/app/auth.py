@@ -26,7 +26,8 @@ from spir_dynamic.app.config import get_settings
 # Constants
 # ---------------------------------------------------------------------------
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login")
+_optional_oauth2 = OAuth2PasswordBearer(tokenUrl="/api/login", auto_error=False)
 
 
 def _hash_password(plain: str) -> str:
@@ -104,6 +105,18 @@ def verify_token(token: str = Depends(oauth2_scheme)) -> str:
     return _decode_token(token).username
 
 
+async def get_optional_user(token: Optional[str] = Depends(_optional_oauth2)) -> TokenData:
+    """Returns anonymous TokenData if no token — never raises 401."""
+    if not token:
+        return TokenData(username="anonymous", user_id=None, jti=None)
+    td = _decode_token(token)
+    if td.jti:
+        from spir_dynamic.services.audit_service import update_session_activity
+        import asyncio
+        asyncio.ensure_future(update_session_activity(td.jti))
+    return td
+
+
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> TokenData:
     """
     FastAPI dependency — returns a TokenData with username, user_id, jti.
@@ -159,7 +172,7 @@ async def login(
 @auth_router.post("/logout")
 async def logout(
     request: Request,
-    td: TokenData = Depends(get_current_user),
+    td: TokenData = Depends(get_optional_user),
 ) -> dict:
     """Invalidate the current session."""
     if td.jti:

@@ -25,6 +25,32 @@ async def create_tables() -> None:
     log.info("Database tables verified/created")
 
 
+async def ensure_schema() -> None:
+    """Idempotently add any columns missing from extraction_history."""
+    engine = get_engine()
+    ddl = [
+        # Columns (idempotent)
+        "ALTER TABLE extraction_history ADD COLUMN IF NOT EXISTS filename    TEXT         NOT NULL DEFAULT ''",
+        "ALTER TABLE extraction_history ADD COLUMN IF NOT EXISTS original_filename TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE extraction_history ADD COLUMN IF NOT EXISTS spir_no     TEXT",
+        "ALTER TABLE extraction_history ADD COLUMN IF NOT EXISTS total_rows  INTEGER      NOT NULL DEFAULT 0",
+        "ALTER TABLE extraction_history ADD COLUMN IF NOT EXISTS tag_count   INTEGER      NOT NULL DEFAULT 0",
+        "ALTER TABLE extraction_history ADD COLUMN IF NOT EXISTS spare_count INTEGER      NOT NULL DEFAULT 0",
+        "ALTER TABLE extraction_history ADD COLUMN IF NOT EXISTS created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()",
+        # format can exceed typical VARCHAR limits for multi-sheet workbooks; store as TEXT.
+        "ALTER TABLE extraction_history ALTER COLUMN format TYPE TEXT",
+        "CREATE INDEX IF NOT EXISTS ix_extraction_history_user_id    ON extraction_history(user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_extraction_history_created_at ON extraction_history(created_at)",
+    ]
+    async with engine.begin() as conn:
+        for stmt in ddl:
+            try:
+                await conn.execute(text(stmt))
+            except Exception as exc:
+                log.warning("Schema sync statement skipped: %s — %s", stmt[:60], exc)
+    log.info("extraction_history schema verified/synced")
+
+
 async def seed_admin(username: str, plain_password: str) -> None:
     """
     Ensure at least one admin user exists.
@@ -79,6 +105,7 @@ async def initialize(database_url: str, app_user: str, app_pass: str) -> bool:
     try:
         setup_engine(database_url)
         await create_tables()
+        await ensure_schema()
         await seed_admin(app_user, app_pass)
         return True
     except Exception as exc:

@@ -53,6 +53,7 @@ def setup_engine(database_url: str) -> None:
         pool_size=5,
         max_overflow=10,
         pool_pre_ping=True,
+        connect_args={"statement_cache_size": 0},
     )
     _session_factory = async_sessionmaker(
         _engine,
@@ -74,10 +75,12 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
     return _session_factory
 
 
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """FastAPI dependency — yields an async session and commits on success."""
-    factory = get_session_factory()
-    async with factory() as session:
+async def get_db() -> AsyncGenerator[AsyncSession | None, None]:
+    """FastAPI dependency — yields an async session, or None when DB is disabled."""
+    if _session_factory is None:
+        yield None
+        return
+    async with _session_factory() as session:
         try:
             yield session
             await session.commit()

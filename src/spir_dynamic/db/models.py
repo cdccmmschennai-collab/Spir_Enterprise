@@ -11,9 +11,9 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    JSON,
     String,
     Text,
-    JSON,
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -129,29 +129,29 @@ class UserActivityLog(Base):
 class ExtractionHistory(Base):
     __tablename__ = "extraction_history"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    session_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("sessions.id", ondelete="SET NULL"), nullable=True
-    )
+    session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    filename: Mapped[str] = mapped_column(Text, nullable=False)
     original_filename: Mapped[str] = mapped_column(String(500), nullable=False)
-    spir_no: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    format: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    total_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    total_tags: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    spare_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    annexure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    dup_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    sap_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    equipment: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    manufacturer: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    supplier: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    file_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    spir_no: Mapped[str | None] = mapped_column(Text, nullable=True)
+    format: Mapped[str | None] = mapped_column(Text, nullable=True)
+    total_rows: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_tags: Mapped[int] = mapped_column(Integer, nullable=False)
+    spare_items: Mapped[int] = mapped_column(Integer, nullable=False)
+    annexure_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    dup_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    sap_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    equipment: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    manufacturer: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    supplier: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    file_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     output_filename: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    result_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    tag_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    spare_count: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now, index=True
     )

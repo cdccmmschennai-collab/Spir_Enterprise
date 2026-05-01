@@ -3,6 +3,9 @@ Centralized configuration via environment variables / .env file.
 """
 from __future__ import annotations
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings

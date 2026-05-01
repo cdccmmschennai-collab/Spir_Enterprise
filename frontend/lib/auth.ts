@@ -1,5 +1,5 @@
-const TOKEN_KEY = "access_token";
-const COOKIE_NAME = "access_token";
+const TOKEN_KEY = "token";
+const COOKIE_NAME = "token";
 
 /** Save token to both localStorage (for API calls) and a cookie (for middleware). */
 export function saveToken(token: string): void {
@@ -18,7 +18,7 @@ export function getToken(): string | null {
 export function clearToken(): void {
   if (typeof window === "undefined") return;
   localStorage.removeItem(TOKEN_KEY);
-  document.cookie = `${COOKIE_NAME}=; path=/; max-age=0`;
+  document.cookie = `${COOKIE_NAME}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
 }
 
 /** Returns Authorization header object if token exists, otherwise empty. */

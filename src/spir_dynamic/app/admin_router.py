@@ -89,17 +89,41 @@ class ExtractionHistoryOut(BaseModel):
     user_id: str
     original_filename: str
     spir_no: Optional[str]
-    format: Optional[str]
-    total_rows: int
-    total_tags: int
-    spare_items: int
-    equipment: Optional[str]
-    manufacturer: Optional[str]
-    supplier: Optional[str]
-    dup_count: int
+    format: Optional[str] = None
+    total_rows: int = 0
+    # Backward-compatible aliases: ORM uses tag_count/spare_count
+    total_tags: int = 0
+    spare_items: int = 0
+    equipment: Optional[str] = None
+    manufacturer: Optional[str] = None
+    supplier: Optional[str] = None
+    dup_count: int = 0
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @classmethod
+    def model_validate(cls, obj, *args, **kwargs):  # type: ignore[override]
+        """
+        Accepts ORM rows with the smaller ExtractionHistory model and derives
+        admin-friendly fields (total_tags/spare_items) from tag_count/spare_count.
+        """
+        data = {
+            "id": getattr(obj, "id"),
+            "user_id": getattr(obj, "user_id"),
+            "original_filename": getattr(obj, "original_filename", "") or "",
+            "spir_no": getattr(obj, "spir_no", None),
+            "format": getattr(obj, "format", None),
+            "total_rows": int(getattr(obj, "total_rows", 0) or 0),
+            "total_tags": int(getattr(obj, "total_tags", None) or getattr(obj, "tag_count", 0) or 0),
+            "spare_items": int(getattr(obj, "spare_items", None) or getattr(obj, "spare_count", 0) or 0),
+            "equipment": getattr(obj, "equipment", None),
+            "manufacturer": getattr(obj, "manufacturer", None),
+            "supplier": getattr(obj, "supplier", None),
+            "dup_count": int(getattr(obj, "dup_count", 0) or 0),
+            "created_at": getattr(obj, "created_at"),
+        }
+        return super().model_validate(data, *args, **kwargs)
 
 
 # ── User management endpoints ──────────────────────────────────────────────────
