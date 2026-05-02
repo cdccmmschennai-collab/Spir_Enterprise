@@ -118,6 +118,7 @@ class ColumnarStrategy:
     """Extract from sheets with tags as column headers (SPIR matrix)."""
 
     @timed
+    # REVERT TO:
     def extract(
         self,
         ws,
@@ -127,6 +128,8 @@ class ColumnarStrategy:
         item_col: int | None = None,
         metadata_field_rows: dict[str, int] | None = None,
     ) -> list[dict[str, Any]]:
+
+
         """
         Extract data from a columnar/matrix sheet.
 
@@ -179,6 +182,7 @@ class ColumnarStrategy:
         global_meta = profile.metadata
         sheet_name = profile.name.upper()
 
+
         # EQPT MAKE from global metadata (top-right of SPIR sheet)
         global_mfr = global_meta.get("manufacturer")
         global_supplier = global_meta.get("supplier")
@@ -221,23 +225,6 @@ class ColumnarStrategy:
 
                 # Resolve applicable items before deciding to emit this tag section.
                 applicable_items = tag_items_map.get(col, {})
-
-                # For continuation sheets (items_dict was passed in from outside),
-                # if a tag column has zero applicable items AND its cells are genuinely
-                # blank (not explicit zeros — those are already filtered by Bug 2 fix),
-                # inherit all items from items_dict with qty=1.
-                if not applicable_items and not is_item_source and items_dict:
-                    col_start = profile.data_start_row or (
-                        (profile.header_row + 1) if profile.header_row else 8
-                    )
-                    col_end = profile.data_end_row or (ws.max_row or 0)
-                    has_any_data = any(
-                        ws.cell(r, col).value is not None
-                        and not is_placeholder(ws.cell(r, col).value)
-                        for r in range(col_start, col_end + 1)
-                    )
-                    if not has_any_data:
-                        applicable_items = {num: 1 for num in items_dict}
 
                 # Skip this tag entirely when no spare items apply to it.
                 if not applicable_items:
@@ -376,7 +363,7 @@ class ColumnarStrategy:
 
         # Pattern for annexure references (including Roman numerals)
         _ANNEXURE_PAT = re.compile(
-            r"(?i)(?:refer\s+)?annexure[\s\-_]*(?:\([^)]*\)[\s\-_]*)?(?:\d+|[IVX]+)\b"
+            r"(?i)(?:refer\s+)?ann(?:ex|e)?(?:ure)?[\s\-_]*(?:\([^)]*\)[\s\-_]*)?(?:\d+|[IVX]+)\b"
         )
 
         # Pattern for actual equipment tags (must have at least one separator or be alphanumeric with structure)
@@ -551,7 +538,8 @@ class ColumnarStrategy:
                 # Accept bare "Refer Annexure" / "Annexure" without a number.
                 # _normalize_annexure_ref returns ANNEXURE_ANY for these, and
                 # _enrich_equipment_data remaps ANNEXURE_ANY when exactly 1 annexure exists.
-                if re.search(r"(?i)annex", raw):
+                if re.search(r"(?i)ann(?:ex|e)", raw):
+
                     result[col] = [raw]
                     break
 

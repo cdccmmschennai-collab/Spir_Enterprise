@@ -164,6 +164,7 @@ utility_sheet_keywords:
   - "review sheet"
   - "guidelines"
   - "combined"
+  - "tag sheet"
 
 # Tag detection config (drives TAG_PATTERN in cell_utils.py)
 tag_detection:

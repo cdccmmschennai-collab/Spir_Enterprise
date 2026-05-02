@@ -50,6 +50,7 @@ UTILITY_KEYWORDS = frozenset(
         "guidlines",
         "guidelines",
         "combined",
+        "tag sheet",
     }
 )
 
