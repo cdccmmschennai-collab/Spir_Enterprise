@@ -122,6 +122,9 @@ def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
         try:
             ws = wb[profile.name]
             sheet_rows = strategy.extract(ws, profile, spir_no)
+            # Normal sheets are their own logical main group
+            for r in sheet_rows:
+                r["_group_main"] = profile.name
             all_rows.extend(sheet_rows)
             format_parts.append(f"{profile.name}({profile.tag_layout.value})")
 
@@ -130,6 +133,10 @@ def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
 
     # Step 4: Equipment enrichment — resolve annexure references + merge equipment data
     all_rows = _enrich_equipment_data(wb, all_rows, profiles)
+
+    # PHASE 5 FIX: Clean up internal tracking fields
+    for row in all_rows:
+        row.pop("_group_main", None)
 
     # Step 5: Collect metadata
     metadata = _collect_metadata(profiles)
@@ -197,7 +204,11 @@ def _extract_columnar_group(
     """
     # A "primary main" sheet owns its own item list: it has item_number, description,
     # and at least 4 mapped columns (price, part_no, etc.).
+    # Exclude sheets that are clearly continuations by name to ensure they stay grouped.
     def _is_primary_main(p: SheetProfile) -> bool:
+        name_lower = p.name.lower()
+        if any(kw in name_lower for kw in ("conti", "continuation")):
+            return False
         return (
             "item_number" in p.column_map
             and "description" in p.column_map
@@ -209,7 +220,8 @@ def _extract_columnar_group(
 
     # Single main (or no primaries): use the original single-group logic unchanged.
     if len(primary_mains) <= 1:
-                return _extract_single_group(wb, columnar_profiles, spir_no, main_sheet_name=None)
+        main_name = primary_mains[0].name if primary_mains else None
+        return _extract_single_group(wb, columnar_profiles, spir_no, main_sheet_name=main_name)
 
 
     # Multiple independent main sheets: partition non-primaries by parent main.
@@ -355,6 +367,11 @@ def _extract_single_group(
             # Fix C: capture field rows from main sheet for continuation sheets
             if is_item_source_sheet:
                 item_source_metadata_rows = getattr(_columnar, "_last_metadata_field_rows", None)
+            
+            # Inject logical main indicator for header deduplication
+            for r in rows:
+                r["_group_main"] = main_sheet_name or profile.name
+                
             all_rows.extend(rows)
         except Exception as exc:
             log.error(
@@ -667,10 +684,11 @@ def _enrich_equipment_data(
             if row.get("item_num"):
                 annex_groups[annex_key]["details"].append(row)
             else:
-                # PHASE 5 FIX: Deduplicate header rows by tag_no and sheet to avoid
-                # duplicates when multiple sheets reference the same annexure.
-                existing_keys = {(h.get("tag_no"), h.get("sheet")) for h in annex_groups[annex_key]["headers"]}
-                if (tag, row.get("sheet")) not in existing_keys:
+                # PHASE 5 FIX: Deduplicate header rows by tag_no and _group_main to avoid
+                # duplicates when multiple sheets reference the same annexure, while
+                # allowing separate headers for different logical main sheets.
+                existing_keys = {(h.get("tag_no"), h.get("_group_main")) for h in annex_groups[annex_key]["headers"]}
+                if (tag, row.get("_group_main")) not in existing_keys:
                     annex_groups[annex_key]["headers"].append(row)
         else:
             # Drop rows whose tag is an annexure reference that was never resolved.
