@@ -42,7 +42,7 @@ _transposed = TransposedStrategy()
 # Matches "annexures?" (with or without plural S), bare "annex", and handles
 # "refer to" as well as plain "refer".
 _ANNEXURE_REF_RE = re.compile(
-    r"(?:refer(?:\s+to)?\s+)?annex(?:ures?)?[\s\-_]*(?:\(([^)]*)\)[\s\-_]*)?(\d+|[IVX]+)\b",
+    r"(?:refer(?:\s+to)?\s+)?ann(?:ex|e)?(?:ures?)??[\s\-_]*(?:\(([^)]*)\)[\s\-_]*)?(\d+|[IVX]+)\b",
     re.IGNORECASE,
 )
 
@@ -122,6 +122,9 @@ def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
         try:
             ws = wb[profile.name]
             sheet_rows = strategy.extract(ws, profile, spir_no)
+            # Normal sheets are their own logical main group
+            for r in sheet_rows:
+                r["_group_main"] = profile.name
             all_rows.extend(sheet_rows)
             format_parts.append(f"{profile.name}({profile.tag_layout.value})")
 
@@ -130,6 +133,10 @@ def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
 
     # Step 4: Equipment enrichment — resolve annexure references + merge equipment data
     all_rows = _enrich_equipment_data(wb, all_rows, profiles)
+
+    # PHASE 5 FIX: Clean up internal tracking fields
+    for row in all_rows:
+        row.pop("_group_main", None)
 
     # Step 5: Collect metadata
     metadata = _collect_metadata(profiles)
@@ -197,7 +204,11 @@ def _extract_columnar_group(
     """
     # A "primary main" sheet owns its own item list: it has item_number, description,
     # and at least 4 mapped columns (price, part_no, etc.).
+    # Exclude sheets that are clearly continuations by name to ensure they stay grouped.
     def _is_primary_main(p: SheetProfile) -> bool:
+        name_lower = p.name.lower()
+        if any(kw in name_lower for kw in ("conti", "continuation")):
+            return False
         return (
             "item_number" in p.column_map
             and "description" in p.column_map
@@ -209,7 +220,9 @@ def _extract_columnar_group(
 
     # Single main (or no primaries): use the original single-group logic unchanged.
     if len(primary_mains) <= 1:
-        return _extract_single_group(wb, columnar_profiles, spir_no)
+        main_name = primary_mains[0].name if primary_mains else None
+        return _extract_single_group(wb, columnar_profiles, spir_no, main_sheet_name=main_name)
+
 
     # Multiple independent main sheets: partition non-primaries by parent main.
     groups = _group_by_main(primary_mains, non_primaries, all_profiles)
@@ -217,7 +230,7 @@ def _extract_columnar_group(
     all_rows: list[dict[str, Any]] = []
     for main_profile, group_conts in groups:
         group_sheets = [main_profile] + group_conts
-        group_rows = _extract_single_group(wb, group_sheets, spir_no)
+        group_rows = _extract_single_group(wb, group_sheets, spir_no, main_sheet_name=main_profile.name)
         all_rows.extend(group_rows)
 
     return all_rows
@@ -282,7 +295,9 @@ def _extract_single_group(
     wb,
     columnar_profiles: list[SheetProfile],
     spir_no: str,
+    main_sheet_name: str | None = None,
 ) -> list[dict[str, Any]]:
+
     """
     Extract one cohesive group of COLUMN_HEADERS sheets sharing a single items_dict.
 
@@ -348,9 +363,15 @@ def _extract_single_group(
                 items_dict=items_dict,
                 metadata_field_rows=None if is_item_source_sheet else item_source_metadata_rows,
             )
+
             # Fix C: capture field rows from main sheet for continuation sheets
             if is_item_source_sheet:
                 item_source_metadata_rows = getattr(_columnar, "_last_metadata_field_rows", None)
+            
+            # Inject logical main indicator for header deduplication
+            for r in rows:
+                r["_group_main"] = main_sheet_name or profile.name
+                
             all_rows.extend(rows)
         except Exception as exc:
             log.error(
@@ -663,11 +684,11 @@ def _enrich_equipment_data(
             if row.get("item_num"):
                 annex_groups[annex_key]["details"].append(row)
             else:
-                # PHASE 5 FIX: Deduplicate header rows by tag_no to avoid
-                # duplicates when multiple sheets reference the same annexure.
-                # E.g., MAIN SHEET and CONTINUATION SHEET-1 both have "Annexure I".
-                existing_tags = {h.get("tag_no") for h in annex_groups[annex_key]["headers"]}
-                if tag not in existing_tags:
+                # PHASE 5 FIX: Deduplicate header rows by tag_no and _group_main to avoid
+                # duplicates when multiple sheets reference the same annexure, while
+                # allowing separate headers for different logical main sheets.
+                existing_keys = {(h.get("tag_no"), h.get("_group_main")) for h in annex_groups[annex_key]["headers"]}
+                if (tag, row.get("_group_main")) not in existing_keys:
                     annex_groups[annex_key]["headers"].append(row)
         else:
             # Drop rows whose tag is an annexure reference that was never resolved.
@@ -716,17 +737,19 @@ def _enrich_equipment_data(
             annex_tags = annexure_registry[annex_key]
             grp = annex_groups[annex_key]
 
-            # Deduplicate detail rows by item_num.
+            # Deduplicate detail rows by item_num and sheet.
             # When multiple main sheets reference the same annexure, the same spare items
             # appear in each sheet's continuation and are collected into grp["details"]
-            # multiple times. Keep only the first occurrence per item_num.
-            seen_item_nums: set = set()
+            # multiple times. Keep only the first occurrence per item_num per sheet.
+            seen_keys: set = set()
             deduped_details: list[dict[str, Any]] = []
             for _dtl in grp["details"]:
                 _inum = _dtl.get("item_num")
+                _sheet = _dtl.get("sheet")
                 if _inum is not None:
-                    if _inum not in seen_item_nums:
-                        seen_item_nums.add(_inum)
+                    _key = (_inum, _sheet)
+                    if _key not in seen_keys:
+                        seen_keys.add(_key)
                         deduped_details.append(_dtl)
                 else:
                     deduped_details.append(_dtl)
@@ -1382,7 +1405,7 @@ def _normalize_annexure_ref(value: str) -> str | None:
     if cleaned.startswith("ANNEXURE") and any(c.isdigit() for c in cleaned):
         return cleaned
     # Bare "Refer Annexure" / "Annexure" without a number — sentinel for single-sheet resolution
-    if re.search(r"(?i)annex", text):
+    if re.search(r"(?i)ann(?:ex|e)", text):
         return "ANNEXURE_ANY"
     return None
 

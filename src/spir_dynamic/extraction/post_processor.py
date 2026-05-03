@@ -539,6 +539,20 @@ class SheetTracker:
 
         is_main = self._is_main(key_norm)
 
+        if not is_main:
+            # Heuristic for continuation sheets: try to find a number that matches a main sheet.
+            # "CONTI SHEET (2)" -> 2. If index 2 exists in _sheet_to_idx, use it.
+            nums = re.findall(r"\d+", key_norm)
+            if nums:
+                for num_str in nums:
+                    num = int(num_str)
+                    # Check if this number matches any pre-populated main sheet's index.
+                    for m_name_norm, m_idx in self._sheet_to_idx.items():
+                        if m_idx == num and self._is_main(m_name_norm):
+                            # Found a matching main sheet. Cache it for this continuation sheet.
+                            self._sheet_to_idx[key_norm] = num
+                            return num
+
         if is_main:
             self._main_counter += 1
             self._current_main_idx = self._main_counter
@@ -589,12 +603,18 @@ def post_process_rows(
 
     pos_counter: dict[str, int] = {}
 
+    indexed_rows: list[tuple[int, list]] = []
+
     for row in rows:
         ncols = len(row)
 
         tag = row[tag_col] if tag_col is not None and tag_col < ncols else None
         item = row[item_col] if item_col is not None and item_col < ncols else None
         sheet = row[sheet_col] if sheet_col is not None and sheet_col < ncols else None
+
+        # Always resolve sheet index to maintain tracker state and enable grouping/sorting.
+        # This ensures header rows and spares from the same sheet stay together.
+        sheet_idx = sheet_tracker.get_sheet_idx(sheet)
 
         tag_key = str(tag or "__NONE__").strip().upper()
         is_spare = item is not None and str(item).strip() not in ("", "None")
@@ -611,11 +631,15 @@ def post_process_rows(
                 pos_counter[tag_key] += 10
 
         if spf_col is not None and spf_col < ncols and is_spare and spir_no_clean:
-            sheet_idx = sheet_tracker.get_sheet_idx(sheet)
             line_idx = _item_to_line_index(item)
             row[spf_col] = build_omn(
                 spir_no_clean, sheet_idx, line_idx,
                 total_main_sheets=sheet_tracker.total_main_sheets,
             )
 
-    return rows
+        indexed_rows.append((sheet_idx, row))
+
+    # Stable sort by sheet_idx: groups rows by their logical main sheet (01, 02, etc.)
+    # while preserving the original relative order within each sheet group.
+    indexed_rows.sort(key=lambda x: x[0])
+    return [r for idx, r in indexed_rows]

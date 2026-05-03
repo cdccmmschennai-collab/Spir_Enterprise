@@ -62,7 +62,14 @@
       "Bash(venv/Scripts/python.exe *)",
       "PowerShell(python --version 2>&1; where.exe python 2>&1 | Select-Object -First 3)",
       "PowerShell(Get-Content *)",
-      "Bash(PYTHONPATH=src \"C:/Users/softuser1/Downloads/spir_dynamic/venv/Scripts/python.exe\" -W ignore -c \"print\\('ok'\\)\")"
+      "Bash(PYTHONPATH=src \"C:/Users/softuser1/Downloads/spir_dynamic/venv/Scripts/python.exe\" -W ignore -c \"print\\('ok'\\)\")",
+      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\templates\\\\look for it\" | ForEach-Object { [PSCustomObject]@{ Name = $_.Name; Size = $_.Length; LastModified = $_.LastWriteTime } })",
+      "PowerShell(python3 --version)",
+      "PowerShell(python3 -m pip install openpyxl)",
+      "PowerShell(python3 -c $pythonCode)",
+      "mcp__ide__executeCode",
+      "Bash(py -c \"import openpyxl; print\\('ok'\\)\")",
+      "PowerShell(py *)"
     ]
   }
 }

@@ -44,120 +44,121 @@ def run_pipeline(file_bytes: bytes, original_filename: str) -> dict[str, Any]:
     _profiler = cProfile.Profile()
     _profiler.enable()
     # ────────────────────────────────────────────────────────────────────────
-
-    size_mb = len(file_bytes) / (1024 * 1024)
-    log.info("Pipeline start: %s (%.1f MB)", original_filename, size_mb)
-
-    cfg = get_settings()
-
-    # Step 1: Validate
-    validate_file(original_filename, file_bytes, cfg.max_file_size_mb)
-
-    # Step 2: Load workbook (not read_only — need merged_cells support)
-    wb = openpyxl.load_workbook(
-        io.BytesIO(file_bytes), data_only=True
-    )
-
     try:
-        # Step 3: Extract
-        result = extract_workbook(wb, original_filename)
-    finally:
-        wb.close()
+        size_mb = len(file_bytes) / (1024 * 1024)
+        log.info("Pipeline start: %s (%.1f MB)", original_filename, size_mb)
 
-    raw_rows = result.get("rows", [])
-    spir_no = result.get("spir_no", "")
+        cfg = get_settings()
 
-    # Step 4: Convert dicts to the standard 27-column output schema
-    output_rows = [row_from_dict(r) for r in raw_rows]
+        # Step 1: Validate
+        validate_file(original_filename, file_bytes, cfg.max_file_size_mb)
 
-    # Step 4b: Ensure SPIR NO on all rows
-    spir_col = CI.get("SPIR NO", 0)
-    for row in output_rows:
-        if spir_col < len(row) and row[spir_col] is None and spir_no:
-            row[spir_col] = spir_no
+        # Step 2: Load workbook (not read_only — need merged_cells support)
+        wb = openpyxl.load_workbook(
+            io.BytesIO(file_bytes), data_only=True
+        )
 
-    # Step 5: Currency conversion
-    _apply_currency_conversion(output_rows)
+        try:
+            # Step 3: Extract
+            result = extract_workbook(wb, original_filename)
+        finally:
+            wb.close()
 
-    # Step 6: Post-process (position numbers + SPF numbers)
-    # Extract main (data) sheet names — only these increment the OMN line prefix.
-    # Continuation/annexure sheets inherit the prefix of their parent main sheet.
-    main_sheet_names: set[str] = set()
-    for sp in result.get("sheet_profiles", []):
-        if sp.get("role") == "data":
-            main_sheet_names.add(sp["name"])
-    output_rows = post_process_rows(output_rows, spir_no, main_sheet_names)
+        raw_rows = result.get("rows", [])
+        spir_no = result.get("spir_no", "")
 
-    # Step 7: Deduplicate
-    output_rows = deduplicate_rows(output_rows, CI)
-    dup_info = analyse_duplicates(output_rows)
+        # Step 4: Convert dicts to the standard 27-column output schema
+        output_rows = [row_from_dict(r) for r in raw_rows]
 
-    # Step 7b: Ensure ERROR = 0 on all rows after duplicate analysis.
-    error_col = CI.get("ERROR")
-    if error_col is not None:
+        # Step 4b: Ensure SPIR NO on all rows
+        spir_col = CI.get("SPIR NO", 0)
         for row in output_rows:
-            if error_col < len(row):
-                val = row[error_col]
-                if val is None or val == "":
-                    row[error_col] = 0
+            if spir_col < len(row) and row[spir_col] is None and spir_no:
+                row[spir_col] = spir_no
 
-    # Step 7c: Uppercase all string values
-    for row in output_rows:
-        for i, v in enumerate(row):
-            if isinstance(v, str):
-                row[i] = v.upper()
+        # Step 5: Currency conversion
+        _apply_currency_conversion(output_rows)
 
-    # Step 8: Build styled Excel (always 27 columns)
-    xlsx_bytes = build_xlsx(output_rows, spir_no)
+        # Step 6: Post-process (position numbers + SPF numbers)
+        # Extract main (data) sheet names — only these increment the OMN line prefix.
+        # Continuation/annexure sheets inherit the prefix of their parent main sheet.
+        main_sheet_names: set[str] = set()
+        for sp in result.get("sheet_profiles", []):
+            if sp.get("role") == "data":
+                main_sheet_names.add(sp["name"])
+        output_rows = post_process_rows(output_rows, spir_no, main_sheet_names)
 
-    # Step 9: Store result
-    file_id = str(uuid.uuid4())
-    # Sanitize filename — remove chars invalid in filenames and HTTP headers
-    safe_spir = re.sub(r'[\r\n\t/\\:*?"<>|]+', ' ', spir_no).strip() if spir_no else ""
-    out_filename = f"{safe_spir}_Extraction.xlsx" if safe_spir else f"{original_filename}_Extraction.xlsx"
-    get_storage().put(file_id, xlsx_bytes, out_filename)
+        # Step 7: Deduplicate
+        output_rows = deduplicate_rows(output_rows, CI)
+        dup_info = analyse_duplicates(output_rows)
 
-    # Step 10: Build response — full dataset, no row limit
-    preview_rows = [
-        [_jsonify(v) for v in row] for row in output_rows
-    ]
+        # Step 7b: Ensure ERROR = 0 on all rows after duplicate analysis.
+        error_col = CI.get("ERROR")
+        if error_col is not None:
+            for row in output_rows:
+                if error_col < len(row):
+                    val = row[error_col]
+                    if val is None or val == "":
+                        row[error_col] = 0
 
-    response = {
-        "status": "done",
-        "file_id": file_id,
-        "filename": out_filename,
-        "format": result.get("format", "UNKNOWN"),
-        "spir_no": spir_no,
-        "equipment": result.get("equipment", ""),
-        "manufacturer": result.get("manufacturer", ""),
-        "supplier": result.get("supplier", ""),
-        "spir_type": result.get("spir_type"),
-        "eqpt_qty": result.get("eqpt_qty", 0),
-        "spare_items": result.get("spare_items", 0),
-        "total_tags": result.get("total_tags", 0),
-        "annexure_count": result.get("annexure_count", 0),
-        "total_rows": len(output_rows),
-        "dup1_count": dup_info.get("dup1_count", 0),
-        "sap_count": dup_info.get("sap_count", 0),
-        "preview_cols": OUTPUT_COLS,
-        "preview_rows": preview_rows,
-        "sheet_profiles": result.get("sheet_profiles", []),
-    }
+        # Step 7c: Uppercase all string values
+        for row in output_rows:
+            for i, v in enumerate(row):
+                if isinstance(v, str):
+                    row[i] = v.upper()
 
-    log.info(
-        "Pipeline done: %d rows, %d tags, format=%s",
-        len(output_rows), result.get("total_tags", 0), result.get("format"),
-    )
+        # Step 8: Build styled Excel (always 27 columns)
+        xlsx_bytes = build_xlsx(output_rows, spir_no)
 
-    # ── cProfile report (remove after identifying bottlenecks) ──────────────
-    if _profiler is not None:
-        _profiler.disable()
-        _s = io.StringIO()
-        pstats.Stats(_profiler, stream=_s).sort_stats("cumulative").print_stats(30)
-        log.info("[PROFILE] top 30 by cumulative time:\n%s", _s.getvalue())
-    # ────────────────────────────────────────────────────────────────────────
+        # Step 9: Store result
+        file_id = str(uuid.uuid4())
+        # Sanitize filename — remove chars invalid in filenames and HTTP headers
+        safe_spir = re.sub(r'[\r\n\t/\\:*?"<>|]+', ' ', spir_no).strip() if spir_no else ""
+        out_filename = f"{safe_spir}_Extraction.xlsx" if safe_spir else f"{original_filename}_Extraction.xlsx"
+        get_storage().put(file_id, xlsx_bytes, out_filename)
 
-    return response
+        # Step 10: Build response — full dataset, no row limit
+        preview_rows = [
+            [_jsonify(v) for v in row] for row in output_rows
+        ]
+
+        response = {
+            "status": "done",
+            "file_id": file_id,
+            "filename": out_filename,
+            "format": result.get("format", "UNKNOWN"),
+            "spir_no": spir_no,
+            "equipment": result.get("equipment", ""),
+            "manufacturer": result.get("manufacturer", ""),
+            "supplier": result.get("supplier", ""),
+            "spir_type": result.get("spir_type"),
+            "eqpt_qty": result.get("eqpt_qty", 0),
+            "spare_items": result.get("spare_items", 0),
+            "total_tags": result.get("total_tags", 0),
+            "annexure_count": result.get("annexure_count", 0),
+            "total_rows": len(output_rows),
+            "dup1_count": dup_info.get("dup1_count", 0),
+            "sap_count": dup_info.get("sap_count", 0),
+            "preview_cols": OUTPUT_COLS,
+            "preview_rows": preview_rows,
+            "sheet_profiles": result.get("sheet_profiles", []),
+        }
+
+        log.info(
+            "Pipeline done: %d rows, %d tags, format=%s",
+            len(output_rows), result.get("total_tags", 0), result.get("format"),
+        )
+
+        return response
+
+    finally:
+        # ── cProfile report (remove after identifying bottlenecks) ──────────────
+        if _profiler is not None:
+            _profiler.disable()
+            _s = io.StringIO()
+            pstats.Stats(_profiler, stream=_s).sort_stats("cumulative").print_stats(30)
+            log.info("[PROFILE] top 30 by cumulative time:\n%s", _s.getvalue())
+        # ────────────────────────────────────────────────────────────────────────
 
 
 def retrieve_result(file_id: str) -> Optional[tuple[bytes, str]]:
