@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from zoneinfo import ZoneInfo
 from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Any, Optional
@@ -170,7 +171,7 @@ async def log_extraction(
                 # Keep the existing user-facing history API working
                 tag_count=total_tags,
                 spare_count=spare_items,
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(ZoneInfo("Asia/Kolkata")),
             )
             db.add(history)
             db.add(
