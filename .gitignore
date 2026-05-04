@@ -41,3 +41,6 @@ templates/
 
 echo "__pycache__/" >> .gitignore
 echo "*.pyc" >> .gitignore
+
+frontend/.env.local
+.env
