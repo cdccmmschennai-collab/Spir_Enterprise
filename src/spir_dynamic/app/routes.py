@@ -134,11 +134,13 @@ async def me(
     """Return the authenticated user's profile."""
     if is_db_enabled() and td.user_id and db is not None:
         from spir_dynamic.db.models import User
+        from sqlalchemy import text
         user = await db.get(User, td.user_id)
-        count_row = await db.execute(
-            select(func.count(ExtractionHistory.id)).where(ExtractionHistory.user_id == td.user_id)
+        result = await db.execute(
+            text("SELECT COUNT(*) FROM extraction_history WHERE user_id = :user_id"),
+            {"user_id": td.user_id},
         )
-        total_files = count_row.scalar() or 0
+        total_files = int(result.scalar() or 0)
         if user:
             return {
                 "id": user.id,

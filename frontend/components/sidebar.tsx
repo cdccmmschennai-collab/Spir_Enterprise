@@ -190,7 +190,10 @@ function TopNavbar({
         {/* User avatar + profile dropdown */}
         <div className="relative" ref={profileRef}>
           <button
-            onClick={() => setShowProfile((p) => !p)}
+            onClick={() => {
+              window.dispatchEvent(new CustomEvent("profile-refresh"));
+              setShowProfile((p) => !p);
+            }}
             title={username}
             className="flex h-8 w-8 items-center justify-center rounded-full bg-violet-100 text-xs font-bold text-violet-700 cursor-pointer hover:bg-violet-200 dark:bg-violet-900 dark:text-violet-300 dark:hover:bg-violet-800 transition-colors"
           >
@@ -232,31 +235,30 @@ export function SidebarLayout({ children }: SidebarProps) {
   }, []);
 
   // Fetch current user profile and extraction count — force logout if token invalid/expired
-  useEffect(() => {
-    async function fetchMe() {
-      try {
-        const [meRes, histRes] = await Promise.all([
-          fetch(`${API_URL}/api/me`, { headers: { ...authHeaders() } }),
-          fetch(`${API_URL}/api/history`, { headers: { ...authHeaders() } }),
-        ]);
-        if (meRes.status === 401) {
-          clearToken();
-          window.location.href = "/login";
-          return;
-        }
-        const data = await meRes.json();
-        const name: string = data.username ?? "";
-        setUsername(name);
-        setUserInitials(name.slice(0, 2).toUpperCase() || "??");
-        if (histRes.ok) {
-          const hist = await histRes.json();
-          setCount(Array.isArray(hist) ? hist.length : 0);
-        }
-      } catch {
-        // network error — don't force logout
+  async function refreshProfile() {
+    try {
+      const meRes = await fetch(`${API_URL}/api/me`, { headers: { ...authHeaders() } });
+      if (meRes.status === 401) {
+        clearToken();
+        window.location.href = "/login";
+        return;
       }
+      const data = await meRes.json();
+      const name: string = data.username ?? "";
+      setUsername(name);
+      setUserInitials(name.slice(0, 2).toUpperCase() || "??");
+      setCount(data.total_files_extracted ?? 0);
+    } catch {
+      // network error — don't force logout
     }
-    fetchMe();
+  }
+
+  useEffect(() => {
+    refreshProfile();
+
+    // Listen for profile-refresh events fired after extraction or when profile is opened
+    window.addEventListener("profile-refresh", refreshProfile);
+    return () => window.removeEventListener("profile-refresh", refreshProfile);
   }, []);
 
   // Persist theme and apply class to <html>

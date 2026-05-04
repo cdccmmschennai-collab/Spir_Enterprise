@@ -376,6 +376,7 @@ export default function ExtractionPage() {
 
       const data: ExtractResult = await res.json();
       setResult(data);
+      window.dispatchEvent(new CustomEvent("profile-refresh"));
     } catch {
       setError("Could not reach the server. Is the backend running?");
     } finally {
