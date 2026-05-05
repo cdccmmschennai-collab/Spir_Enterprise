@@ -53,9 +53,10 @@ def run_pipeline(file_bytes: bytes, original_filename: str) -> dict[str, Any]:
         # Step 1: Validate
         validate_file(original_filename, file_bytes, cfg.max_file_size_mb)
 
-        # Step 2: Load workbook (not read_only — need merged_cells support)
+        # Step 2: Load workbook (not read_only — merged_cells.ranges used in column_mapper)
+        # keep_links=False skips external link parsing, saving ~0.1s on link-heavy files.
         wb = openpyxl.load_workbook(
-            io.BytesIO(file_bytes), data_only=True
+            io.BytesIO(file_bytes), data_only=True, keep_links=False
         )
 
         try:

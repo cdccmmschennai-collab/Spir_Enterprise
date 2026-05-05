@@ -69,7 +69,14 @@
       "PowerShell(python3 -c $pythonCode)",
       "mcp__ide__executeCode",
       "Bash(py -c \"import openpyxl; print\\('ok'\\)\")",
-      "PowerShell(py *)"
+      "PowerShell(py *)",
+      "Bash(findstr /v \"\\\\\\\\venv\\\\\\\\\")",
+      "Bash(findstr /v \"venv\")",
+      "Bash(Get-ChildItem \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\")",
+      "Bash(Format-Table Name, PSIsContainer)",
+      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\src\" -Recurse | Where-Object { !$_.PSIsContainer } | Select-Object FullName)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\" -Force | ForEach-Object { $_.FullName })",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\src\" -Force -Recurse | ForEach-Object { $_.FullName })"
     ]
   }
 }

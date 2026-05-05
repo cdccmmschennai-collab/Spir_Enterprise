@@ -17,6 +17,7 @@ OLD MATERIAL NUMBER / SPF NUMBER (OMN)
 """
 from __future__ import annotations
 
+import functools
 import logging
 import re
 
@@ -28,6 +29,13 @@ _TARGET_LEN_DEFAULT = 18
 _VENDOR_PREFIXES_DEFAULT = frozenset({"VEN", "DEM", "CON", "EPC", "CTR", "SUB"})
 
 
+# lru_cache(maxsize=None) turns these into process-level singletons on first
+# call. Without the cache, _get_target_len() is called inside the while loop
+# in _fit_omn_body_and_suffix() (up to 500× per OMN) and _get_vendor_prefixes()
+# is called once per build_omn() — both do try/except + module import each time.
+# For 2000 rows the uncached version performs ~2000-100000 redundant config
+# lookups; cached, each function runs exactly once per process.
+@functools.lru_cache(maxsize=None)
 def _get_target_len() -> int:
     try:
         from spir_dynamic.app.config import get_settings
@@ -36,6 +44,7 @@ def _get_target_len() -> int:
         return _TARGET_LEN_DEFAULT
 
 
+@functools.lru_cache(maxsize=None)
 def _get_vendor_prefixes() -> frozenset[str]:
     try:
         from spir_dynamic.app.config import load_keywords

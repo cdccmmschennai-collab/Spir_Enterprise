@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+from functools import lru_cache
 from typing import Any, Iterable
 
 from spir_dynamic.utils.cell_utils import clean_num, is_placeholder
@@ -93,6 +94,7 @@ FIELD_KEYWORDS: dict[str, list[str]] = {
 }
 
 
+@lru_cache(maxsize=None)
 def _get_field_keywords() -> dict[str, list[str]]:
     """Return field keywords from config/keywords.yaml, falling back to defaults."""
     try:
@@ -353,17 +355,25 @@ def _get_header_text(ws, row: int, col: int) -> str | None:
     return None
 
 
+@lru_cache(maxsize=None)
 def _normalize_header_text(text: str) -> str:
     # Normalize whitespace: "UNIT  OF MEASURE" → "unit of measure"
+    # Cached: keywords are constant strings; cell headers repeat across sheets.
     return re.sub(r"\s+", " ", str(text).lower().strip())
 
 
+@lru_cache(maxsize=None)
 def _keyword_score_for_cell(cell_lower: str, keyword: str) -> int:
     """
     Score how well a single keyword matches a header cell.
 
     Strong match: exact phrase hits (multi-word patterns).
     Weak match: short generic tokens (e.g. "price", "qty") inside the cell.
+
+    Cached: keywords are constant; unique (cell_lower, keyword) pairs are
+    bounded by #header_cells × #keywords (~50 × 140 per file). The cache
+    eliminates repeated re.sub normalization and re.search pattern compilation
+    for the same (cell, keyword) pair seen across multiple sheets.
     """
     kw = _normalize_header_text(keyword)
     if not kw:

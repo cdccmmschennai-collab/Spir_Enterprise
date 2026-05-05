@@ -24,12 +24,14 @@ def analyze_workbook(wb) -> list[SheetProfile]:
     Analyze all sheets in a workbook and return enriched SheetProfiles.
 
     Steps:
-      1. Analyze each sheet independently
-      2. Detect continuation relationships
-      3. Propagate global metadata
+      1. Analyze each sheet independently (sequential)
+      2. Detect continuation relationships (order-dependent)
+      3. Propagate global metadata (order-dependent)
+
+    _detect_continuations and _propagate_metadata are ORDER-DEPENDENT and
+    must run after all sheets are analyzed in wb.sheetnames order.
     """
     profiles: list[SheetProfile] = []
-
     for sheet_name in wb.sheetnames:
         try:
             ws = wb[sheet_name]
@@ -39,10 +41,7 @@ def analyze_workbook(wb) -> list[SheetProfile]:
             log.warning("Failed to analyze sheet '%s': %s", sheet_name, exc)
             profiles.append(SheetProfile(name=sheet_name, role=SheetRole.UNKNOWN))
 
-    # Detect continuation relationships
     _detect_continuations(profiles)
-
-    # Propagate metadata from the first data sheet to others
     _propagate_metadata(profiles)
 
     extractable = [p for p in profiles if p.is_extractable]
