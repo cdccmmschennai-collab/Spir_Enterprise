@@ -6,6 +6,8 @@ export function middleware(request: NextRequest) {
     request.cookies.get("access_token")?.value ||
     request.cookies.get("token")?.value;
 
+  const role = request.cookies.get("role")?.value;
+
   const { pathname } = request.nextUrl;
 
   // Public routes (no auth needed)
@@ -23,6 +25,11 @@ export function middleware(request: NextRequest) {
 
   // If logged in → prevent going back to login
   if (token && pathname === "/login") {
+    return NextResponse.redirect(new URL("/extraction", request.url));
+  }
+
+  // Admin route guard — non-admins are redirected to /extraction
+  if (token && pathname.startsWith("/admin") && role !== "admin") {
     return NextResponse.redirect(new URL("/extraction", request.url));
   }
 

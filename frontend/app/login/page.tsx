@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Eye, EyeOff, AlertCircle, User, Lock } from "lucide-react";
-import { saveToken } from "@/lib/auth";
+import { saveToken, saveRole } from "@/lib/auth";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL!;
 
@@ -40,6 +40,22 @@ export default function LoginPage() {
 
       const { access_token } = await res.json();
       saveToken(access_token);
+
+      // Fetch role from /api/me and persist for sidebar + middleware
+      try {
+        const meRes = await fetch(`${API_URL}/api/me`, {
+          headers: { Authorization: `Bearer ${access_token}` },
+        });
+        if (meRes.ok) {
+          const meData = await meRes.json();
+          saveRole(meData.role ?? "user");
+        } else {
+          saveRole("user");
+        }
+      } catch {
+        saveRole("user");
+      }
+
       router.push("/extraction");
     } catch {
       setError("Could not connect to the server. Is the backend running?");

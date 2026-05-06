@@ -154,7 +154,7 @@ async def me(
         "id": None,
         "username": td.username,
         "email": None,
-        "role": "user",
+        "role": td.role,
         "created_at": None,
         "total_files_extracted": 0,
     }

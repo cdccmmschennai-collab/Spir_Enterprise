@@ -34,16 +34,24 @@ async def _write_activity(
 ) -> None:
     """Internal: write one UserActivityLog row. Never raises."""
     from spir_dynamic.db.database import is_db_enabled, get_session_factory
-    from spir_dynamic.db.models import UserActivityLog
+    from spir_dynamic.db.models import UserActivityLog, Session
+    from sqlalchemy import select
 
     if not is_db_enabled():
         return
     try:
         factory = get_session_factory()
         async with factory() as db:
+            # session_id from JWT is the jti; FK points to sessions.id (PK).
+            # Resolve jti → sessions.id; fall back to None to avoid FK violation.
+            session_pk: Optional[str] = None
+            if session_id:
+                session_pk = await db.scalar(
+                    select(Session.id).where(Session.jti == session_id)
+                )
             entry = UserActivityLog(
                 user_id=user_id,
-                session_id=session_id,
+                session_id=session_pk,
                 action=action,
                 details=details,
                 ip_address=ip_address,

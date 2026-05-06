@@ -7,12 +7,13 @@ import asyncio
 import io
 import logging
 import uuid
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
-from spir_dynamic.app.auth import verify_token
+from spir_dynamic.app.auth import get_current_user, TokenData
 from spir_dynamic.app.config import get_settings
 from spir_dynamic.app.pipeline import run_pipeline
 from spir_dynamic.services.job_store import FileResult, get_job_store
@@ -27,7 +28,7 @@ batch_router = APIRouter()
 @batch_router.post("/extract")
 async def batch_extract(
     files: list[UploadFile] = File(...),
-    _: str = Depends(verify_token),
+    td: TokenData = Depends(get_current_user),
 ) -> dict[str, Any]:
     """
     Accept 1–N files. Launch extraction for each file concurrently.
@@ -42,7 +43,8 @@ async def batch_extract(
 
     job_id = str(uuid.uuid4())
     filenames = [f.filename or f"file_{i}.xlsx" for i, f in enumerate(files)]
-    get_job_store().create(job_id, filenames)
+    user_id = td.user_id or ""
+    get_job_store().create(job_id, filenames, user_id=user_id)
 
     # Read all file contents before launching tasks (UploadFile is not thread-safe)
     file_data: list[tuple[bytes, str]] = [
@@ -50,6 +52,7 @@ async def batch_extract(
     ]
 
     asyncio.create_task(_process_batch(job_id, file_data))
+    asyncio.create_task(_persist_job_to_db(job_id, user_id, filenames, cfg.batch_ttl_seconds))
 
     return {"job_id": job_id, "total": len(files), "status": "processing"}
 
@@ -57,24 +60,26 @@ async def batch_extract(
 @batch_router.get("/{job_id}")
 async def batch_status(
     job_id: str,
-    _: str = Depends(verify_token),
+    td: TokenData = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Poll extraction status for a batch job."""
     job = get_job_store().get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found or expired")
+    _assert_job_access(job.user_id, td)
     return job.to_dict()
 
 
 @batch_router.get("/{job_id}/download")
 async def batch_download(
     job_id: str,
-    _: str = Depends(verify_token),
+    td: TokenData = Depends(get_current_user),
 ) -> StreamingResponse:
     """Download a ZIP archive of all successfully extracted files."""
     job = get_job_store().get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found or expired")
+    _assert_job_access(job.user_id, td)
 
     storage = get_storage()
     file_pairs: list[tuple[bytes, str]] = []
@@ -95,6 +100,50 @@ async def batch_download(
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="batch_{short_id}.zip"'},
     )
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _assert_job_access(job_user_id: str, td: TokenData) -> None:
+    """Raise 403 if a non-admin caller tries to access another user's job."""
+    if td.role == "admin":
+        return
+    caller_id = td.user_id or ""
+    if job_user_id and caller_id and job_user_id != caller_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+
+async def _persist_job_to_db(
+    job_id: str,
+    user_id: str,
+    filenames: list[str],
+    ttl_seconds: int,
+) -> None:
+    """Fire-and-forget: write the batch job to PostgreSQL for persistence."""
+    from spir_dynamic.db.database import is_db_enabled, get_session_factory
+    from spir_dynamic.db.models import Job
+
+    if not is_db_enabled() or not user_id:
+        return
+    try:
+        factory = get_session_factory()
+        now = datetime.now(timezone.utc)
+        async with factory() as db:
+            job = Job(
+                id=job_id,
+                user_id=user_id,
+                status="processing",
+                total_files=len(filenames),
+                completed_files=0,
+                succeeded_files=0,
+                created_at=now,
+                updated_at=now,
+                expires_at=now + timedelta(seconds=ttl_seconds),
+            )
+            db.add(job)
+            await db.commit()
+    except Exception as exc:
+        log.warning("Batch job DB persist failed (non-fatal): %s", exc)
 
 
 async def _process_batch(job_id: str, file_data: list[tuple[bytes, str]]) -> None:
