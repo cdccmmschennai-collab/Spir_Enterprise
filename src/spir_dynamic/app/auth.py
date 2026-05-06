@@ -51,13 +51,14 @@ def create_access_token(
     username: str,
     user_id: Optional[str] = None,
     jti: Optional[str] = None,
+    role: str = "user",
     expires_delta: Optional[timedelta] = None,
 ) -> str:
     cfg = get_settings()
     if expires_delta is None:
         expires_delta = timedelta(hours=cfg.token_expire_hours)
     expire = datetime.now(timezone.utc) + expires_delta
-    payload: dict = {"sub": username, "exp": expire}
+    payload: dict = {"sub": username, "exp": expire, "role": role}
     if user_id:
         payload["uid"] = user_id
     if jti:
@@ -67,12 +68,19 @@ def create_access_token(
 
 class TokenData:
     """Parsed token payload used by route dependencies."""
-    __slots__ = ("username", "user_id", "jti")
+    __slots__ = ("username", "user_id", "jti", "role")
 
-    def __init__(self, username: str, user_id: Optional[str], jti: Optional[str]):
+    def __init__(
+        self,
+        username: str,
+        user_id: Optional[str],
+        jti: Optional[str],
+        role: str = "user",
+    ):
         self.username = username
         self.user_id = user_id
         self.jti = jti
+        self.role = role
 
 
 def _decode_token(token: str) -> TokenData:
@@ -92,6 +100,7 @@ def _decode_token(token: str) -> TokenData:
             username=username,
             user_id=payload.get("uid"),
             jti=payload.get("jti"),
+            role=payload.get("role", "user"),
         )
     except JWTError:
         raise exc
@@ -165,7 +174,57 @@ async def login(
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    token = create_access_token(username=form_data.username)
+    token = create_access_token(username=form_data.username, role="admin")
+    return {"access_token": token, "token_type": "bearer"}
+
+
+@auth_router.get("/me")
+async def auth_me(td: TokenData = Depends(get_current_user)) -> dict:
+    """Return the authenticated user's profile."""
+    from spir_dynamic.db.database import is_db_enabled, get_session_factory
+    from spir_dynamic.db.models import User
+    from sqlalchemy import select, text
+
+    if is_db_enabled() and td.user_id:
+        factory = get_session_factory()
+        async with factory() as db:
+            user: User | None = await db.get(User, td.user_id)
+            result = await db.execute(
+                text("SELECT COUNT(*) FROM extraction_history WHERE user_id = :uid"),
+                {"uid": td.user_id},
+            )
+            total_files = int(result.scalar() or 0)
+            if user:
+                return {
+                    "id": user.id,
+                    "username": user.username,
+                    "email": user.email,
+                    "role": user.role,
+                    "created_at": user.created_at,
+                    "total_files_extracted": total_files,
+                }
+    return {
+        "id": None,
+        "username": td.username,
+        "email": None,
+        "role": td.role,
+        "created_at": None,
+        "total_files_extracted": 0,
+    }
+
+
+@auth_router.post("/refresh")
+async def refresh_token(td: TokenData = Depends(get_current_user)) -> dict:
+    """Issue a new access token with a fresh expiry using the current valid token."""
+    cfg = get_settings()
+    new_jti = str(uuid.uuid4())
+    token = create_access_token(
+        username=td.username,
+        user_id=td.user_id,
+        jti=new_jti,
+        role=td.role,
+        expires_delta=timedelta(hours=cfg.token_expire_hours),
+    )
     return {"access_token": token, "token_type": "bearer"}
 
 
@@ -215,6 +274,7 @@ async def _login_db(
         user_id: str | None = user.id if user is not None else None
         user_name: str | None = user.username if user is not None else None
         password_hash: str | None = user.password_hash if user is not None else None
+        user_role: str = user.role if user is not None else "user"
 
     if password_hash is None or not _verify_password(plain_password, password_hash):
         raise HTTPException(
@@ -260,6 +320,7 @@ async def _login_db(
         username=user_name,
         user_id=user_id,
         jti=jti,
+        role=user_role,
         expires_delta=timedelta(hours=cfg.token_expire_hours),
     )
     return token, jti

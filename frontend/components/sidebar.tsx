@@ -12,9 +12,10 @@ import {
   Moon,
   Sun,
   Search,
+  ShieldCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { clearToken, authHeaders } from "@/lib/auth";
+import { clearToken, authHeaders, getRole } from "@/lib/auth";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -24,7 +25,7 @@ interface NavItem {
   icon: React.ElementType;
 }
 
-const navItems: NavItem[] = [
+const baseNavItems: NavItem[] = [
   { label: "Extraction",  href: "/extraction",   icon: FileSpreadsheet },
   { label: "History",     href: "/history",      icon: History },
   { label: "Settings",    href: "/settings",     icon: Settings },
@@ -36,10 +37,16 @@ interface SidebarContentProps {
   pathname: string;
   onNavigate?: () => void;
   onLogout: () => void;
+  isAdmin?: boolean;
 }
 
-function SidebarContent({ pathname, onNavigate, onLogout }: SidebarContentProps) {
+function SidebarContent({ pathname, onNavigate, onLogout, isAdmin }: SidebarContentProps) {
   const router = useRouter();
+
+  const navItems: NavItem[] = [
+    ...baseNavItems,
+    ...(isAdmin ? [{ label: "Admin", href: "/admin", icon: ShieldCheck }] : []),
+  ];
 
   function navigate(href: string) {
     router.push(href);
@@ -225,13 +232,15 @@ export function SidebarLayout({ children }: SidebarProps) {
   const [userInitials, setUserInitials] = useState("??");
   const [username, setUsername] = useState("");
   const [count, setCount] = useState(0);
+  const [isAdmin, setIsAdmin] = useState(false);
   const router = useRouter();
   const pathname = usePathname();
 
-  // Load persisted theme on mount
+  // Load persisted theme and role on mount
   useEffect(() => {
     const saved = localStorage.getItem("theme");
     if (saved === "dark") setDarkMode(true);
+    setIsAdmin(getRole() === "admin");
   }, []);
 
   // Fetch current user profile and extraction count — force logout if token invalid/expired
@@ -248,6 +257,7 @@ export function SidebarLayout({ children }: SidebarProps) {
       setUsername(name);
       setUserInitials(name.slice(0, 2).toUpperCase() || "??");
       setCount(data.total_files_extracted ?? 0);
+      setIsAdmin((data.role ?? "user") === "admin");
     } catch {
       // network error — don't force logout
     }
@@ -284,7 +294,7 @@ export function SidebarLayout({ children }: SidebarProps) {
     <div className="flex h-screen overflow-hidden bg-slate-50 dark:bg-slate-950">
       {/* Desktop sidebar */}
       <aside className="hidden w-60 shrink-0 border-r border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 lg:flex lg:flex-col">
-        <SidebarContent pathname={pathname} onLogout={handleLogout} />
+        <SidebarContent pathname={pathname} onLogout={handleLogout} isAdmin={isAdmin} />
       </aside>
 
       {/* Mobile overlay */}
@@ -312,6 +322,7 @@ export function SidebarLayout({ children }: SidebarProps) {
           pathname={pathname}
           onNavigate={() => setMobileOpen(false)}
           onLogout={handleLogout}
+          isAdmin={isAdmin}
         />
       </aside>
 

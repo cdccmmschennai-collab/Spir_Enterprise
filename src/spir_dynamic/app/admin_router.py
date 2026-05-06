@@ -27,22 +27,16 @@ admin_router = APIRouter()
 # ── Admin guard ────────────────────────────────────────────────────────────────
 
 async def require_admin(td: TokenData = Depends(get_current_user)) -> TokenData:
-    """Dependency: raises 403 if caller is not an admin (requires DB mode)."""
+    """Dependency: raises 403 if caller is not an admin. Role is read from JWT — no DB round-trip."""
+    if td.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
     if not is_db_enabled():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Admin endpoints require DATABASE_URL to be configured",
-        )
-    from spir_dynamic.db.database import get_session_factory
-    factory = get_session_factory()
-    async with factory() as db:
-        user: User | None = await db.scalar(
-            select(User).where(User.id == td.user_id)
-        )
-    if user is None or user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required",
         )
     return td
 
@@ -146,24 +140,33 @@ async def create_user(
     db=Depends(get_db),
 ) -> UserOut:
     """Create a new user. Admin only. Password is stored as bcrypt hash only."""
-    from passlib.context import CryptContext
-    pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    from spir_dynamic.app.auth import _hash_password
+
+    if len(body.password.encode("utf-8")) > 72:
+        raise HTTPException(status_code=400, detail="Password too long (max 72 characters)")
 
     # Check username uniqueness
     existing = await db.scalar(select(User).where(User.username == body.username))
     if existing:
         raise HTTPException(status_code=409, detail="Username already exists")
 
-    user = User(
-        username=body.username,
-        email=body.email,
-        password_hash=pwd_ctx.hash(body.password),
-        role=body.role,
-        is_active=True,
-    )
-    db.add(user)
-    await db.flush()  # get the generated id
-    return UserOut.model_validate(user)
+    try:
+        safe_password = body.password[:72]
+        user = User(
+            username=body.username,
+            email=body.email,
+            password_hash=_hash_password(safe_password),
+            role=body.role,
+            is_active=True,
+        )
+        db.add(user)
+        await db.flush()
+        return UserOut.model_validate(user)
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error("User creation failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="User creation failed")
 
 
 @admin_router.put("/users/{user_id}/password", status_code=204)
@@ -174,15 +177,38 @@ async def reset_password(
     db=Depends(get_db),
 ) -> None:
     """Reset a user's password. Admin only. New password stored as bcrypt hash."""
-    from passlib.context import CryptContext
-    pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    from spir_dynamic.app.auth import _hash_password
+
+    if len(body.new_password.encode("utf-8")) > 72:
+        raise HTTPException(status_code=400, detail="Password too long (max 72 characters)")
 
     user: User | None = await db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    user.password_hash = pwd_ctx.hash(body.new_password)
-    log.info("Password reset for user '%s' by admin", user.username)
+    try:
+        safe_password = body.new_password[:72]
+        user.password_hash = _hash_password(safe_password)
+        log.info("Password reset for user '%s' by admin", user.username)
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error("Password reset failed for user_id=%s: %s", user_id, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Password reset failed")
+
+
+@admin_router.delete("/users/{user_id}", status_code=204)
+async def delete_user(
+    user_id: str,
+    _: TokenData = Depends(require_admin),
+    db=Depends(get_db),
+) -> None:
+    """Permanently delete a user and all their data (cascades). Admin only."""
+    user: User | None = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    await db.delete(user)
+    log.info("User '%s' permanently deleted by admin", user.username)
 
 
 @admin_router.put("/users/{user_id}/status", status_code=204)
@@ -198,6 +224,39 @@ async def set_user_status(
         raise HTTPException(status_code=404, detail="User not found")
     user.is_active = is_active
     log.info("User '%s' is_active set to %s", user.username, is_active)
+
+
+# ── Stats endpoint ────────────────────────────────────────────────────────────
+
+@admin_router.get("/stats")
+async def get_stats(
+    _: TokenData = Depends(require_admin),
+    db=Depends(get_db),
+) -> dict:
+    """System-wide extraction and user statistics. Admin only."""
+    from sqlalchemy import func, text
+    from datetime import timezone
+
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    total_users = await db.scalar(select(func.count()).select_from(User))
+    active_users = await db.scalar(
+        select(func.count()).select_from(User).where(User.is_active == True)
+    )
+    total_extractions = await db.scalar(
+        select(func.count()).select_from(ExtractionHistory)
+    )
+    today_extractions = await db.scalar(
+        select(func.count())
+        .select_from(ExtractionHistory)
+        .where(ExtractionHistory.created_at >= today_start)
+    )
+    return {
+        "total_users": int(total_users or 0),
+        "active_users": int(active_users or 0),
+        "total_extractions": int(total_extractions or 0),
+        "today_extractions": int(today_extractions or 0),
+    }
 
 
 # ── Audit log / history endpoints ──────────────────────────────────────────────
