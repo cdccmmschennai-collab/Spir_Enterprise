@@ -1,5 +1,15 @@
 """
 Batch extraction API — accept multiple files, process concurrently, return ZIP.
+
+Two execution modes are supported:
+
+  celery_enabled=False (default):
+      asyncio.create_task + run_in_executor — original behaviour, no external deps.
+
+  celery_enabled=True:
+      One Celery task per file. File bytes are pre-stored in Redis so broker
+      messages stay small; workers update job state in Redis so the polling
+      endpoint stays consistent across processes.
 """
 from __future__ import annotations
 
@@ -49,7 +59,12 @@ async def batch_extract(
         (await f.read(), name) for f, name in zip(files, filenames)
     ]
 
-    asyncio.create_task(_process_batch(job_id, file_data))
+    if cfg.celery_enabled:
+        _enqueue_celery_batch(job_id, file_data)
+        log.info("Batch job %s: enqueued %d files via Celery", job_id, len(files))
+    else:
+        asyncio.create_task(_process_batch(job_id, file_data))
+        log.info("Batch job %s: launched %d files via asyncio", job_id, len(files))
 
     return {"job_id": job_id, "total": len(files), "status": "processing"}
 
@@ -95,6 +110,27 @@ async def batch_download(
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="batch_{short_id}.zip"'},
     )
+
+
+def _enqueue_celery_batch(job_id: str, file_data: list[tuple[bytes, str]]) -> None:
+    """
+    Store each file's bytes in Redis and enqueue one Celery task per file.
+
+    Bytes are pre-stored (rather than embedded in the message) so the broker
+    queue stays small regardless of file size.  Each task reads its input from
+    Redis, deletes it on first attempt, then writes the output back via the
+    shared storage/job-store backends.
+    """
+    from spir_dynamic.tasks.extraction_tasks import process_file_task
+
+    storage = get_storage()
+    for idx, (content, filename) in enumerate(file_data):
+        input_key = f"input:{job_id}:{idx}"
+        storage.put(input_key, content, filename)
+        process_file_task.apply_async(
+            args=[job_id, idx, input_key, filename],
+            task_id=f"{job_id}-{idx}",
+        )
 
 
 async def _process_batch(job_id: str, file_data: list[tuple[bytes, str]]) -> None:

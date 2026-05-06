@@ -1,0 +1,37 @@
+version: "3.9"
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://spir_user:strongpassword@db:5432/spir_db
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+    command: ["uvicorn", "spir_dynamic.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  worker:
+    build: .
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://spir_user:strongpassword@db:5432/spir_db
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    command: ["celery", "-A", "worker", "worker", "--loglevel=info", "--concurrency=4"]
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: spir_user
+      POSTGRES_PASSWORD: strongpassword
+      POSTGRES_DB: spir_db
+    ports:
+      - "5432:5432"

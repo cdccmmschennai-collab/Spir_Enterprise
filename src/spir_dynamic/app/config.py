@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     batch_max_files: int = 20
     batch_ttl_seconds: int = 7200
 
+    # Celery / Redis
+    redis_url: str = "redis://localhost:6379/0"
+    # Set CELERY_ENABLED=true to route batch processing through Celery workers.
+    # When false the existing asyncio/thread-pool fallback is used instead.
+    celery_enabled: bool = False
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 

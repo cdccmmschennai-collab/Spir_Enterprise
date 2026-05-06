@@ -118,7 +118,6 @@ class ColumnarStrategy:
     """Extract from sheets with tags as column headers (SPIR matrix)."""
 
     @timed
-    # REVERT TO:
     def extract(
         self,
         ws,
@@ -127,7 +126,7 @@ class ColumnarStrategy:
         items_dict: dict[int, dict[str, Any]] | None = None,
         item_col: int | None = None,
         metadata_field_rows: dict[str, int] | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], dict[str, int]]:
 
 
         """
@@ -168,7 +167,7 @@ class ColumnarStrategy:
                 return rows
 
         # Step 2: Read per-tag metadata (model, serial, qty from rows 2-7)
-        tag_metadata = self._read_tag_metadata(ws, profile, tag_info, field_rows=metadata_field_rows)
+        tag_metadata, discovered_field_rows = self._read_tag_metadata(ws, profile, tag_info, field_rows=metadata_field_rows)
 
         # Step 3: Determine if we need to read items from this sheet
         is_item_source = items_dict is None
@@ -301,7 +300,7 @@ class ColumnarStrategy:
             len(items_dict) if items_dict else 0,
             "self" if is_item_source else "external",
         )
-        return rows
+        return rows, discovered_field_rows
 
     def read_items(
         self, ws, profile: SheetProfile
@@ -566,7 +565,7 @@ class ColumnarStrategy:
         profile: SheetProfile,
         tag_info: dict[int, list[str]],
         field_rows: dict[str, int] | None = None,
-    ) -> dict[str, dict[str, Any]]:
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
         """
         Read per-tag metadata from rows between row 1 and the header row.
         Looks for model, serial, eqpt_qty by scanning label cells in cols 1-3.
@@ -652,10 +651,6 @@ class ColumnarStrategy:
                         metadata[tag] = {}
                     metadata[tag][row_field] = val
 
-        # Store discovered field rows so _extract_columnar_group can pass them to continuation sheets
-        if not field_rows:
-            self._last_metadata_field_rows = discovered_field_rows
-
         # PHASE 2 FIX: Fallback for eqpt_qty when "No. OF UNITS" is missing.
         # - Multi-tag cell (e.g., "TAG-1, TAG-2, TAG-3") → eqpt_qty = tag count
         # - Single tag cell with no units row → eqpt_qty = 1
@@ -672,7 +667,7 @@ class ColumnarStrategy:
                 else:
                     metadata.setdefault(tag, {})["eqpt_qty"] = tag_count
 
-        return metadata
+        return metadata, discovered_field_rows
 
     def _read_items(
         self, ws, profile: SheetProfile

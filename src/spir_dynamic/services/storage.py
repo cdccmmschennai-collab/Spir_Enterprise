@@ -45,12 +45,29 @@ class InMemoryStorage:
         return "memory"
 
 
-# Singleton
-_storage: InMemoryStorage | None = None
+# Singleton — type is InMemoryStorage or RedisStorage depending on config
+_storage = None
 
 
-def get_storage() -> InMemoryStorage:
+def get_storage():
+    """
+    Return the active file storage backend.
+    Uses Redis when celery_enabled=True so Celery workers (separate processes)
+    can access files written by the API process and vice versa.
+    Falls back to InMemoryStorage when Celery is disabled.
+    """
     global _storage
     if _storage is None:
-        _storage = InMemoryStorage()
+        try:
+            from spir_dynamic.app.config import get_settings
+            settings = get_settings()
+            if settings.celery_enabled:
+                from spir_dynamic.services.redis_store import RedisStorage
+                _storage = RedisStorage(settings.redis_url)
+                log.info("File storage: Redis (%s)", settings.redis_url)
+            else:
+                _storage = InMemoryStorage()
+                log.info("File storage: in-memory")
+        except Exception:
+            _storage = InMemoryStorage()
     return _storage

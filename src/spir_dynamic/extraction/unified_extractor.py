@@ -32,10 +32,6 @@ from spir_dynamic.utils.logging import timed
 
 log = logging.getLogger(__name__)
 
-_tabular = TabularStrategy()
-_columnar = ColumnarStrategy()
-_transposed = TransposedStrategy()
-
 # Pattern to detect annexure-reference tag values like "Annexure 1", "ANNEXURE-2",
 # "Refer Annexure 3", "ANNEXURE (P1)-1", "ANNEXURE (P2)-3", "REFER TO ANNEX 4",
 # "ANNEXURES-1" (plural form used in some SPIR files), etc.
@@ -306,6 +302,9 @@ def _extract_single_group(
     3. Merge items from other sheets in this group that fill gaps (PHASE 2)
     4. Extract all sheets in this group using the shared items_dict
     """
+    # Fresh instance per call — state (_last_metadata_field_rows) is local to this task.
+    columnar = ColumnarStrategy()
+
     all_rows: list[dict[str, Any]] = []
 
     # Find the item source: the sheet with the richest column_map
@@ -317,14 +316,11 @@ def _extract_single_group(
     item_source_name = item_source.name if item_source else ""
     if item_source:
         ws = wb[item_source_name]
-        items_dict = _columnar.read_items(ws, item_source)
+        items_dict = columnar.read_items(ws, item_source)
         log.info(
             "Item source '%s': %d items read",
             item_source_name, len(items_dict),
         )
-
-    # Fix B: capture boundary BEFORE PHASE 2 loop corrupts _last_item_source_row
-    item_source_last_row = getattr(_columnar, "_last_item_source_row", None)
 
     # PHASE 2 FIX: Merge items from other sheets in THIS GROUP that have
     # description data missing from the item source.
@@ -334,7 +330,7 @@ def _extract_single_group(
         if profile.name == item_source_name:
             continue
         ws = wb[profile.name]
-        other_items = _columnar.read_items(ws, profile)
+        other_items = columnar.read_items(ws, profile)
         for item_num, item_data in other_items.items():
             if item_num not in items_dict:
                 items_dict[item_num] = item_data
@@ -353,10 +349,8 @@ def _extract_single_group(
     for profile in ordered_profiles:
         try:
             ws = wb[profile.name]
-            # Fix B: restore boundary so _read_tag_item_mapping uses correct end_row
-            _columnar._last_item_source_row = item_source_last_row
             is_item_source_sheet = profile.name == item_source_name
-            rows = _columnar.extract(
+            rows, disc_field_rows = columnar.extract(
                 ws,
                 profile,
                 spir_no,
@@ -364,14 +358,15 @@ def _extract_single_group(
                 metadata_field_rows=None if is_item_source_sheet else item_source_metadata_rows,
             )
 
-            # Fix C: capture field rows from main sheet for continuation sheets
+            # Capture field-row positions from the item source sheet so that
+            # continuation sheets can locate metadata rows without re-scanning.
             if is_item_source_sheet:
-                item_source_metadata_rows = getattr(_columnar, "_last_metadata_field_rows", None)
-            
+                item_source_metadata_rows = disc_field_rows
+
             # Inject logical main indicator for header deduplication
             for r in rows:
                 r["_group_main"] = main_sheet_name or profile.name
-                
+
             all_rows.extend(rows)
         except Exception as exc:
             log.error(
@@ -408,14 +403,14 @@ def _find_item_source(profiles: list[SheetProfile]) -> SheetProfile | None:
 def _get_strategy(profile: SheetProfile):
     """Get the right strategy for a profile's tag layout."""
     mapping = {
-        TagLayout.TAG_COLUMN: _tabular,
-        TagLayout.GLOBAL_TAG: _tabular,
-        TagLayout.ROW_HEADERS: _transposed,
+        TagLayout.TAG_COLUMN: TabularStrategy,
+        TagLayout.GLOBAL_TAG: TabularStrategy,
+        TagLayout.ROW_HEADERS: TransposedStrategy,
     }
-    strategy = mapping.get(profile.tag_layout)
-    if strategy is None and profile.column_map:
-        return _tabular
-    return strategy
+    cls = mapping.get(profile.tag_layout)
+    if cls is None and profile.column_map:
+        return TabularStrategy()
+    return cls() if cls else None
 
 
 def _resolve_spir_no(profiles: list[SheetProfile], filename: str) -> str:
@@ -1005,8 +1000,9 @@ def _build_annexure_registry(
         # Fallback for COLUMN_HEADERS annexure sheets (tags are column headers, not row data).
         # _read_annexure_equipment expects ROW_HEADERS style; use columnar tag-header reader instead.
         if not entries and profile.tag_layout == TagLayout.COLUMN_HEADERS:
-            tag_info = _columnar._read_tag_headers(ws, profile)
-            meta = _columnar._read_tag_metadata(ws, profile, tag_info)
+            _ann_columnar = ColumnarStrategy()
+            tag_info = _ann_columnar._read_tag_headers(ws, profile)
+            meta, _ = _ann_columnar._read_tag_metadata(ws, profile, tag_info)
             for _col_idx, col_tags in tag_info.items():
                 for tag in col_tags:
                     if tag and not re.search(r"(?i)annex", tag):

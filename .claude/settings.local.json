@@ -76,7 +76,21 @@
       "Bash(Format-Table Name, PSIsContainer)",
       "PowerShell(Get-ChildItem \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\src\" -Recurse | Where-Object { !$_.PSIsContainer } | Select-Object FullName)",
       "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\" -Force | ForEach-Object { $_.FullName })",
-      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\src\" -Force -Recurse | ForEach-Object { $_.FullName })"
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\src\" -Force -Recurse | ForEach-Object { $_.FullName })",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\" -Recurse -Force)",
+      "Bash(Select-Object -Property FullName, PSIsContainer)",
+      "Bash(Sort-Object FullName)",
+      "Bash(Format-Table -AutoSize)",
+      "Bash(Select-Object -First 50)",
+      "Bash(Format-List FullName)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\" -Recurse -Filter \"*.py\")",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(Head -20)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\" -Directory)",
+      "Bash(Select-Object -ExpandProperty Name)",
+      "Bash(Get-ChildItem -Recurse -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\" -Filter \"*.py\")",
+      "Bash(Select-Object FullName)",
+      "Bash(findstr /R /S \"open\\(\" src\\\\spir_dynamic\\\\*.py src\\\\spir_dynamic\\\\**\\\\*.py)"
     ]
   }
 }
