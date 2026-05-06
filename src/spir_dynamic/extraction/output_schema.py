@@ -67,6 +67,13 @@ OUTPUT_COLUMNS: list[dict] = [
     {"col": "ERROR",      "field": "duplicate_id", "default": 0,    "width": 22},
     {"col": "SHEET",      "field": "sheet",         "default": None, "width": 22},
     {"col": "SPIR TYPE",  "field": "spir_type",     "default": None, "width": 26},
+
+    # -- Vendor contact details (extracted from Focal Point cell) --
+    {"col": "VENDOR NAME",        "field": "vendor_name",    "default": None, "width": 28},
+    {"col": "VENDOR EMAIL1",      "field": "vendor_email1",  "default": None, "width": 32},
+    {"col": "VENDOR EMAIL2",      "field": "vendor_email2",  "default": None, "width": 32},
+    {"col": "VENDOR CONTACT NO", "field": "vendor_contact", "default": None, "width": 30},
+    {"col": "VENDOR COUNTRY",     "field": "vendor_country", "default": None, "width": 20},
 ]
 
 

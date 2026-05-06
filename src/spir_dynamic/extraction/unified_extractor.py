@@ -134,6 +134,9 @@ def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
     # Step 4: Equipment enrichment — resolve annexure references + merge equipment data
     all_rows = _enrich_equipment_data(wb, all_rows, profiles)
 
+    # Step 4b: Vendor contact extraction from MANUFACTURERS/SUPPLIERS FOCAL POINT cell
+    _attach_vendor_info(wb, all_rows, profiles)
+
     # PHASE 5 FIX: Clean up internal tracking fields
     for row in all_rows:
         row.pop("_group_main", None)
@@ -1367,6 +1370,65 @@ def _build_tag_equipment_lookup(
                     tag_equip[tag_key][field] = val  # Override
 
     return tag_equip
+
+
+def _attach_vendor_info(
+    wb,
+    all_rows: list[dict[str, Any]],
+    profiles: list[SheetProfile],
+) -> None:
+    """
+    Extract vendor contact details from the MANUFACTURERS/SUPPLIERS FOCAL POINT cell
+    and attach the 5 vendor fields to every row.
+
+    Modifies rows in-place by adding new keys only — never overwrites existing fields.
+    Safe under Celery: no shared/global state, one call per workbook execution.
+    """
+    from spir_dynamic.services.vendor_extractor import find_focal_point_cell, extract_vendor_details
+
+    # Resolve supplier name from profile metadata (already extracted by find_metadata)
+    supplier_name = ""
+    for p in profiles:
+        s = p.metadata.get("supplier", "")
+        if s and str(s).strip():
+            supplier_name = str(s).strip()
+            break
+
+    # Scan non-annexure sheets for the focal point cell
+    focal_text: str | None = None
+    for profile in profiles:
+        if profile.role == SheetRole.ANNEXURE:
+            continue
+        try:
+            ws = wb[profile.name]
+            focal_text = find_focal_point_cell(ws)
+            if focal_text:
+                break
+        except Exception as exc:
+            log.debug("Vendor focal point scan failed for '%s': %s", profile.name, exc)
+
+    if not focal_text:
+        log.debug("vendor_extractor: focal text NOT found, supplier=%s", supplier_name)
+
+    if not focal_text and not supplier_name:
+        return
+
+    details = extract_vendor_details(focal_text or "", supplier_name)
+
+    # Map extractor keys → output schema field names
+    vendor_fields: dict[str, str] = {
+        "vendor_name":    details.get("vendor_name", ""),
+        "vendor_email1":  details.get("email1", ""),
+        "vendor_email2":  details.get("email2", ""),
+        "vendor_contact": details.get("contact", ""),
+        "vendor_country": details.get("country", ""),
+    }
+
+    # Attach to every row: add new keys only, skip empty values
+    for row in all_rows:
+        for k, v in vendor_fields.items():
+            if v is not None and v != "":
+                row[k] = v
 
 
 def _normalize_annexure_ref(value: str) -> str | None:
