@@ -44,3 +44,6 @@ echo "*.pyc" >> .gitignore
 
 frontend/.env.local
 .env
+
+*.egg-info/
+*.dist-info/
