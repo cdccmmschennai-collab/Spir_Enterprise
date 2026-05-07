@@ -66,7 +66,7 @@ _KNOWN_COUNTRIES: frozenset[str] = frozenset({
 
 # Labeled phone block regex — captures (label, numbers_text)
 _LABELED_PHONE_RE = re.compile(
-    r"(?P<label>(?:fax|telephone|tel|phone|ph)\b[\w\s\.]*?)\s*[:：]\s*(?P<nums>[^\n:]{3,80})",
+    r"(?P<label>(?:fax|telephone|tel|phone|ph)\b[\w\s\.]*?)\s*[:：]\s*(?P<nums>[^\n]{3,80})",
     re.IGNORECASE,
 )
 
@@ -296,6 +296,7 @@ def _extract_contact_numbers(text: str) -> str:
 
         for part in parts:
             part = part.strip().rstrip(",;")
+            part = part.replace(":", "").strip()
 
             if re.search(r"\d{5,}", part.replace(" ", "").replace("-", "")):
                 nums.append(_normalize_number(part))  #FIX APPLIED
