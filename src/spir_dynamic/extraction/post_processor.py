@@ -492,7 +492,11 @@ class SheetTracker:
     main sheet — they are part of the same logical block.
     """
 
-    def __init__(self, main_sheet_names: set[str] | None = None):
+    def __init__(
+        self,
+        main_sheet_names: set[str] | None = None,
+        sheet_profiles: list[dict] | None = None,
+    ):
         self._main_names_raw: set[str] = main_sheet_names or set()
         self._main_names_norm: set[str] = {
             self._norm(name) for name in self._main_names_raw if str(name).strip()
@@ -507,10 +511,34 @@ class SheetTracker:
         else:
             self._total_main_sheets = 1
 
-        # Pre-populate index for main sheets using natural sort so fan-out row
-        # reordering cannot cause a later-appearing sheet to claim an earlier index.
-        # Natural sort ensures "MAIN SHEET-2" < "MAIN SHEET-10".
-        if self._main_names_raw:
+        if sheet_profiles:
+            # Pre-populate ALL sheets using workbook order from sheet_profiles so
+            # that continuation sheets get the correct parent index regardless of
+            # the order rows arrive in post_process_rows.
+            # Use the sheet NAME (not role) to identify continuations/annexures —
+            # these sheets often get role="data" from the sheet analyzer.
+            main_count = 0
+            current_idx = 1
+            for sp in sheet_profiles:
+                name = str(sp.get("name") or "").strip()
+                if not name:
+                    continue
+                role = str(sp.get("role") or "").lower()
+                if role == "utility":
+                    continue
+                name_norm = self._norm(name)
+                is_non_main = (
+                    _sheet_name_is_continuation_or_annexure(name_norm)
+                    or role == "annexure"
+                )
+                if not is_non_main:
+                    main_count += 1
+                    current_idx = main_count
+                self._sheet_to_idx[name_norm] = current_idx
+            self._main_counter = main_count
+            self._total_main_sheets = max(1, main_count)
+        elif self._main_names_raw:
+            # Fallback: pre-populate main sheets only via natural sort.
             def _nat_key(n: str) -> list:
                 parts = re.split(r"(\d+)", n)
                 return [int(p) if p.isdigit() else p.upper() for p in parts]
@@ -524,8 +552,6 @@ class SheetTracker:
                 key=_nat_key,
             )
             for i, name in enumerate(main_only, start=1):
-                # Store with normalized (uppercase) key so case-insensitive lookup
-                # works even when output rows store sheet names in uppercase.
                 self._sheet_to_idx[self._norm(name)] = i
             self._main_counter = len(main_only)
 
@@ -547,20 +573,6 @@ class SheetTracker:
             return idx
 
         is_main = self._is_main(key_norm)
-
-        if not is_main:
-            # Heuristic for continuation sheets: try to find a number that matches a main sheet.
-            # "CONTI SHEET (2)" -> 2. If index 2 exists in _sheet_to_idx, use it.
-            nums = re.findall(r"\d+", key_norm)
-            if nums:
-                for num_str in nums:
-                    num = int(num_str)
-                    # Check if this number matches any pre-populated main sheet's index.
-                    for m_name_norm, m_idx in self._sheet_to_idx.items():
-                        if m_idx == num and self._is_main(m_name_norm):
-                            # Found a matching main sheet. Cache it for this continuation sheet.
-                            self._sheet_to_idx[key_norm] = num
-                            return num
 
         if is_main:
             self._main_counter += 1
@@ -592,6 +604,7 @@ def post_process_rows(
     rows: list[list],
     spir_no: str,
     main_sheet_names: set[str] | None = None,
+    sheet_profiles: list[dict] | None = None,
 ) -> list[list]:
     if not rows:
         return rows
@@ -607,7 +620,7 @@ def post_process_rows(
     if pos_col is None and spf_col is None:
         return rows
 
-    sheet_tracker = SheetTracker(main_sheet_names)
+    sheet_tracker = SheetTracker(main_sheet_names, sheet_profiles=sheet_profiles)
     spir_no_clean = (spir_no or "").strip()
 
     pos_counter: dict[str, int] = {}
@@ -646,9 +659,11 @@ def post_process_rows(
                 total_main_sheets=sheet_tracker.total_main_sheets,
             )
 
-        indexed_rows.append((sheet_idx, row))
+        sheet_norm = SheetTracker._norm(str(sheet or ""))
+        is_non_main = 1 if _sheet_name_is_continuation_or_annexure(sheet_norm) else 0
+        indexed_rows.append((sheet_idx, is_non_main, row))
 
-    # Stable sort by sheet_idx: groups rows by their logical main sheet (01, 02, etc.)
-    # while preserving the original relative order within each sheet group.
-    indexed_rows.sort(key=lambda x: x[0])
-    return [r for idx, r in indexed_rows]
+    # Sort by (sheet_idx, is_non_main): groups rows by logical main sheet, then
+    # places main-sheet rows before continuation/annexure rows within each group.
+    indexed_rows.sort(key=lambda x: (x[0], x[1]))
+    return [r for idx, _flag, r in indexed_rows]

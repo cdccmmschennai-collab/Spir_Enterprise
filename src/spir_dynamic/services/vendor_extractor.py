@@ -64,6 +64,45 @@ _KNOWN_COUNTRIES: frozenset[str] = frozenset({
     "CAMBODIA", "NEPAL",
 })
 
+_CITY_TO_COUNTRY: dict[str, str] = {
+    "NAVI MUMBAI": "INDIA", "MUMBAI": "INDIA", "CHENNAI": "INDIA",
+    "DELHI": "INDIA", "NEW DELHI": "INDIA", "BANGALORE": "INDIA",
+    "BENGALURU": "INDIA", "PUNE": "INDIA", "HYDERABAD": "INDIA",
+    "AHMEDABAD": "INDIA", "VADODARA": "INDIA", "GUJARAT": "INDIA",
+    "KOLKATA": "INDIA", "SURAT": "INDIA", "NOIDA": "INDIA",
+    "YANCHENG": "CHINA", "SHANGHAI": "CHINA", "BEIJING": "CHINA",
+    "GUANGZHOU": "CHINA", "SHENZHEN": "CHINA", "TIANJIN": "CHINA",
+    "WUHAN": "CHINA", "CHENGDU": "CHINA", "NANJING": "CHINA",
+    "MILAN": "ITALY", "MILANO": "ITALY", "ROME": "ITALY",
+    "PARIS": "FRANCE", "LYON": "FRANCE",
+    "BERLIN": "GERMANY", "HAMBURG": "GERMANY", "MUNICH": "GERMANY",
+    "TOKYO": "JAPAN", "OSAKA": "JAPAN",
+    "SEOUL": "SOUTH KOREA", "BUSAN": "SOUTH KOREA",
+    "DUBAI": "UAE", "ABU DHABI": "UAE", "SHARJAH": "UAE",
+    "RIYADH": "SAUDI ARABIA", "JEDDAH": "SAUDI ARABIA",
+    "AMSTERDAM": "NETHERLANDS", "ROTTERDAM": "NETHERLANDS",
+    "STOCKHOLM": "SWEDEN", "ZURICH": "SWITZERLAND", "GENEVA": "SWITZERLAND",
+    "BRUSSELS": "BELGIUM", "COPENHAGEN": "DENMARK",
+    "SYDNEY": "AUSTRALIA", "MELBOURNE": "AUSTRALIA",
+    "SAO PAULO": "BRAZIL", "RIO DE JANEIRO": "BRAZIL",
+    "MOSCOW": "RUSSIA", "MADRID": "SPAIN", "BARCELONA": "SPAIN",
+    "ISTANBUL": "TURKEY", "ANKARA": "TURKEY",
+}
+
+_PHONE_PREFIX_TO_COUNTRY: dict[str, str] = {
+    "+974": "QATAR", "+971": "UAE", "+966": "SAUDI ARABIA",
+    "+968": "OMAN", "+965": "KUWAIT", "+973": "BAHRAIN",
+    "+91": "INDIA", "+86": "CHINA", "+81": "JAPAN",
+    "+82": "SOUTH KOREA", "+65": "SINGAPORE", "+44": "UK",
+    "+49": "GERMANY", "+33": "FRANCE", "+39": "ITALY",
+    "+31": "NETHERLANDS", "+46": "SWEDEN", "+41": "SWITZERLAND",
+    "+61": "AUSTRALIA", "+55": "BRAZIL", "+7": "RUSSIA",
+    "+34": "SPAIN", "+90": "TURKEY", "+48": "POLAND",
+    "+32": "BELGIUM", "+45": "DENMARK", "+47": "NORWAY",
+    "+351": "PORTUGAL", "+30": "GREECE", "+353": "IRELAND",
+    "+98": "IRAN",
+}
+
 # Labeled phone block regex — captures (label, numbers_text)
 _LABELED_PHONE_RE = re.compile(
     r"(?P<label>(?:fax|telephone|tel|phone|ph)\b[\w\s\.]*?)\s*[:：]\s*(?P<nums>[^\n]{3,80})",
@@ -146,7 +185,8 @@ def extract_vendor_details(text: str, supplier_name: str = "") -> dict:
 
         result["email1"], result["email2"] = _extract_emails(normalized)
         result["contact"] = _extract_contact_numbers(normalized)
-        result["country"] = _extract_country(lines)
+        country_lines = lines + ([result["contact"]] if result.get("contact") else [])
+        result["country"] = _extract_country(country_lines)
     except Exception as exc:  # noqa: BLE001
         log.debug("vendor_extractor: parsing failed: %s", exc)
 
@@ -174,36 +214,102 @@ def _scan_rows(ws, start: int, end: int, max_col: int) -> Optional[str]:
 
             for kw in _FOCAL_KEYWORDS:
                 if kw in text_lower:
-                    #FOUND LABEL → now search for DATA nearby
+                    # FOUND LABEL → now search for DATA nearby
+                    # Strategies 1–4 only return immediately when useful data
+                    # (email or phone) is found; otherwise fall through to Strategy 5.
+                    candidate: Optional[str] = None
 
                     # 1. Right cell
                     if c + 1 <= max_col:
                         right = ws.cell(r, c + 1).value
-                        if right and str(right).strip():
-                            return str(right)
+                        if right:
+                            s = str(right).strip()
+                            if s and (_EMAIL_RE.search(s) or _BARE_PHONE_RE.search(s)):
+                                return s
+                            if s:
+                                candidate = s
 
                     # 2. Below cell
                     if r + 1 <= ws.max_row:
                         below = ws.cell(r + 1, c).value
-                        if below and str(below).strip():
-                            return str(below)
+                        if below:
+                            s = str(below).strip()
+                            if s and (_EMAIL_RE.search(s) or _BARE_PHONE_RE.search(s)):
+                                return s
+                            if s and not candidate:
+                                candidate = s
 
                     # 3. Diagonal (very common case)
                     if r + 1 <= ws.max_row and c + 1 <= max_col:
                         diag = ws.cell(r + 1, c + 1).value
-                        if diag and str(diag).strip():
-                            return str(diag)
+                        if diag:
+                            s = str(diag).strip()
+                            if s and (_EMAIL_RE.search(s) or _BARE_PHONE_RE.search(s)):
+                                return s
+                            if s and not candidate:
+                                candidate = s
 
-                    # 4. Multi-line block (scan next 3 rows)
+                    # 4. Multi-line same-column block
                     collected = []
-                    for i in range(1, 4):
+                    for i in range(1, 5):
                         if r + i <= ws.max_row:
                             v = ws.cell(r + i, c).value
                             if v:
                                 collected.append(str(v).strip())
-
                     if collected:
-                        return "\n".join(collected)
+                        block = "\n".join(collected)
+                        if _EMAIL_RE.search(block) or _BARE_PHONE_RE.search(block):
+                            return block
+
+                    # 5. Structured table — scan multiple rows × multiple columns
+                    # Handles cases where labels are in one column and values are
+                    # spread across adjacent columns (e.g. Sulzer-style SPIR files).
+                    lines: list[str] = []
+                    empty_streak = 0
+                    for i in range(1, 10):
+                        if r + i > ws.max_row:
+                            break
+                        row_vals: list[str] = []
+                        for dc in range(0, 9):
+                            if c + dc > max_col:
+                                break
+                            v = ws.cell(r + i, c + dc).value
+                            if v is not None:
+                                sv = str(v).strip()
+                                if sv:
+                                    row_vals.append(sv)
+                        if not row_vals:
+                            empty_streak += 1
+                            if empty_streak >= 2:
+                                break
+                            continue
+                        empty_streak = 0
+                        # Pair label cells (ending with ":") with the next value cell
+                        paired: list[str] = []
+                        skip = False
+                        for j, val in enumerate(row_vals):
+                            if skip:
+                                skip = False
+                                continue
+                            if val.rstrip().endswith(":") and j + 1 < len(row_vals):
+                                paired.append(f"{val} {row_vals[j + 1]}")
+                                skip = True
+                            else:
+                                paired.append(val)
+                        lines.extend(paired)
+
+                    if lines:
+                        wide = "\n".join(lines)
+                        if _EMAIL_RE.search(wide) or _BARE_PHONE_RE.search(wide):
+                            return wide
+                        if len(lines) > 2:
+                            return wide
+
+                    # Last resort: return whatever candidate we found
+                    if candidate:
+                        return candidate
+
+                    break  # stop searching keywords for this cell
 
     return None
 
@@ -395,5 +501,16 @@ def _extract_country(lines: list[str]) -> str:
             pattern = r"\b" + re.escape(country) + r"\b"
             if re.search(pattern, normalized):
                 return country
+
+    # Strategy 4: city / region name → country (longest match first)
+    full_text_upper = " ".join(lines).upper()
+    for city, ctry in sorted(_CITY_TO_COUNTRY.items(), key=lambda x: -len(x[0])):
+        if city in full_text_upper:
+            return ctry
+
+    # Strategy 5: phone country-code prefix → country (longest prefix first)
+    for prefix, ctry in sorted(_PHONE_PREFIX_TO_COUNTRY.items(), key=lambda x: -len(x[0])):
+        if re.search(r'(?<!\d)' + re.escape(prefix), full_text_upper):
+            return ctry
 
     return ""

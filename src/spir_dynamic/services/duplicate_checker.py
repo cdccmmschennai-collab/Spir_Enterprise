@@ -102,7 +102,19 @@ def _label_priority(label: str) -> int:
 
 
 def _norm(v) -> str:
-    return str(v or "").strip().upper()
+    s = str(v or "").strip().upper()
+    if '.' in s:
+        try:
+            f = float(s)
+            if f == int(f):
+                s = str(int(f))
+        except (ValueError, TypeError):
+            pass
+    return s
+
+
+def _numeric_key(s: str) -> str:
+    return str(int(s)) if s.isdigit() else s
 
 
 @timed
@@ -154,6 +166,7 @@ def deduplicate_rows(rows: list[list], CI: dict) -> list[list]:
     # Rule 2 — same SAP NUMBER, different PART NUMBER
     sap_to_parts: dict[str, set[str]] = defaultdict(set)
     sap_to_rows: dict[str, list[int]] = defaultdict(list)
+    sap_part_count: dict = defaultdict(int)
     if sap_col is not None and part_col is not None:
         for idx, row in enumerate(rows):
             sap = _get(row, sap_col)
@@ -162,12 +175,25 @@ def deduplicate_rows(rows: list[list], CI: dict) -> list[list]:
                 continue
             sap_to_parts[sap].add(part)
             sap_to_rows[sap].append(idx)
+            sap_part_count[(sap, part)] += 1
 
         for sap in sorted(sap_to_parts):
             if len(sap_to_parts[sap]) <= 1:
                 continue
+            # If all "different" parts collapse to the same number when leading zeros are
+            # stripped, they are the same physical part stored differently in Excel — not
+            # a true SAP duplicate.
+            if len({_numeric_key(p) for p in sap_to_parts[sap]}) <= 1:
+                continue
+            # If one part is the clear majority for this SAP, don't flag its rows —
+            # only flag minority rows (likely extraction artifacts or genuine mismatches).
+            max_cnt = max(sap_part_count[(sap, p)] for p in sap_to_parts[sap])
+            dominant = {p for p in sap_to_parts[sap] if sap_part_count[(sap, p)] == max_cnt}
+            skip_parts = dominant if len(dominant) == 1 else set()
             label = f"sap number duplicate-{sap_duplicate_counter}"
             for row_idx in sap_to_rows[sap]:
+                if _get(rows[row_idx], part_col) in skip_parts:
+                    continue
                 row_labels[row_idx].append(label)
             sap_duplicate_counter += 1
 

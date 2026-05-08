@@ -414,6 +414,76 @@ _SPIR_TYPE_MAP = {
 }
 
 
+def _parse_vml_spir_type(vml_content: str) -> str | None:
+    """
+    Parse VML XML to find a checked Form Control checkbox whose caption
+    matches a SPIR type. Returns the normalised type string or None.
+    """
+    import re
+
+    shape_chunks = re.split(r'(?=<v:shape[\s>])', vml_content)
+    for chunk in shape_chunks:
+        if 'ObjectType="Checkbox"' not in chunk:
+            continue
+        if '<x:Checked>1</x:Checked>' not in chunk:
+            continue
+        tb_match = re.search(r'<v:textbox[^>]*>(.*?)</v:textbox>', chunk, re.DOTALL)
+        if not tb_match:
+            continue
+        # Strip HTML tags, then collapse all whitespace (including \r\n from
+        # multi-line VML text nodes) into single spaces before matching.
+        caption = re.sub(r'<[^>]+>', ' ', tb_match.group(1))
+        caption = re.sub(r'\s+', ' ', caption).strip()
+        caption_lower = caption.lower()
+        for pattern, normalized in _SPIR_TYPE_MAP.items():
+            if pattern in caption_lower:
+                log.debug("VML checkbox SPIR type detected: %r → %s", caption, normalized)
+                return normalized
+    return None
+
+
+def _detect_spir_type_vml(ws) -> str | None:
+    """
+    Detect SPIR type from Form Control checkboxes stored in the VML drawing.
+    Used when the type label is a checkbox caption (not a cell value), which
+    openpyxl cannot read directly.
+
+    openpyxl 3.x closes the ZIP archive after loading (wb._archive is None).
+    Instead we use ws._rels (already parsed by openpyxl) to locate the VML
+    file path, then re-open the archive from wb._spir_raw_bytes which the
+    pipeline attaches before calling extraction.
+
+    Returns None if no matching checked checkbox is found.
+    """
+    import io
+    import zipfile
+
+    try:
+        wb = ws.parent
+        raw_bytes = getattr(wb, '_spir_raw_bytes', None)
+        if not raw_bytes:
+            return None
+
+        # Find the vmlDrawing relationship from the worksheet rels
+        vml_path: str | None = None
+        for rel in (ws._rels or []):
+            if 'vmlDrawing' in (rel.Type or ''):
+                vml_path = rel.Target  # openpyxl resolves to full zip path
+                break
+        if not vml_path:
+            return None
+
+        with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
+            try:
+                vml_content = zf.read(vml_path).decode('utf-8', errors='replace')
+            except KeyError:
+                return None
+
+        return _parse_vml_spir_type(vml_content)
+    except Exception:
+        return None
+
+
 def _detect_spir_type(ws, scan_rows: int, max_col: int) -> str | None:
     """
     Detect which of the 4 SPIR types is ticked/selected.
@@ -431,6 +501,13 @@ def _detect_spir_type(ws, scan_rows: int, max_col: int) -> str | None:
 
     Returns None if no tick is found (e.g., files without the checkbox grid).
     """
+    # Phase 0: Form Control checkboxes in VML (XLSM files where the type label
+    # is a checkbox caption, not a cell value — openpyxl cannot read those labels
+    # directly, so we parse the VML drawing embedded in the ZIP archive).
+    vml_result = _detect_spir_type_vml(ws)
+    if vml_result:
+        return vml_result
+
     # Phase 1: Find ALL type labels with their (row, col) positions
     type_cells: list[tuple[int, int, str]] = []
     for r in range(1, min(scan_rows + 2, 15)):

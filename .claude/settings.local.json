@@ -83,7 +83,11 @@
       "Bash(Select-Object Name, PSIsContainer)",
       "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\" -Directory | Select-Object -ExpandProperty Name | Where-Object { $_ -notmatch '^venv$|^templates$' })",
       "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\extraction\" -Recurse -File | Where-Object { $_.Extension -eq '.py' } | Select-Object -ExpandProperty FullName)",
-      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\src\" -Recurse -File | Where-Object { $_.Extension -eq '.py' } | Select-Object -ExpandProperty FullName)"
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\src\" -Recurse -File | Where-Object { $_.Extension -eq '.py' } | Select-Object -ExpandProperty FullName)",
+      "Bash(Select-Object -First 20 FullName)",
+      "PowerShell(Test-Path *)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\" -Depth 1 | Where-Object { -not $_.PSPath.Contains\\(\"venv\"\\) })",
+      "Bash(Select-Object -First 20)"
     ]
   }
 }
