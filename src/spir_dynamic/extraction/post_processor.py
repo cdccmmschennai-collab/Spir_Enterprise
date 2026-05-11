@@ -466,7 +466,7 @@ def _col(ci: dict, *names) -> int | None:
 
 _NON_MAIN_PATTERNS = re.compile(
     r"(?:"
-    r"continuation|conti(?:nuation)?\b|cont(?:\.|\s|\-)"   # continuation / conti / cont- / cont.
+    r"continuation|conti(?:nuation)?\b|cont\b"              # continuation / conti / cont at word boundary
     r"|continued|overflow"
     r"|annexure|annex\b"                                    # annexure / annex
     r"|\bann?x[\s\-_(]"                                    # anx-N / annx-N (abbreviations)
