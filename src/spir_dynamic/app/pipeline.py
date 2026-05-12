@@ -40,9 +40,13 @@ def run_pipeline(file_bytes: bytes, original_filename: str) -> dict[str, Any]:
 
     Returns a metadata dict with file_id, preview_rows, statistics, etc.
     """
-    # ── cProfile (remove after identifying bottlenecks) ─────────────────────
-    _profiler = cProfile.Profile()
-    _profiler.enable()
+    # ── cProfile — opt-in via SPIR_PROFILE=true (disabled in production) ────
+    import os as _os
+    _profile_enabled = _os.environ.get("SPIR_PROFILE", "").lower() in ("1", "true", "yes")
+    _profiler = None
+    if _profile_enabled:
+        _profiler = cProfile.Profile()
+        _profiler.enable()
     # ────────────────────────────────────────────────────────────────────────
     try:
         size_mb = len(file_bytes) / (1024 * 1024)

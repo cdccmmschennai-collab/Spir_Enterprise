@@ -39,6 +39,8 @@ async def ensure_schema() -> None:
         "ALTER TABLE extraction_history ADD COLUMN IF NOT EXISTS created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()",
         # format can exceed typical VARCHAR limits for multi-sheet workbooks; store as TEXT.
         "ALTER TABLE extraction_history ALTER COLUMN format TYPE TEXT",
+        # json_path stores the disk path of the extracted rows JSON file (for combine feature).
+        "ALTER TABLE extraction_history ADD COLUMN IF NOT EXISTS json_path VARCHAR(512)",
         "CREATE INDEX IF NOT EXISTS ix_extraction_history_user_id    ON extraction_history(user_id)",
         "CREATE INDEX IF NOT EXISTS ix_extraction_history_created_at ON extraction_history(created_at)",
     ]

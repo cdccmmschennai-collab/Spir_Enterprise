@@ -80,6 +80,28 @@ def process_file_task(
             spir_no=result.get("spir_no", ""),
             file_id=result.get("file_id", ""),
         ))
+
+        # Store extracted row data in Redis so the combine endpoint can reuse it
+        # without re-running the extraction pipeline.
+        # Key: rows:{file_id}  — namespaced to avoid collision with xlsx storage.
+        try:
+            import json as _json
+            from spir_dynamic.app.config import get_settings as _gs
+            _row_payload = _json.dumps({
+                "cols": result.get("preview_cols", []),
+                "rows": result.get("preview_rows", []),
+                "spir_no": result.get("spir_no", ""),
+            }).encode("utf-8")
+            storage.put(
+                f"rows:{result['file_id']}",
+                _row_payload,
+                "rows.json",
+                ttl=_gs().batch_ttl_seconds,
+            )
+        except Exception as _row_exc:
+            # Non-fatal: row storage failing does not break extraction or download.
+            log.warning("Row data storage failed (combine unavailable for this file): %s", _row_exc)
+
         log.info("process_file_task done | job=%s idx=%d file=%s rows=%d",
                  job_id, file_idx, filename, result.get("total_rows", 0))
         return {

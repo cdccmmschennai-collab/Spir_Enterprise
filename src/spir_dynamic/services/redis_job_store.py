@@ -28,7 +28,7 @@ class RedisJobStore:
         self._r = redis.Redis.from_url(redis_url, decode_responses=True)
         self._ttl = ttl_seconds
 
-    def create(self, job_id: str, filenames: list[str]) -> BatchJob:
+    def create(self, job_id: str, filenames: list[str], user_id: str = "") -> BatchJob:
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=self._ttl)
         key_ttl = self._ttl + 300  # slight padding so keys outlive the TTL check
@@ -39,6 +39,7 @@ class RedisJobStore:
             "total": len(filenames),
             "created_at": now.isoformat(),
             "expires_at": expires_at.isoformat(),
+            "user_id": user_id,
         })
         pipe.expire(meta_key, key_ttl)
 
@@ -95,6 +96,7 @@ class RedisJobStore:
             results=results,
             created_at=created_at,
             expires_at=expires_at,
+            user_id=meta.get("user_id", ""),
         )
 
     def update_result(self, job_id: str, idx: int, result: FileResult) -> None:

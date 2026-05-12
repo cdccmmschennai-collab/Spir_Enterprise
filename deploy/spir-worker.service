@@ -1,0 +1,62 @@
+[Unit]
+Description=SPIR Dynamic Extraction — Celery Worker
+Documentation=https://github.com/your-org/spir-dynamic
+After=network.target redis.service
+Wants=redis.service
+
+[Service]
+Type=exec
+User=spir
+Group=spir
+WorkingDirectory=/opt/spir_dynamic
+
+EnvironmentFile=/opt/spir_dynamic/.env
+
+# Worker configuration:
+#
+#   --concurrency=2
+#     2 concurrent worker processes — correct for a 2-vCPU VPS shared with
+#     WordPress/MySQL. openpyxl loads entire workbooks into memory; each worker
+#     child can use up to 1 GB (worker_max_memory_per_child in celery_app.py).
+#     At concurrency=2: max 2 GB worker RAM, leaving headroom for WordPress,
+#     Redis, Nginx, and the FastAPI process on an 8 GB VPS.
+#
+#   --max-tasks-per-child=25
+#     Recycle worker child after 25 tasks. More conservative than 50 because
+#     openpyxl retains some memory between large workbook parses even after
+#     wb.close(). Recycling frequently prevents long-term accumulation.
+#
+#   --hostname=spir-worker@%H
+#     %H is replaced by the system hostname by systemd. Useful in Celery logs
+#     and the Celery inspect output when multiple workers run on the same host.
+ExecStart=/opt/spir_dynamic/venv/bin/celery \
+    -A spir_dynamic.celery_app \
+    worker \
+    --loglevel=info \
+    --concurrency=2 \
+    --max-tasks-per-child=25 \
+    --hostname=spir-worker@%H
+
+# TimeoutStopSec must exceed task_time_limit (360s in celery_app.py) so that
+# in-flight extractions can finish before systemd sends SIGKILL.
+TimeoutStopSec=400
+KillMode=mixed
+KillSignal=SIGTERM
+
+Restart=on-failure
+RestartSec=10
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/spir_dynamic
+ProtectHome=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=spir-worker
+
+[Install]
+WantedBy=multi-user.target

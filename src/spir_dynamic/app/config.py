@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     batch_max_files: int = 20
     batch_ttl_seconds: int = 7200
 
+    # Persistent row storage — extracted rows saved here as JSON for combine feature.
+    # Relative path resolved from the working directory (project root).
+    # Override with ROWS_STORAGE_PATH env var on the VPS if needed.
+    rows_storage_path: str = "storage/extracted_rows"
+
     # Celery / Redis
     redis_url: str = "redis://localhost:6379/0"
     # Set CELERY_ENABLED=true to route batch processing through Celery workers.

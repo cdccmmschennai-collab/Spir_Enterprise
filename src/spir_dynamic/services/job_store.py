@@ -61,13 +61,26 @@ class BatchJob:
         return datetime.now(timezone.utc) > self.expires_at
 
     def to_dict(self) -> dict:
+        # Annotate each pending file with its queue position within this job
+        # (1-based) so the frontend can show "queued — position 3 of 5 waiting".
+        results_out = []
+        pending_pos = 0
+        for r in self.results:
+            d = r.to_dict()
+            if r.status == "pending":
+                pending_pos += 1
+                d["queue_position"] = pending_pos
+            else:
+                d["queue_position"] = None
+            results_out.append(d)
         return {
             "job_id": self.job_id,
             "status": self.status,
             "total": self.total,
             "completed": self.completed,
             "succeeded": self.succeeded,
-            "results": [r.to_dict() for r in self.results],
+            "pending_count": self.total - self.completed,
+            "results": results_out,
         }
 
 

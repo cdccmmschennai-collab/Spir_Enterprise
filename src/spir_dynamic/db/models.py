@@ -152,6 +152,7 @@ class ExtractionHistory(Base):
     supplier: Mapped[str | None] = mapped_column(String(255), nullable=True)
     file_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     output_filename: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    json_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     result_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     tag_count: Mapped[int] = mapped_column(Integer, nullable=False)
     spare_count: Mapped[int] = mapped_column(Integer, nullable=False)

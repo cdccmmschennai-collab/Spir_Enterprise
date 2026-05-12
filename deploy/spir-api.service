@@ -1,0 +1,52 @@
+[Unit]
+Description=SPIR Dynamic Extraction — FastAPI/Uvicorn API
+Documentation=https://github.com/your-org/spir-dynamic
+After=network.target redis.service postgresql.service
+Wants=redis.service
+
+[Service]
+Type=exec
+User=spir
+Group=spir
+WorkingDirectory=/opt/spir_dynamic
+
+# EnvironmentFile lines are NOT shell-expanded — no quotes, no export needed.
+EnvironmentFile=/opt/spir_dynamic/.env
+
+# 4 uvicorn workers handle I/O-bound request routing (uploading, polling, auth).
+# CPU-bound extraction work runs in the separate Celery worker (spir-worker.service).
+# --proxy-headers trusts X-Forwarded-For from Nginx running on 127.0.0.1.
+ExecStart=/opt/spir_dynamic/venv/bin/uvicorn \
+    spir_dynamic.app.main:app \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --workers 4 \
+    --proxy-headers \
+    --forwarded-allow-ips=127.0.0.1 \
+    --access-log \
+    --log-level info
+
+# Graceful shutdown: SIGTERM first, wait 30s, then SIGKILL.
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+# Basic hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/spir_dynamic
+ProtectHome=true
+
+# Logs go to journald — view with: journalctl -u spir-api -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=spir-api
+
+[Install]
+WantedBy=multi-user.target

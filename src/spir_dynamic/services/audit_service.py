@@ -111,6 +111,7 @@ async def log_extraction(
     result: dict,
     ip_address: Optional[str] = None,
     original_filename: Optional[str] = None,
+    json_path: Optional[str] = None,
 ) -> None:
     """Store minimal extraction summary in extraction_history + activity log. Never raises."""
     from spir_dynamic.db.database import is_db_enabled, get_session_factory
@@ -176,6 +177,7 @@ async def log_extraction(
                 manufacturer=manufacturer,
                 supplier=supplier,
                 file_id=file_id,
+                json_path=json_path,
                 # Keep the existing user-facing history API working
                 tag_count=total_tags,
                 spare_count=spare_items,

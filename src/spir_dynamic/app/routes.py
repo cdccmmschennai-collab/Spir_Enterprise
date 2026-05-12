@@ -5,15 +5,17 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import func, select, desc
+from sqlalchemy import select, desc
 
 from spir_dynamic.app.auth import get_current_user, TokenData
 from spir_dynamic.app.pipeline import run_pipeline, retrieve_result
@@ -35,7 +37,13 @@ class HistoryItem(BaseModel):
     tag_count: int
     spare_count: int
     created_at: datetime
+    file_id: Optional[str] = None
+    total_rows: Optional[int] = None
     model_config = {"from_attributes": True}
+
+
+class CombineRequest(BaseModel):
+    history_ids: list[str]
 
 
 @router.post("/extract")
@@ -68,10 +76,17 @@ async def extract(
         log.error("Extraction failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Extraction failed: {exc}")
 
+    # Persist extracted rows to disk so they survive restarts (needed for combine).
+    cfg = get_settings()
+    json_path = _save_rows_to_disk(result, cfg)
+
     from spir_dynamic.services.audit_service import log_extraction
     ip = _get_ip(request)
     try:
-        await log_extraction(td.user_id, td.jti, result, ip, original_filename=filename)
+        await log_extraction(
+            td.user_id, td.jti, result, ip,
+            original_filename=filename, json_path=json_path,
+        )
     except Exception as e:
         log.error("History logging failed (extraction still succeeded): %s", e)
 
@@ -162,6 +177,49 @@ async def me(
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+def _save_rows_to_disk(result: dict, cfg) -> Optional[str]:
+    """
+    Write extracted preview_rows to a JSON file on disk.
+
+    Returns the file path on success, None on any failure.
+    Failure is non-fatal — extraction and download continue regardless.
+    The file is needed only for the /combine endpoint.
+    """
+    try:
+        rows_dir = Path(cfg.rows_storage_path)
+        rows_dir.mkdir(parents=True, exist_ok=True)
+        file_id = result.get("file_id", "")
+        if not file_id:
+            return None
+        payload = json.dumps({
+            "file_id": file_id,
+            "filename": result.get("filename", ""),
+            "spir_no": result.get("spir_no", ""),
+            "cols": result.get("preview_cols", []),
+            "rows": result.get("preview_rows", []),
+        }, ensure_ascii=False)
+        path = rows_dir / f"{file_id}.json"
+        path.write_text(payload, encoding="utf-8")
+        log.debug("Rows persisted to disk: %s (%d rows)", path, len(result.get("preview_rows", [])))
+        return str(path)
+    except Exception as exc:
+        log.warning("Row JSON save failed (non-fatal): %s", exc)
+        return None
+
+
+def _build_combined_excel(rows: list[list]) -> bytes:
+    """
+    Runs in a thread pool. Deduplicates combined rows and builds one Excel file.
+    Reuses the existing deduplication + build_xlsx pipeline unchanged.
+    """
+    from spir_dynamic.services.duplicate_checker import deduplicate_rows
+    from spir_dynamic.services.excel_builder import build_xlsx
+    from spir_dynamic.extraction.output_schema import CI
+
+    deduped = deduplicate_rows(rows, CI)
+    return build_xlsx(deduped, "COMBINED")
+
+
 def _get_ip(request: Request) -> str | None:
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
@@ -223,8 +281,103 @@ async def list_history(
                 tag_count=int(getattr(r, "tag_count", 0) or 0),
                 spare_count=int(getattr(r, "spare_count", 0) or 0),
                 created_at=ist_ts,
+                file_id=getattr(r, "file_id", None),
+                total_rows=int(getattr(r, "total_rows", 0) or 0),
             )
         )
     return items
+
+
+# ── Combine endpoint ────────────────────────────────────────────────────────────
+
+@router.post("/combine")
+async def combine(
+    body: CombineRequest,
+    td: TokenData = Depends(get_current_user),
+    db=Depends(get_db),
+) -> StreamingResponse:
+    """
+    Load already-extracted rows from disk for selected history records,
+    merge them, run deduplication, and return ONE combined Excel file.
+
+    Does NOT re-run extraction — only reads persisted row JSON files.
+    """
+    if not is_db_enabled() or db is None:
+        raise HTTPException(status_code=503, detail="Database required for combine")
+    if not body.history_ids:
+        raise HTTPException(status_code=400, detail="history_ids must not be empty")
+    if not td.user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    # Enforce ownership — users can only combine their own files; admins can combine any
+    ownership_filter = (
+        (ExtractionHistory.user_id == td.user_id)
+        if td.role != "admin"
+        else True
+    )
+    q = (
+        select(
+            ExtractionHistory.id,
+            ExtractionHistory.file_id,
+            ExtractionHistory.json_path,
+            ExtractionHistory.filename,
+        )
+        .where(ExtractionHistory.id.in_(body.history_ids))
+        .where(ownership_filter)
+    )
+    db_result = await db.execute(q)
+    records = db_result.all()
+
+    if len(records) != len(body.history_ids):
+        found_ids = {r.id for r in records}
+        missing = [hid for hid in body.history_ids if hid not in found_ids]
+        raise HTTPException(
+            status_code=404,
+            detail=f"History records not found or not accessible: {missing}",
+        )
+
+    # Load rows from each persisted JSON file
+    combined_rows: list[list] = []
+    no_json: list[str] = []
+    for rec in records:
+        if not rec.json_path:
+            no_json.append(rec.filename or rec.id)
+            continue
+        p = Path(rec.json_path)
+        if not p.exists():
+            no_json.append(rec.filename or rec.id)
+            continue
+        try:
+            payload = json.loads(p.read_text(encoding="utf-8"))
+            combined_rows.extend(payload.get("rows", []))
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to read row data for '{rec.filename}': {exc}",
+            )
+
+    if no_json:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Row data not found for {len(no_json)} file(s): {no_json[:3]}"
+                + (f" …and {len(no_json) - 3} more" if len(no_json) > 3 else "")
+                + ". These files were extracted before persistent row storage was added —"
+                " re-extract them to enable combine."
+            ),
+        )
+
+    if not combined_rows:
+        raise HTTPException(status_code=400, detail="No rows found in selected files")
+
+    # Deduplicate + build Excel in thread pool (CPU-bound, keeps event loop free)
+    loop = asyncio.get_event_loop()
+    xlsx_bytes = await loop.run_in_executor(None, _build_combined_excel, combined_rows)
+
+    return StreamingResponse(
+        io.BytesIO(xlsx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="COMBINED_Extraction.xlsx"'},
+    )
 
 

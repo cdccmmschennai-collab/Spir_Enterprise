@@ -47,3 +47,20 @@ frontend/.env.local
 
 *.egg-info/
 *.dist-info/
+
+# local env
+frontend/.env.local
+
+# claude local settings
+.claude/settings.local.json
+
+# extracted rows
+storage/extracted_rows/*
+!storage/extracted_rows/.gitkeep
+
+# python cache
+__pycache__/
+.pytest_cache/
+
+# celery logs
+*.log

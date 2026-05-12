@@ -1,10 +1,12 @@
 """
-Batch extraction API — accept multiple files, process concurrently, return ZIP.
+Batch extraction API — accept multiple files, process via Celery queue, combine results.
 """
-from __future__ import annotations
+from typing import Annotated, List
+from fastapi import File, UploadFile
 
 import asyncio
 import io
+import json
 import logging
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -12,6 +14,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from spir_dynamic.app.auth import get_current_user, TokenData
 from spir_dynamic.app.config import get_settings
@@ -27,7 +30,7 @@ batch_router = APIRouter()
 
 @batch_router.post("/extract")
 async def batch_extract(
-    files: list[UploadFile] = File(...),
+    files: Annotated[List[UploadFile], File(...)],
     td: TokenData = Depends(get_current_user),
 ) -> dict[str, Any]:
     """
@@ -51,7 +54,11 @@ async def batch_extract(
         (await f.read(), name) for f, name in zip(files, filenames)
     ]
 
-    asyncio.create_task(_process_batch(job_id, file_data))
+    if cfg.celery_enabled:
+        _dispatch_celery(job_id, file_data, cfg.batch_ttl_seconds)
+    else:
+        asyncio.create_task(_process_batch(job_id, file_data))
+
     asyncio.create_task(_persist_job_to_db(job_id, user_id, filenames, cfg.batch_ttl_seconds))
 
     return {"job_id": job_id, "total": len(files), "status": "processing"}
@@ -102,7 +109,188 @@ async def batch_download(
     )
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# ── Request models ─────────────────────────────────────────────────────────────
+
+class CombineRequest(BaseModel):
+    file_ids: list[str]
+
+
+# ── Per-file preview ────────────────────────────────────────────────────────────
+
+@batch_router.get("/{job_id}/preview/{file_idx}")
+async def batch_file_preview(
+    job_id: str,
+    file_idx: int,
+    td: TokenData = Depends(get_current_user),
+) -> dict[str, Any]:
+    """
+    Return extracted row data for ONE file in the batch.
+
+    The frontend calls this to show a preview table for an individual file
+    before the user decides which files to combine.
+
+    Row data is stored in Redis by the Celery worker immediately after extraction
+    (key: rows:{file_id}) and expires after batch_ttl_seconds.
+    """
+    job = get_job_store().get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found or expired")
+    _assert_job_access(job.user_id, td)
+
+    if file_idx < 0 or file_idx >= job.total:
+        raise HTTPException(status_code=400, detail=f"file_idx must be 0–{job.total - 1}")
+
+    result = job.results[file_idx]
+    if result.status != "ok":
+        raise HTTPException(
+            status_code=400,
+            detail=f"File '{result.filename}' has status '{result.status}' — preview only available for completed files",
+        )
+    if not result.file_id:
+        raise HTTPException(status_code=404, detail="File ID not recorded for this result")
+
+    storage = get_storage()
+    entry = storage.get(f"rows:{result.file_id}")
+    if entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Row data not found — it may have expired or was not stored (check worker version)",
+        )
+
+    raw_bytes, _ = entry
+    try:
+        payload = json.loads(raw_bytes.decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Row data corrupted: {exc}")
+
+    return {
+        "filename": result.filename,
+        "spir_no": payload.get("spir_no", result.spir_no),
+        "total_rows": result.total_rows,
+        "total_tags": result.total_tags,
+        "cols": payload.get("cols", []),
+        "rows": payload.get("rows", []),
+    }
+
+
+# ── Selective combine ────────────────────────────────────────────────────────────
+
+@batch_router.post("/{job_id}/combine")
+async def batch_combine(
+    job_id: str,
+    body: CombineRequest,
+    td: TokenData = Depends(get_current_user),
+) -> dict[str, Any]:
+    """
+    Combine extracted row data from selected files into ONE Excel file.
+
+    Uses already-extracted rows stored in Redis — does NOT re-run extraction.
+    The combined file is stored with a new file_id and downloadable via
+    GET /api/download/{file_id} (the standard single-file download endpoint).
+
+    Request body: {"file_ids": ["uuid1", "uuid2", ...]}
+    """
+    job = get_job_store().get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found or expired")
+    _assert_job_access(job.user_id, td)
+
+    if not body.file_ids:
+        raise HTTPException(status_code=400, detail="file_ids must not be empty")
+
+    # Security: only allow file_ids that belong to this job
+    valid_file_ids = {r.file_id for r in job.results if r.file_id and r.status == "ok"}
+    invalid = [fid for fid in body.file_ids if fid not in valid_file_ids]
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"These file_ids do not belong to job {job_id} or are not yet complete: {invalid}",
+        )
+
+    loop = asyncio.get_event_loop()
+    try:
+        combined_file_id, out_filename, total_rows = await loop.run_in_executor(
+            None, _do_combine, body.file_ids
+        )
+    except Exception as exc:
+        log.error("Combine failed | job=%s: %s", job_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Combine failed: {exc}")
+
+    return {
+        "file_id": combined_file_id,
+        "filename": out_filename,
+        "total_rows": total_rows,
+        "file_count": len(body.file_ids),
+    }
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────────────
+
+def _do_combine(file_ids: list[str]) -> tuple[str, str, int]:
+    """
+    Synchronous combine worker — runs in thread pool via run_in_executor.
+
+    Reads pre-extracted row data from Redis for each file_id, concatenates
+    all rows, builds one styled Excel file, stores it, and returns the new
+    file_id, filename, and total row count.
+    """
+    from spir_dynamic.services.excel_builder import build_xlsx
+
+    storage = get_storage()
+    all_rows: list[list] = []
+    missing: list[str] = []
+
+    for fid in file_ids:
+        entry = storage.get(f"rows:{fid}")
+        if entry is None:
+            missing.append(fid)
+            continue
+        raw_bytes, _ = entry
+        payload = json.loads(raw_bytes.decode("utf-8"))
+        all_rows.extend(payload.get("rows", []))
+
+    if missing:
+        raise RuntimeError(
+            f"Row data missing or expired for {len(missing)} file(s): {missing[:3]}{'...' if len(missing) > 3 else ''}"
+        )
+
+    xlsx_bytes = build_xlsx(all_rows, "COMBINED")
+    combined_id = str(uuid.uuid4())
+    out_filename = "COMBINED_Extraction.xlsx"
+    cfg = get_settings()
+    storage.put(combined_id, xlsx_bytes, out_filename, ttl=cfg.batch_ttl_seconds)
+
+    log.info("Combine complete | file_count=%d total_rows=%d file_id=%s",
+             len(file_ids), len(all_rows), combined_id)
+    return combined_id, out_filename, len(all_rows)
+
+
+def _dispatch_celery(
+    job_id: str,
+    file_data: list[tuple[bytes, str]],
+    ttl_seconds: int,
+) -> None:
+    """
+    Store each file's bytes in Redis, then enqueue one Celery task per file.
+
+    The API returns immediately after this call. Workers pick up tasks from the
+    Redis queue independently, in separate processes.
+
+    Input bytes TTL = ttl_seconds + 600 so the file survives in Redis even if
+    all workers are busy and a task is delayed by queue backlog or retries
+    (max backoff = 10 * 3^2 = 90s × 3 retries = 270s, well within 600s).
+    """
+    from spir_dynamic.tasks.extraction_tasks import process_file_task
+
+    storage = get_storage()
+    input_ttl = ttl_seconds + 600
+
+    for idx, (file_bytes, filename) in enumerate(file_data):
+        input_key = f"input:{job_id}:{idx}"
+        storage.put(input_key, file_bytes, filename, ttl=input_ttl)
+        process_file_task.delay(job_id, idx, input_key, filename)
+        log.debug("Celery task enqueued | job=%s idx=%d file=%s", job_id, idx, filename)
+
 
 def _assert_job_access(job_user_id: str, td: TokenData) -> None:
     """Raise 403 if a non-admin caller tries to access another user's job."""
