@@ -62,6 +62,9 @@ class User(Base):
     extraction_history: Mapped[list[ExtractionHistory]] = relationship(
         "ExtractionHistory", back_populates="user", lazy="noload"
     )
+    jobs: Mapped[list["Job"]] = relationship(
+        "Job", back_populates="user", lazy="noload"
+    )
 
 
 # ── Sessions ───────────────────────────────────────────────────────────────────
@@ -157,3 +160,32 @@ class ExtractionHistory(Base):
     )
 
     user: Mapped[User] = relationship("User", back_populates="extraction_history")
+
+
+# ── Batch Jobs ─────────────────────────────────────────────────────────────────
+
+class Job(Base):
+    __tablename__ = "jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", index=True
+    )  # pending | processing | done | failed | partial
+    total_files: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed_files: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    succeeded_files: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    result_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    user: Mapped[User] = relationship("User", back_populates="jobs")

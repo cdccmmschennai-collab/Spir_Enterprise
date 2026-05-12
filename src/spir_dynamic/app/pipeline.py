@@ -58,6 +58,9 @@ def run_pipeline(file_bytes: bytes, original_filename: str) -> dict[str, Any]:
         wb = openpyxl.load_workbook(
             io.BytesIO(file_bytes), data_only=True, keep_links=False
         )
+        # Attach raw bytes so VML form-control detection can re-open the archive
+        # (openpyxl 3.x closes the ZIP after loading — _archive is None).
+        wb._spir_raw_bytes = file_bytes
 
         try:
             # Step 3: Extract
@@ -81,13 +84,10 @@ def run_pipeline(file_bytes: bytes, original_filename: str) -> dict[str, Any]:
         _apply_currency_conversion(output_rows)
 
         # Step 6: Post-process (position numbers + SPF numbers)
-        # Extract main (data) sheet names — only these increment the OMN line prefix.
-        # Continuation/annexure sheets inherit the prefix of their parent main sheet.
-        main_sheet_names: set[str] = set()
-        for sp in result.get("sheet_profiles", []):
-            if sp.get("role") == "data":
-                main_sheet_names.add(sp["name"])
-        output_rows = post_process_rows(output_rows, spir_no, main_sheet_names)
+        # Pass ordered sheet_profiles so SheetTracker can pre-map every sheet
+        # (including continuations) to the correct OMN index before processing rows.
+        sheet_profiles = result.get("sheet_profiles", [])
+        output_rows = post_process_rows(output_rows, spir_no, sheet_profiles=sheet_profiles)
 
         # Step 7: Deduplicate
         output_rows = deduplicate_rows(output_rows, CI)

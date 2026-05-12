@@ -60,8 +60,8 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(auth_router, prefix="/auth")
-    app.include_router(auth_router, prefix="/api")   # /api/login + /api/logout aliases
-    app.include_router(router, prefix="/api")
+    app.include_router(router, prefix="/api")          # register first so /api/me wins
+    app.include_router(auth_router, prefix="/api")     # /api/login + /api/logout aliases
     app.include_router(batch_router, prefix="/api/batch")
 
     # Admin + user history endpoints (require DB — gracefully disabled when unavailable)

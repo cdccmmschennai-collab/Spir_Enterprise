@@ -12,7 +12,7 @@ import logging
 from sqlalchemy import select, text
 
 from spir_dynamic.db.database import Base, get_engine, get_session_factory
-from spir_dynamic.db.models import User
+from spir_dynamic.db.models import User, Job  # noqa: F401 — Job must be imported for create_all
 
 log = logging.getLogger(__name__)
 

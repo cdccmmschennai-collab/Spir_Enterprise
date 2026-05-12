@@ -9,6 +9,7 @@ After per-sheet analysis, this module:
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from spir_dynamic.models.sheet_profile import SheetProfile, SheetRole, TagLayout
@@ -19,14 +20,15 @@ log = logging.getLogger(__name__)
 
 
 @timed
-def analyze_workbook(wb) -> list[SheetProfile]:
+def analyze_workbook(wb, filename: str = "") -> list[SheetProfile]:
     """
     Analyze all sheets in a workbook and return enriched SheetProfiles.
 
     Steps:
       1. Analyze each sheet independently (sequential)
       2. Detect continuation relationships (order-dependent)
-      3. Propagate global metadata (order-dependent)
+      3. Exclude sheets from foreign embedded SPIR documents
+      4. Propagate global metadata (order-dependent)
 
     _detect_continuations and _propagate_metadata are ORDER-DEPENDENT and
     must run after all sheets are analyzed in wb.sheetnames order.
@@ -35,6 +37,9 @@ def analyze_workbook(wb) -> list[SheetProfile]:
     for sheet_name in wb.sheetnames:
         try:
             ws = wb[sheet_name]
+            if getattr(ws, 'sheet_state', 'visible') != 'visible':
+                log.info("Skipping hidden sheet '%s' (state=%s)", sheet_name, ws.sheet_state)
+                continue
             profile = analyze_sheet(ws, sheet_name)
             profiles.append(profile)
         except Exception as exc:
@@ -42,6 +47,10 @@ def analyze_workbook(wb) -> list[SheetProfile]:
             profiles.append(SheetProfile(name=sheet_name, role=SheetRole.UNKNOWN))
 
     _detect_continuations(profiles)
+    # Exclude sheets whose embedded SPIR number belongs to a different document.
+    # Must run BEFORE _propagate_metadata so foreign metadata is never spread
+    # to the valid sheets.
+    _exclude_foreign_spir_sheets(profiles, filename)
     _propagate_metadata(profiles)
 
     extractable = [p for p in profiles if p.is_extractable]
@@ -154,14 +163,64 @@ def _column_overlap(map_a: dict[str, int], map_b: dict[str, int]) -> float:
     return len(intersection) / len(union) if union else 0.0
 
 
+def _exclude_foreign_spir_sheets(profiles: list[SheetProfile], filename: str) -> None:
+    """
+    Mark sheets that belong to a different embedded SPIR document as UTILITY.
+
+    Some workbooks contain sheets from multiple SPIR documents (different
+    equipment with different SPIR numbers). A sheet is foreign when it has an
+    explicit SPIR number in its metadata that does NOT match the first 4
+    hyphen-separated segments of the file's own SPIR number (derived from
+    filename).  Sheets without an explicit embedded SPIR number are left alone.
+    """
+    if not filename:
+        return
+
+    stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+    m = re.search(r"([A-Z0-9]{2,}-[A-Z0-9]{2,}-[A-Z0-9][\w\-]*)", stem, re.IGNORECASE)
+    if not m:
+        return
+
+    file_spir = m.group(1)
+
+    for p in profiles:
+        sheet_spir = p.metadata.get("spir_no")
+        if not sheet_spir:
+            continue  # No explicit SPIR number — do not exclude
+
+        if _spir_differs(str(sheet_spir).strip(), file_spir):
+            log.info(
+                "Sheet '%s' excluded: embedded SPIR '%s' differs from file SPIR '%s'",
+                p.name, sheet_spir, file_spir,
+            )
+            p.role = SheetRole.UTILITY
+            p.confidence = 0.9
+
+
+def _spir_differs(a: str, b: str) -> bool:
+    """True if two SPIR numbers clearly belong to different documents.
+
+    Compares the first 4 hyphen-separated segments (e.g. VEN-4460-DGTYP-4).
+    A different 4th segment means a different equipment series within the same
+    project (e.g. -4- vs -5-), which is a distinct document.
+    """
+    parts_a = a.lower().strip().split("-")
+    parts_b = b.lower().strip().split("-")
+    n = min(4, len(parts_a), len(parts_b))
+    return parts_a[:n] != parts_b[:n]
+
+
 def _propagate_metadata(profiles: list[SheetProfile]) -> None:
     """
     Propagate metadata from the first data sheet with rich metadata
     to other sheets that have less.
     """
-    # Find the best metadata source
+    # Only use extractable sheets as metadata sources — UTILITY/foreign sheets
+    # (e.g., sheets from an embedded different SPIR) must not pollute valid sheets.
     best_meta: dict[str, Any] = {}
     for p in profiles:
+        if not p.is_extractable:
+            continue
         if p.metadata and len(p.metadata) > len(best_meta):
             best_meta = p.metadata
 

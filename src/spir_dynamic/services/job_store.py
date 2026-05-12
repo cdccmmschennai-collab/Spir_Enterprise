@@ -35,6 +35,7 @@ class BatchJob:
     results: list[FileResult]
     created_at: datetime
     expires_at: datetime
+    user_id: str = ""
 
     @property
     def completed(self) -> int:
@@ -78,7 +79,7 @@ class JobStore:
         self._ttl = ttl_seconds
         self._lock = threading.Lock()
 
-    def create(self, job_id: str, filenames: list[str]) -> BatchJob:
+    def create(self, job_id: str, filenames: list[str], user_id: str = "") -> BatchJob:
         now = datetime.now(timezone.utc)
         job = BatchJob(
             job_id=job_id,
@@ -86,6 +87,7 @@ class JobStore:
             results=[FileResult(filename=fn) for fn in filenames],
             created_at=now,
             expires_at=now + timedelta(seconds=self._ttl),
+            user_id=user_id,
         )
         with self._lock:
             self._jobs[job_id] = job
