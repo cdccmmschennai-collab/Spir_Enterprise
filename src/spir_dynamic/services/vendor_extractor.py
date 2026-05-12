@@ -23,6 +23,17 @@ log = logging.getLogger(__name__)
 
 _EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 
+# Words that strongly indicate a company name (vs. a person name or address line).
+# Used to decide whether the focal-point cell's first line is a company name.
+_COMPANY_INDICATORS = re.compile(
+    r"\b(?:ltd|llc|l\.l\.c|inc|corp|group|systems?|services?|engineering|"
+    r"industries?|industrial|international|company|trading|supply|supplies|"
+    r"solutions?|technolog(?:y|ies)|automation|controls?|petroleum|oil|gas|"
+    r"energy|power|valve|pump|meter|safety|manufacturing|construction|"
+    r"consulting|contractors?|co\b|&)\b",
+    re.IGNORECASE,
+)
+
 # Focal point cell detection keywords, ordered by specificity
 _FOCAL_KEYWORDS: tuple[str, ...] = (
     "manufacturers/suppliers focal point",
@@ -38,9 +49,11 @@ _FOCAL_KEYWORDS: tuple[str, ...] = (
     "suppliers focal",
 ) 
 
-# Lines that are clearly part of the label block (skip when finding vendor name)
+# Lines that are clearly part of the label block (skip when finding vendor name).
+# Use word boundaries for short tokens (tel, fax) to avoid false matches inside
+# city names like "Telford" or product names containing "fax".
 _LABEL_SKIP_RE = re.compile(
-    r"manufacturers?|suppliers?|focal\s+point|e-?mail|tel|fax",
+    r"manufacturers?|suppliers?|focal\s+point|e-?mail|\btel\b|\bfax\b",
     re.IGNORECASE,
 )
 
@@ -64,18 +77,73 @@ _KNOWN_COUNTRIES: frozenset[str] = frozenset({
     "CAMBODIA", "NEPAL",
 })
 
-# Labeled phone block regex — captures (label, numbers_text)
+_CITY_TO_COUNTRY: dict[str, str] = {
+    "NAVI MUMBAI": "INDIA", "MUMBAI": "INDIA", "CHENNAI": "INDIA",
+    "DELHI": "INDIA", "NEW DELHI": "INDIA", "BANGALORE": "INDIA",
+    "BENGALURU": "INDIA", "PUNE": "INDIA", "HYDERABAD": "INDIA",
+    "AHMEDABAD": "INDIA", "VADODARA": "INDIA", "GUJARAT": "INDIA",
+    "KOLKATA": "INDIA", "SURAT": "INDIA", "NOIDA": "INDIA",
+    "YANCHENG": "CHINA", "SHANGHAI": "CHINA", "BEIJING": "CHINA",
+    "GUANGZHOU": "CHINA", "SHENZHEN": "CHINA", "TIANJIN": "CHINA",
+    "WUHAN": "CHINA", "CHENGDU": "CHINA", "NANJING": "CHINA",
+    "MILAN": "ITALY", "MILANO": "ITALY", "ROME": "ITALY",
+    "PARIS": "FRANCE", "LYON": "FRANCE",
+    "BERLIN": "GERMANY", "HAMBURG": "GERMANY", "MUNICH": "GERMANY",
+    "TOKYO": "JAPAN", "OSAKA": "JAPAN",
+    "SEOUL": "SOUTH KOREA", "BUSAN": "SOUTH KOREA",
+    "DUBAI": "UAE", "ABU DHABI": "UAE", "SHARJAH": "UAE",
+    "RIYADH": "SAUDI ARABIA", "JEDDAH": "SAUDI ARABIA",
+    "AMSTERDAM": "NETHERLANDS", "ROTTERDAM": "NETHERLANDS",
+    "STOCKHOLM": "SWEDEN", "ZURICH": "SWITZERLAND", "GENEVA": "SWITZERLAND",
+    "BRUSSELS": "BELGIUM", "COPENHAGEN": "DENMARK",
+    "SYDNEY": "AUSTRALIA", "MELBOURNE": "AUSTRALIA",
+    "SAO PAULO": "BRAZIL", "RIO DE JANEIRO": "BRAZIL",
+    "MOSCOW": "RUSSIA", "MADRID": "SPAIN", "BARCELONA": "SPAIN",
+    "ISTANBUL": "TURKEY", "ANKARA": "TURKEY",
+}
+
+_PHONE_PREFIX_TO_COUNTRY: dict[str, str] = {
+    "+974": "QATAR", "+971": "UAE", "+966": "SAUDI ARABIA",
+    "+968": "OMAN", "+965": "KUWAIT", "+973": "BAHRAIN",
+    "+91": "INDIA", "+86": "CHINA", "+81": "JAPAN",
+    "+82": "SOUTH KOREA", "+65": "SINGAPORE", "+44": "UK",
+    "+49": "GERMANY", "+33": "FRANCE", "+39": "ITALY",
+    "+31": "NETHERLANDS", "+46": "SWEDEN", "+41": "SWITZERLAND",
+    "+61": "AUSTRALIA", "+55": "BRAZIL", "+7": "RUSSIA",
+    "+34": "SPAIN", "+90": "TURKEY", "+48": "POLAND",
+    "+32": "BELGIUM", "+45": "DENMARK", "+47": "NORWAY",
+    "+351": "PORTUGAL", "+30": "GREECE", "+353": "IRELAND",
+    "+98": "IRAN",
+}
+
+# Labeled phone block regex — captures label + the immediate phone number.
+# nums stops at characters not found in phone numbers (comma, letter, slash)
+# so that "Tel: +974 1234, Fax: +974 5678" produces two separate matches.
 _LABELED_PHONE_RE = re.compile(
-    r"(?P<label>(?:fax|telephone|tel|phone|ph)\b[\w\s\.]*?)\s*[:：]\s*(?P<nums>[^\n]{3,80})",
+    r"(?P<label>(?:fax|telephone|tel|mobile|mob|cell|phone|ph)\b[\w\s\.]*?)"
+    r"\s*[:：]\s*"
+    r"(?P<nums>[\+\(\d][\+\d\s\-\(\)\.]{5,35})",
     re.IGNORECASE,
 )
 
-# Bare international phone: +xx...  OR  local with area code: 0xx-xxxx
+# Bare phone patterns:
+#   +XX ...   international with + prefix
+#   00XX ...  international with 00 prefix (e.g. 0044 (0) 1952 290 321)
+#   0XX-XXX   local with area/STD code
 _BARE_PHONE_RE = re.compile(
     r"(?<![/@\w])"
     r"(\+[\d][\d\s\-\(\)\.]{6,25}"
+    r"|00\d{1,3}[\s\-\(][\d\s\-\(\)\.]{5,25}"
     r"|\b0\d{2,4}[\s\-]\d{3,})"
     r"(?![/@\w])"
+)
+
+
+# Vendor contact block: cell starts with SUPPLIER:/MANUFACTURER:/VENDOR: and
+# contains contact info. Used as secondary scan when no focal point label found.
+_VENDOR_BLOCK_RE = re.compile(
+    r"^(?:supplier|manufacturer|vendor)\s*[:\/]",
+    re.IGNORECASE,
 )
 
 
@@ -88,8 +156,16 @@ def find_focal_point_cell(ws) -> Optional[str]:
     Scan a worksheet for the MANUFACTURERS/SUPPLIERS FOCAL POINT cell.
 
     Scans the bottom 30 rows first, then falls back to a full-sheet scan.
+    If no focal point keyword is found, tries a secondary scan for vendor
+    contact blocks (cells starting with SUPPLIER:/MANUFACTURER:/VENDOR: that
+    also contain an email or phone number).
+
     Returns the full cell text (may be multi-line via embedded \\n) or None.
     """
+    if getattr(ws, "sheet_state", "visible") in ("hidden", "veryHidden"):
+        log.debug("vendor_extractor: skipping hidden sheet '%s'", getattr(ws, "title", "?"))
+        return None
+
     max_row: int = ws.max_row or 0
     max_col: int = ws.max_column or 0
 
@@ -104,6 +180,12 @@ def find_focal_point_cell(ws) -> Optional[str]:
 
     if bottom_start > 1:
         result = _scan_rows(ws, 1, bottom_start - 1, max_col)
+
+    if not result:
+        result = _find_vendor_contact_block(ws, max_row, max_col)
+
+    if not result:
+        result = _find_contact_block(ws, max_row, max_col)
 
     if not result:
         log.debug("vendor_extractor: focal point cell not found in sheet")
@@ -131,11 +213,21 @@ def extract_vendor_details(text: str, supplier_name: str = "") -> dict:
         "country": "",
     }
 
-    # Vendor name: prefer metadata supplier; fall back to first company line in cell
-    if supplier_name and supplier_name.strip():
-        result["vendor_name"] = supplier_name.strip()
-    elif text:
-        result["vendor_name"] = _extract_company_name(text)
+    # Vendor name — four-level priority:
+    # 1. Explicit "Vendor:" / "Company:" label in the focal point cell
+    # 2. First line that looks like a company name (contains Ltd, Services, &…)
+    # 3. Header-level supplier name from SPIR header metadata
+    # 4. Whatever first line the cell gives (last resort, no fallback available)
+    explicit_name    = _extract_explicit_vendor_name(text) if text else ""
+    company_from_cell = _extract_company_name(text) if text else ""
+    header_supplier   = supplier_name.strip() if supplier_name else ""
+
+    if explicit_name:
+        result["vendor_name"] = explicit_name
+    elif company_from_cell and _COMPANY_INDICATORS.search(company_from_cell):
+        result["vendor_name"] = company_from_cell
+    else:
+        result["vendor_name"] = header_supplier or company_from_cell
 
     if not text:
         return result
@@ -146,7 +238,8 @@ def extract_vendor_details(text: str, supplier_name: str = "") -> dict:
 
         result["email1"], result["email2"] = _extract_emails(normalized)
         result["contact"] = _extract_contact_numbers(normalized)
-        result["country"] = _extract_country(lines)
+        country_lines = lines + ([result["contact"]] if result.get("contact") else [])
+        result["country"] = _extract_country(country_lines)
     except Exception as exc:  # noqa: BLE001
         log.debug("vendor_extractor: parsing failed: %s", exc)
 
@@ -156,6 +249,48 @@ def extract_vendor_details(text: str, supplier_name: str = "") -> dict:
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+def _find_contact_block(ws, max_row: int, max_col: int) -> Optional[str]:
+    """
+    Tertiary scan: find any multi-line cell containing both email and phone.
+    Catches vendor contact blocks that have no recognizable keyword prefix.
+    Only scans bottom 50 rows to avoid matching data cells in the body.
+    """
+    for r in range(max(1, max_row - 50), max_row + 1):
+        for c in range(1, max_col + 1):
+            v = ws.cell(r, c).value
+            if not v:
+                continue
+            s = str(v).strip()
+            if not s or "\n" not in s:
+                continue
+            if _EMAIL_RE.search(s) and _BARE_PHONE_RE.search(s):
+                return s
+    return None
+
+
+def _find_vendor_contact_block(ws, max_row: int, max_col: int) -> Optional[str]:
+    """
+    Secondary scan for vendor contact blocks with no focal point label.
+
+    Looks for cells that start with SUPPLIER:/MANUFACTURER:/VENDOR: AND contain
+    at least one email address or phone number. Scans the bottom 50 rows to
+    avoid picking up unrelated header cells at the top of the sheet.
+    """
+    for r in range(max(1, max_row - 50), max_row + 1):
+        for c in range(1, max_col + 1):
+            v = ws.cell(r, c).value
+            if not v:
+                continue
+            s = str(v).strip()
+            if not s:
+                continue
+            if _VENDOR_BLOCK_RE.match(s) and (
+                _EMAIL_RE.search(s) or _BARE_PHONE_RE.search(s)
+            ):
+                return s
+    return None
+
 
 def _scan_rows(ws, start: int, end: int, max_col: int) -> Optional[str]:
     """Scan rows and return focal point DATA (not label)."""
@@ -174,38 +309,123 @@ def _scan_rows(ws, start: int, end: int, max_col: int) -> Optional[str]:
 
             for kw in _FOCAL_KEYWORDS:
                 if kw in text_lower:
-                    #FOUND LABEL → now search for DATA nearby
+                    # FOUND LABEL → now search for DATA nearby
+                    # Strategies 1–4 only return immediately when useful data
+                    # (email or phone) is found; otherwise fall through to Strategy 5.
+                    candidate: Optional[str] = None
 
                     # 1. Right cell
                     if c + 1 <= max_col:
                         right = ws.cell(r, c + 1).value
-                        if right and str(right).strip():
-                            return str(right)
+                        if right:
+                            s = str(right).strip()
+                            if s and (_EMAIL_RE.search(s) or _BARE_PHONE_RE.search(s)):
+                                return s
+                            if s:
+                                candidate = s
 
                     # 2. Below cell
                     if r + 1 <= ws.max_row:
                         below = ws.cell(r + 1, c).value
-                        if below and str(below).strip():
-                            return str(below)
+                        if below:
+                            s = str(below).strip()
+                            if s and (_EMAIL_RE.search(s) or _BARE_PHONE_RE.search(s)):
+                                return s
+                            if s and not candidate:
+                                candidate = s
 
                     # 3. Diagonal (very common case)
                     if r + 1 <= ws.max_row and c + 1 <= max_col:
                         diag = ws.cell(r + 1, c + 1).value
-                        if diag and str(diag).strip():
-                            return str(diag)
+                        if diag:
+                            s = str(diag).strip()
+                            if s and (_EMAIL_RE.search(s) or _BARE_PHONE_RE.search(s)):
+                                return s
+                            if s and not candidate:
+                                candidate = s
 
-                    # 4. Multi-line block (scan next 3 rows)
+                    # 4. Multi-line same-column block
                     collected = []
-                    for i in range(1, 4):
+                    for i in range(1, 5):
                         if r + i <= ws.max_row:
                             v = ws.cell(r + i, c).value
                             if v:
                                 collected.append(str(v).strip())
-
                     if collected:
-                        return "\n".join(collected)
+                        block = "\n".join(collected)
+                        if _EMAIL_RE.search(block) or _BARE_PHONE_RE.search(block):
+                            return block
+
+                    # 5. Structured table — scan multiple rows × multiple columns
+                    # Handles cases where labels are in one column and values are
+                    # spread across adjacent columns (e.g. Sulzer-style SPIR files).
+                    lines: list[str] = []
+                    empty_streak = 0
+                    for i in range(1, 10):
+                        if r + i > ws.max_row:
+                            break
+                        row_vals: list[str] = []
+                        for dc in range(0, 9):
+                            if c + dc > max_col:
+                                break
+                            v = ws.cell(r + i, c + dc).value
+                            if v is not None:
+                                sv = str(v).strip()
+                                if sv:
+                                    row_vals.append(sv)
+                        if not row_vals:
+                            empty_streak += 1
+                            if empty_streak >= 2:
+                                break
+                            continue
+                        empty_streak = 0
+                        # Pair label cells (ending with ":") with the next value cell
+                        paired: list[str] = []
+                        skip = False
+                        for j, val in enumerate(row_vals):
+                            if skip:
+                                skip = False
+                                continue
+                            if val.rstrip().endswith(":") and j + 1 < len(row_vals):
+                                paired.append(f"{val} {row_vals[j + 1]}")
+                                skip = True
+                            else:
+                                paired.append(val)
+                        lines.extend(paired)
+
+                    if lines:
+                        wide = "\n".join(lines)
+                        if _EMAIL_RE.search(wide) or _BARE_PHONE_RE.search(wide):
+                            return wide
+                        if len(lines) > 2:
+                            return wide
+
+                    # Last resort: return whatever candidate we found
+                    if candidate:
+                        return candidate
+
+                    break  # stop searching keywords for this cell
 
     return None
+
+
+def _extract_explicit_vendor_name(text: str) -> str:
+    """
+    Scan for an explicit 'Vendor:' or 'Company:' label in the focal point cell.
+    Returns the value after the label (trimmed), or "" if not found.
+
+    Handles both newline-separated and space-padded cell layouts.
+    Matches at the start of any line (re.MULTILINE) to avoid grabbing embedded
+    occurrences inside longer sentences.
+    """
+    pattern = re.compile(
+        r"^(?:vendor|company|firm)\s*[:\s]\s*([^\n]{3,150})",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    m = pattern.search(text)
+    if m:
+        return m.group(1).strip().rstrip(",;")
+    return ""
 
 
 def _extract_company_name(text: str) -> str:
@@ -281,65 +501,59 @@ def _extract_contact_numbers(text: str) -> str:
 
         return num
 
+    def _digit_key(s: str) -> str:
+        """Strip all non-digit chars for deduplication comparisons."""
+        return re.sub(r"\D", "", s)
+
     clean = _EMAIL_RE.sub(" ", text)
     segments: list[str] = []
 
-    # 🔹 Labeled blocks
+    # 🔹 Labeled blocks — track captured digit keys to avoid re-extracting them
+    labeled_keys: set[str] = set()
+
     for m in _LABELED_PHONE_RE.finditer(clean):
         label = m.group("label").strip()
-        nums_raw = m.group("nums").strip()
-
+        num_str = m.group("nums").strip().rstrip(",;/ ").strip()
         prefix = _label_to_prefix(label)
 
-        parts = re.split(r"\s*/\s*", nums_raw)
-        nums: list[str] = []
+        if not re.search(r"\d{5,}", num_str.replace(" ", "").replace("-", "")):
+            continue
 
-        for part in parts:
-            part = part.strip().rstrip(",;")
-            part = part.replace(":", "").strip()
+        n = _normalize_number(num_str)
+        for sub in _BARE_PHONE_RE.findall(n):
+            labeled_keys.add(_digit_key(sub))
+        labeled_keys.add(_digit_key(n))
+        segments.append(f"{prefix}:{n}")
 
-            if re.search(r"\d{5,}", part.replace(" ", "").replace("-", "")):
-                nums.append(_normalize_number(part))  #FIX APPLIED
-
-        if nums:
-            segments.append(f"{prefix}:{','.join(nums)}")
-
-    if segments:
-        return ",".join(segments)
-
-    # 🔹 Unlabeled numbers
+    # 🔹 Bare (unlabeled) numbers — also run when labeled blocks exist so that
+    # numbers with unrecognized labels (e.g. "Line :") are still captured.
     bare_matches = _BARE_PHONE_RE.findall(clean)
 
     bare_nums = [
-        _normalize_number(b)  #FIX APPLIED
+        _normalize_number(b)
         for b in bare_matches
         if re.search(r"\d{5,}", b.replace(" ", "").replace("-", ""))
+        and _digit_key(b) not in labeled_keys  # skip already-captured numbers
     ]
 
-    if not bare_nums:
-        return ""
+    if bare_nums:
+        classified: list[tuple[str, str]] = [
+            (_classify_unlabeled(n), n) for n in bare_nums
+        ]
 
-    classified: list[tuple[str, str]] = [
-        (_classify_unlabeled(n), n) for n in bare_nums
-    ]
+        # Merge same-prefix groups
+        i = 0
+        while i < len(classified):
+            prefix, num = classified[i]
+            group = [num]
+            j = i + 1
+            while j < len(classified) and classified[j][0] == prefix:
+                group.append(classified[j][1])
+                j += 1
+            segments.append(f"{prefix}:{','.join(group)}" if prefix else ",".join(group))
+            i = j
 
-    # Merge same-prefix groups
-    merged: list[str] = []
-    i = 0
-
-    while i < len(classified):
-        prefix, num = classified[i]
-        group = [num]
-
-        j = i + 1
-        while j < len(classified) and classified[j][0] == prefix:
-            group.append(classified[j][1])
-            j += 1
-
-        merged.append(f"{prefix}:{','.join(group)}" if prefix else ",".join(group))
-        i = j
-
-    return ",".join(merged)
+    return ",".join(segments)
 
 
 
@@ -348,6 +562,8 @@ def _label_to_prefix(label: str) -> str:
     lower = label.lower()
     if "fax" in lower:
         return "fax"
+    if "mobile" in lower or "mob" in lower or "cell" in lower:
+        return "mobile"
     if "tel" in lower:  # catches both "tel" and "telephone"
         return "tel"
     return "phone"
@@ -358,13 +574,16 @@ def _classify_unlabeled(num: str) -> str:
     Classify an unlabeled phone number as 'tel' or 'phone'.
 
     Logic:
-    - Contains STD/area code pattern (e.g. +91 44 ..., 044-...) → 'tel'
+    - Has area/country code pattern → 'tel'
     - Otherwise → 'phone'
     """
-    # International number with an area code: +CC AA XXXXXXX  (3 groups)
+    # +CC AA XXXXXXX (international with + and area code)
     if re.match(r"^\+\d{1,3}[\s\-]\d{2,4}[\s\-]\d", num):
         return "tel"
-    # Local STD code: starts with 0 followed by 2-4 digit area code then separator
+    # 00CC ... (international with 00 prefix, e.g. 0044 (0) 1952 290 321)
+    if re.match(r"^00\d{1,3}[\s\-\(]", num):
+        return "tel"
+    # Local STD code: 0XX-XXXX or 0XXX-XXXX
     if re.match(r"^0\d{2,4}[\s\-]", num):
         return "tel"
     return "phone"
@@ -395,5 +614,16 @@ def _extract_country(lines: list[str]) -> str:
             pattern = r"\b" + re.escape(country) + r"\b"
             if re.search(pattern, normalized):
                 return country
+
+    # Strategy 4: city / region name → country (longest match first)
+    full_text_upper = " ".join(lines).upper()
+    for city, ctry in sorted(_CITY_TO_COUNTRY.items(), key=lambda x: -len(x[0])):
+        if city in full_text_upper:
+            return ctry
+
+    # Strategy 5: phone country-code prefix → country (longest prefix first)
+    for prefix, ctry in sorted(_PHONE_PREFIX_TO_COUNTRY.items(), key=lambda x: -len(x[0])):
+        if re.search(r'(?<!\d)' + re.escape(prefix), full_text_upper):
+            return ctry
 
     return ""

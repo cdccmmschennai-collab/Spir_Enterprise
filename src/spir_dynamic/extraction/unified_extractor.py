@@ -80,7 +80,7 @@ def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
     Extract all SPIR data from a workbook using dynamic content analysis.
     """
     # Step 1: Analyze all sheets
-    profiles = analyze_workbook(wb)
+    profiles = analyze_workbook(wb, filename=filename)
 
     # Step 2: Resolve global SPIR number
     spir_no = _resolve_spir_no(profiles, filename)
@@ -248,38 +248,38 @@ def _group_by_main(
     Pair each continuation/reference sheet with its parent primary main sheet.
 
     Matching priority:
-      1. Number extracted from sheet name: "Conti Sheet- 4" → 4 matches "Main Sheet-4"
-      2. Positional fallback: assign to the preceding primary main in workbook order.
+      1. Parenthetical sequence numbers: "Cont Sheet (2)" → (2) matches "Main Sheet (2)".
+         These are explicit sequence markers added by Excel when sheet names are duplicated.
+         Plain digits embedded in the sheet name (e.g. "2 YEAR-SPARE-1-CONT") are NOT
+         sequence markers and must NOT be used for matching — they are part of the name.
+      2. Positional fallback: assign to the last primary main that appears before this
+         sheet in the workbook.
     """
-    # Build workbook order index for positional fallback
     sheet_order = {p.name: i for i, p in enumerate(all_profiles)}
 
-    def _sheet_numbers(name: str) -> set[int]:
-        """Extract all digit sequences from a sheet name as integers."""
-        return {int(m) for m in re.findall(r"\d+", name)}
+    def _paren_numbers(name: str) -> set[int]:
+        """Extract numbers in parentheses — these are Excel sequence markers like (2), (3)."""
+        return {int(m) for m in re.findall(r"\((\d+)\)", name)}
 
-    # Map each primary main to its set of name numbers
-    main_numbers = {p.name: _sheet_numbers(p.name) for p in primary_mains}
-
-    # Sort primary mains by workbook order
     sorted_mains = sorted(primary_mains, key=lambda p: sheet_order.get(p.name, 0))
+    main_paren = {p.name: _paren_numbers(p.name) for p in sorted_mains}
 
     groups: dict[str, list[SheetProfile]] = {p.name: [] for p in sorted_mains}
 
     for cont in non_primaries:
-        cont_nums = _sheet_numbers(cont.name)
+        cont_paren = _paren_numbers(cont.name)
         best_main = None
-        best_overlap = 0
 
-        for main in sorted_mains:
-            overlap = len(cont_nums & main_numbers[main.name])
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_main = main
+        # Step 1: Match by shared parenthetical sequence number.
+        if cont_paren:
+            for main in sorted_mains:
+                if cont_paren & main_paren[main.name]:
+                    best_main = main
+                    break
 
-        if best_main is None or best_overlap == 0:
-            # Positional fallback: assign to the last primary main that appears
-            # before this sheet in the workbook.
+        # Step 2: Positional fallback — assign to the last primary main that appears
+        # before this sheet in the workbook.
+        if best_main is None:
             cont_pos = sheet_order.get(cont.name, 0)
             for main in reversed(sorted_mains):
                 if sheet_order.get(main.name, 0) < cont_pos:
@@ -422,15 +422,12 @@ def _get_strategy(profile: SheetProfile):
 
 
 def _resolve_spir_no(profiles: list[SheetProfile], filename: str) -> str:
-    """Resolve the SPIR number from sheet metadata or filename."""
-    for p in profiles:
-        spir = p.metadata.get("spir_no")
-        if spir:
-            spir_clean = str(spir).strip()
-            # Accept any value that is at least 5 chars and contains alphanumerics
-            if len(spir_clean) >= 5 and re.search(r'[A-Z0-9]', spir_clean, re.I):
-                return spir_clean
+    """Resolve the SPIR number: filename is the authoritative document identifier.
 
+    Filename takes priority because a workbook may contain sheets from multiple
+    embedded SPIR documents (different equipment). The filename always identifies
+    the actual document; sheet-embedded SPIR numbers may belong to foreign sheets.
+    """
     if filename:
         patterns = [
             r"([A-Z0-9]{2,}-[A-Z0-9]{2,}-[A-Z0-9][\w\-]*)",
@@ -441,6 +438,13 @@ def _resolve_spir_no(profiles: list[SheetProfile], filename: str) -> str:
             m = re.search(pat, name, re.IGNORECASE)
             if m:
                 return m.group(1)
+
+    for p in profiles:
+        spir = p.metadata.get("spir_no")
+        if spir:
+            spir_clean = str(spir).strip()
+            if len(spir_clean) >= 5 and re.search(r'[A-Z0-9]', spir_clean, re.I):
+                return spir_clean
 
     return ""
 
@@ -543,6 +547,16 @@ def _enrich_equipment_data(
     # Step 1: Extract equipment registry from annexure sheets
     annexure_registry = _build_annexure_registry(wb, profiles)
     # annexure_registry: {normalized_annexure_key: [{"tag":..,"model":..,"serial":..,"manufacturer":..}, ...]}
+
+    # Step 1a: Enrich registry serial numbers from continuation sheet header rows.
+    # The continuation sheet has one column per sub-group (annexure ref + serial row)
+    # whose order matches the Annexure List's model sub-groups.
+    _enrich_registry_serials_from_continuations(annexure_registry, wb, profiles)
+
+    # Step 1b-pre: Build per-column item sets for annexure keys that span multiple
+    # continuation columns (e.g. 5 "Annexure 4" columns in the CONT sheet).
+    # Used during fan-out to assign each registry entry only its own items.
+    subgroup_item_map = _build_subgroup_item_map(wb, profiles)
 
     # Step 1b: Resolve bare "ANNEXURE_ANY" references (e.g. "Refer Annexure" without a number).
     # If exactly one annexure sheet exists, remap all ANNEXURE_ANY tags to its key.
@@ -740,17 +754,16 @@ def _enrich_equipment_data(
             annex_tags = annexure_registry[annex_key]
             grp = annex_groups[annex_key]
 
-            # Deduplicate detail rows by item_num and sheet.
-            # When multiple main sheets reference the same annexure, the same spare items
-            # appear in each sheet's continuation and are collected into grp["details"]
-            # multiple times. Keep only the first occurrence per item_num per sheet.
+            # Deduplicate detail rows by item_num and logical group.
+            # When a duplicate continuation sheet re-emits the same spare items that
+            # the main sheet already emitted (both in the same _group_main), keep only
+            # the first occurrence per item_num per logical main-sheet group.
             seen_keys: set = set()
             deduped_details: list[dict[str, Any]] = []
             for _dtl in grp["details"]:
                 _inum = _dtl.get("item_num")
-                _sheet = _dtl.get("sheet")
                 if _inum is not None:
-                    _key = (_inum, _sheet)
+                    _key = (_inum, _dtl.get("_group_main"))
                     if _key not in seen_keys:
                         seen_keys.add(_key)
                         deduped_details.append(_dtl)
@@ -762,9 +775,48 @@ def _enrich_equipment_data(
             # from global metadata (top-right of SPIR = EQPT MAKE)
             _TAG_ENRICH = ("model", "serial")
             N = len(annex_tags)
-            for tdata in annex_tags:
+
+            # Positional fan-out: when multiple registry entries share the same tag
+            # (e.g. all "N/A") AND the continuation sheet maps each one to its own
+            # column with distinct items, assign items positionally rather than
+            # applying all merged items to every entry.
+            _pos_items: list[list[int]] | None = None
+            if N > 1 and len({td["tag"] for td in annex_tags}) == 1:
+                _col_item_sets = subgroup_item_map.get(annex_key)
+                if _col_item_sets and len(_col_item_sets) == N:
+                    _pos_items = _col_item_sets
+
+            # Compute model-based sub-group sizes so each sub-group gets its own eqpt_qty
+            # rather than the total tag count from the main sheet's "No. of Units" row.
+            _entry_subgroup_size: list[int] = []
+            _num_subgroups = 0
+            if N > 1:
+                _i = 0
+                while _i < N:
+                    _m = annex_tags[_i].get("model")
+                    _j = _i + 1
+                    while _j < N and annex_tags[_j].get("model") == _m:
+                        _j += 1
+                    _sub_size = _j - _i
+                    _entry_subgroup_size.extend([_sub_size] * _sub_size)
+                    _num_subgroups += 1
+                    _i = _j
+            else:
+                _entry_subgroup_size = [N]
+                _num_subgroups = 1
+            _use_subgroup_eqpt_qty = _num_subgroups > 1
+
+            for entry_idx, tdata in enumerate(annex_tags):
+                # Determine which detail rows apply to this specific entry
+                if _pos_items is not None:
+                    allowed_items = set(_pos_items[entry_idx])
+                    entry_details = [d for d in deduped_details
+                                     if d.get("item_num") in allowed_items]
+                else:
+                    entry_details = deduped_details
+
                 # Skip tags that have no associated spare items to avoid header-only rows
-                if not deduped_details:
+                if not entry_details:
                     continue
                 # Tag header
                 for hdr in grp["headers"]:
@@ -773,15 +825,17 @@ def _enrich_equipment_data(
                     for field in _TAG_ENRICH:
                         if tdata.get(field):
                             tag_hdr[field] = tdata[field]
+                    if _use_subgroup_eqpt_qty and entry_idx < len(_entry_subgroup_size):
+                        tag_hdr["eqpt_qty"] = _entry_subgroup_size[entry_idx]
                     enriched.append(tag_hdr)
                 # Tag spare rows — divide total qty by N annexure tags
-                for dtl in deduped_details:
+                for dtl in entry_details:
                     tag_dtl = dict(dtl)
                     tag_dtl["tag_no"] = tdata["tag"]
                     for field in _TAG_ENRICH:
                         if tdata.get(field):
                             tag_dtl[field] = tdata[field]
-                    if N > 1:
+                    if N > 1 and _pos_items is None:
                         raw_qty = tag_dtl.get("quantity")
                         try:
                             q = float(raw_qty) if raw_qty is not None else None
@@ -916,8 +970,12 @@ def _try_read_annexure_list_sheet(ws) -> dict[str, list[dict[str, Any]]]:
         if not tag_val:
             continue
 
-        # Skip rows whose tag column says "N/A" or similar (no real tag assigned yet)
+        # Rows whose tag column says "N/A" represent real equipment without an assigned
+        # installation tag (e.g. retrieval tools, service valves). Include them with
+        # tag="N/A" so their spare items still appear in the BOM output.
         if re.search(r"(?i)\bn/?a\b", tag_val) and len(tag_val.replace(" ", "")) <= 10:
+            if model_val:
+                result[current_key].append({"tag": "N/A", "model": model_val})
             continue
 
         # Normalise "&" and newline separators to commas before splitting so that
@@ -942,6 +1000,282 @@ def _try_read_annexure_list_sheet(ws) -> dict[str, list[dict[str, Any]]]:
         )
 
     return result
+
+
+def _read_continuation_serial_map(ws) -> dict[str, list[str]]:
+    """
+    Scan a continuation sheet's header area to build a per-annexure serial list.
+
+    Detects dynamically:
+      - The row whose column values are annexure references (e.g. "Annexure 1")
+      - The row whose first-column label contains "ser no" or "serial"
+
+    Returns {normalized_annexure_key: [serial_str, ...]} where each entry
+    corresponds to one sub-group column (in left-to-right order).
+    """
+    max_row = ws.max_row or 0
+    max_col = ws.max_column or 0
+    if max_row < 2 or max_col < 2:
+        return {}
+
+    SCAN_ROWS = min(15, max_row)
+    LABEL_COLS = 3  # first N columns are row-label columns, not data columns
+
+    # Find the annexure-reference row: first row that has ≥1 annexure ref
+    # in its data columns (beyond the label columns).
+    annex_ref_row: int | None = None
+    data_start_col: int | None = None
+    for r in range(1, SCAN_ROWS + 1):
+        for c in range(LABEL_COLS + 1, max_col + 1):
+            v = str(ws.cell(r, c).value or "").strip()
+            if v and _normalize_annexure_ref(v):
+                annex_ref_row = r
+                data_start_col = c
+                break
+        if annex_ref_row:
+            break
+
+    if annex_ref_row is None or data_start_col is None:
+        return {}
+
+    # Find the serial-number row: row whose label column contains "ser no" / "serial"
+    serial_row: int | None = None
+    _ser_kws = ("ser no", "serial no", "serial number", "mfr ser", "mfr serial")
+    for r in range(1, SCAN_ROWS + 1):
+        for c in range(1, LABEL_COLS + 1):
+            v = str(ws.cell(r, c).value or "").lower().strip()
+            if any(kw in v for kw in _ser_kws):
+                serial_row = r
+                break
+        if serial_row:
+            break
+
+    if serial_row is None:
+        return {}
+
+    # Collect (annexure_key, serial) per data column
+    result: dict[str, list[str]] = {}
+    for c in range(data_start_col, max_col + 1):
+        ref_val = str(ws.cell(annex_ref_row, c).value or "").strip()
+        ref_key = _normalize_annexure_ref(ref_val)
+        if not ref_key or ref_key == "ANNEXURE_ANY":
+            continue
+        serial_val = clean_str(ws.cell(serial_row, c).value)
+        if not serial_val:
+            continue
+        result.setdefault(ref_key, []).append(serial_val)
+
+    return result
+
+
+def _enrich_registry_serials_from_continuations(
+    registry: dict[str, list[dict[str, Any]]],
+    wb,
+    profiles: list[SheetProfile],
+) -> None:
+    """
+    Read serial numbers from continuation sheets and assign them to each
+    annexure registry sub-group.
+
+    Alignment: continuation columns for a given annexure reference appear in
+    the same order as the model sub-groups in the registry (as read from the
+    Annexure List). The i-th continuation column → i-th model sub-group.
+    Tags that share the same model belong to the same sub-group.
+    """
+    # Identify continuation sheets: COLUMN_HEADERS layout, name contains "cont"
+    cont_profiles = [
+        p for p in profiles
+        if p.is_extractable
+        and p.tag_layout == TagLayout.COLUMN_HEADERS
+        and any(kw in p.name.lower() for kw in ("cont", "continuation"))
+    ]
+    if not cont_profiles:
+        return
+
+    # Merge serial maps from all continuation sheets (first one wins per sub-group)
+    merged_serial_map: dict[str, list[str]] = {}
+    for cp in cont_profiles:
+        ws = wb[cp.name]
+        smap = _read_continuation_serial_map(ws)
+        for annex_key, serials in smap.items():
+            if annex_key not in merged_serial_map:
+                merged_serial_map[annex_key] = serials
+        if merged_serial_map:
+            break  # one continuation is enough — they duplicate each other
+
+    if not merged_serial_map:
+        return
+
+    for annex_key, entries in registry.items():
+        serials = merged_serial_map.get(annex_key)
+        if not serials or not entries:
+            continue
+
+        # Group consecutive same-model entries into sub-groups.
+        # The Annexure List inserts all tags of the same model consecutively
+        # (one model-row → N tag entries), so this grouping is stable.
+        sub_groups: list[tuple[int, int]] = []  # (start_idx, end_idx) per sub-group
+        prev_model = entries[0].get("model")
+        group_start = 0
+        for i, entry in enumerate(entries[1:], 1):
+            m = entry.get("model")
+            if m != prev_model:
+                sub_groups.append((group_start, i))
+                prev_model = m
+                group_start = i
+        sub_groups.append((group_start, len(entries)))
+
+        for sg_idx, (start, end) in enumerate(sub_groups):
+            if sg_idx >= len(serials):
+                break
+            serial = serials[sg_idx]
+            for i in range(start, end):
+                if not entries[i].get("serial"):
+                    entries[i]["serial"] = serial
+
+        log.info(
+            "Registry '%s': assigned serials to %d sub-groups (%d entries)",
+            annex_key, len(sub_groups), len(entries),
+        )
+
+
+def _read_continuation_subgroup_items(ws) -> dict[str, list[list[int]]]:
+    """
+    For each annexure key in a continuation sheet, return a list of item-number
+    sets — one per column position (left-to-right) that carries that annexure label.
+
+    Used to do positional fan-out when multiple same-label columns (e.g. five
+    "Annexure 4" columns) each have their own subset of applicable items.
+
+    Returns {normalized_key: [[item_nums_col0], [item_nums_col1], ...]}
+    """
+    max_row = ws.max_row or 0
+    max_col = ws.max_column or 0
+    if max_row < 2 or max_col < 2:
+        return {}
+
+    SCAN_ROWS = min(15, max_row)
+    LABEL_COLS = 3
+
+    # Find the annexure-reference row
+    annex_ref_row: int | None = None
+    data_start_col: int | None = None
+    for r in range(1, SCAN_ROWS + 1):
+        for c in range(LABEL_COLS + 1, max_col + 1):
+            v = str(ws.cell(r, c).value or "").strip()
+            if v and _normalize_annexure_ref(v):
+                annex_ref_row = r
+                data_start_col = c
+                break
+        if annex_ref_row:
+            break
+
+    if annex_ref_row is None or data_start_col is None:
+        return {}
+
+    # Find the item-number label column (first col 1-LABEL_COLS with numeric-ish values
+    # after the header area rows — i.e. the item# column).  We detect the first data
+    # row after the header area by looking for a row where col 3 (or col in 1-LABEL_COLS)
+    # has a numeric value AND data columns (beyond LABEL_COLS) have values.
+    item_num_col: int = LABEL_COLS  # default: 3rd label column (0-based would be col 3)
+    header_end_row: int = SCAN_ROWS  # rows after this are item rows
+
+    # Find the first row after SCAN_ROWS boundary where col 3 has an integer
+    for r in range(SCAN_ROWS + 1, max_row + 1):
+        v = ws.cell(r, item_num_col).value
+        if v is not None:
+            try:
+                int(float(str(v).strip()))
+                header_end_row = r - 1
+                break
+            except (ValueError, TypeError):
+                pass
+
+    # Also check within SCAN_ROWS: the header area ends when column-3 starts
+    # showing integer item numbers
+    for r in range(annex_ref_row + 1, SCAN_ROWS + 1):
+        v = ws.cell(r, item_num_col).value
+        if v is not None:
+            try:
+                int(float(str(v).strip()))
+                header_end_row = r - 1
+                break
+            except (ValueError, TypeError):
+                pass
+
+    # Build col_index → annexure_key map for data columns
+    col_to_key: dict[int, str] = {}
+    for c in range(data_start_col, max_col + 1):
+        ref_val = str(ws.cell(annex_ref_row, c).value or "").strip()
+        ref_key = _normalize_annexure_ref(ref_val)
+        if ref_key and ref_key != "ANNEXURE_ANY":
+            col_to_key[c] = ref_key
+
+    if not col_to_key:
+        return {}
+
+    # For each annexure key, enumerate columns in left-to-right order → positions
+    # {annex_key: [col1, col2, ...]}
+    key_to_cols: dict[str, list[int]] = {}
+    for c, key in sorted(col_to_key.items()):
+        key_to_cols.setdefault(key, []).append(c)
+
+    # Identify keys that appear in multiple columns (those need positional handling)
+    multi_col_keys = {k for k, cols in key_to_cols.items() if len(cols) > 1}
+    if not multi_col_keys:
+        return {}
+
+    # Read item rows: rows after header_end_row where item_num_col has an integer
+    result: dict[str, list[list[int]]] = {}
+    for key in multi_col_keys:
+        cols = key_to_cols[key]
+        result[key] = [[] for _ in cols]
+
+    for r in range(header_end_row + 1, max_row + 1):
+        raw_item = ws.cell(r, item_num_col).value
+        if raw_item is None:
+            continue
+        try:
+            item_num = int(float(str(raw_item).strip()))
+        except (ValueError, TypeError):
+            continue
+
+        for key in multi_col_keys:
+            cols = key_to_cols[key]
+            for pos, c in enumerate(cols):
+                v = ws.cell(r, c).value
+                if v is not None and str(v).strip() not in ("", "0"):
+                    result[key][pos].append(item_num)
+
+    # Remove keys with all-empty position lists
+    result = {k: v for k, v in result.items() if any(v)}
+    return result
+
+
+def _build_subgroup_item_map(
+    wb, profiles: list[SheetProfile]
+) -> dict[str, list[list[int]]]:
+    """
+    Merge per-column item sets from all continuation sheets.
+    Returns {normalized_annexure_key: [[item_nums_pos0], [item_nums_pos1], ...]}
+    for annexure keys that span multiple columns in at least one CONT sheet.
+    """
+    cont_profiles = [
+        p for p in profiles
+        if p.is_extractable
+        and p.tag_layout == TagLayout.COLUMN_HEADERS
+        and any(kw in p.name.lower() for kw in ("cont", "continuation"))
+    ]
+    merged: dict[str, list[list[int]]] = {}
+    for cp in cont_profiles:
+        ws = wb[cp.name]
+        smap = _read_continuation_subgroup_items(ws)
+        for key, item_lists in smap.items():
+            if key not in merged:
+                merged[key] = item_lists
+        if merged:
+            break
+    return merged
 
 
 def _build_annexure_registry(
