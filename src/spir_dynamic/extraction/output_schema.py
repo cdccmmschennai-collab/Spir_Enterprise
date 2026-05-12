@@ -99,12 +99,10 @@ def row_from_dict(item: dict) -> list:
     for entry in OUTPUT_COLUMNS:
         col_idx = CI[entry["col"]]
         val = item.get(entry["field"])
-        # PHASE 5 FIX: For supplier_name (SUPPLIER/ OCM NAME column),
-        # prefer manufacturer over supplier as fallback.
-        # In SPIR files, the OCM (Original Component Manufacturer) is the
-        # manufacturer, not the supplier/distributor.
+        # When a spare row has no per-row supplier_name, fall back to the
+        # header-level supplier (global_meta "supplier") — NOT manufacturer.
         if val is None and entry["field"] == "supplier_name":
-            val = item.get("manufacturer")
+            val = item.get("supplier")
         if val is None:
             val = item.get(entry["col"])
         if val is not None:
@@ -192,7 +190,7 @@ class DynamicSchema:
             idx = self.ci[col_name]
             val = item.get(field_name)
             if val is None and field_name == "supplier_name":
-                val = item.get("manufacturer")
+                val = item.get("supplier")
             if val is None:
                 val = item.get(col_name)
             if val is not None:

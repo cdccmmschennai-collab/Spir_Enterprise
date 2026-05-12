@@ -95,7 +95,11 @@
       "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\softuser1\\\\Downloads\\\\spir_dynamic\\\\templates\" -Depth 1 | Select-Object -Property Name, @{Name=\"Type\"; Expression={if\\($_.PSIsContainer\\){\"Folder\"}else{\"File\"}}})",
       "Bash(find \"C:\\\\\\\\Users\\\\\\\\softuser1\\\\\\\\Downloads\\\\\\\\spir_dynamic\\\\\\\\templates\" -type f -name \"*.xlsm\" -o -name \"*.xlsx\")",
       "Bash(exit 0)",
-      "Bash(del test_annex.py test_debug.py test_debug2.py test_fix.py test_hidden.py test_regression.py test_structure.py)"
+      "Bash(del test_annex.py test_debug.py test_debug2.py test_fix.py test_hidden.py test_regression.py test_structure.py)",
+      "Bash(Select-Object -ExpandProperty Name)",
+      "Bash(Sort-Object Name)",
+      "Bash(venvScriptspython.exe -c ' *)",
+      "Bash(venv\\\\Scripts\\\\python.exe -c \"print\\('hello'\\)\")"
     ]
   }
 }

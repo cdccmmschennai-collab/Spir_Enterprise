@@ -91,7 +91,7 @@ def _get_header_keywords() -> list[str]:
 # Keywords that indicate metadata in the header area (above the data header)
 METADATA_KEYWORDS: dict[str, list[str]] = {
     "spir_no": ["spir number", "spir no", "spir ref", "spir #", "spir:", "spir id", "spir no."],
-    "equipment": ["equipment:"],
+    "equipment": ["equipment:", "equipment :"],
     # PHASE 4 FIX: Accept "manufacturer", "manufacturer:", "MANUFACTURER : VALUE" etc.
     "manufacturer": ["manufacturer"],
     # PHASE 4 FIX: Accept "supplier", "supplier:", "SUPPLIER : VALUE" etc.
