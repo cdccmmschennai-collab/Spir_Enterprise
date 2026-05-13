@@ -1,5 +1,9 @@
 version: "3.9"
 
+# NOTE: A Dockerfile is required before this compose file can build images.
+# Production deployment uses systemd (deploy/spir-api.service, deploy/spir-worker.service).
+# This file is provided for containerised dev/staging use.
+
 services:
   api:
     build: .
@@ -8,24 +12,41 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://spir_user:strongpassword@db:5432/spir_db
       - REDIS_URL=redis://redis:6379/0
+      # Absolute path inside the container — safe regardless of Dockerfile WORKDIR.
+      - ROWS_STORAGE_PATH=/opt/spir_dynamic/storage/extracted_rows
     depends_on:
       - db
       - redis
-    command: ["uvicorn", "spir_dynamic.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    volumes:
+      # Persist extracted JSON row files so combine survives container restarts.
+      - extracted_rows:/opt/spir_dynamic/storage/extracted_rows
 
   worker:
     build: .
     environment:
       - DATABASE_URL=postgresql+asyncpg://spir_user:strongpassword@db:5432/spir_db
       - REDIS_URL=redis://redis:6379/0
+      - ROWS_STORAGE_PATH=/opt/spir_dynamic/storage/extracted_rows
     depends_on:
       - redis
-    command: ["celery", "-A", "worker", "worker", "--loglevel=info", "--concurrency=4"]
+    volumes:
+      - extracted_rows:/opt/spir_dynamic/storage/extracted_rows
+    command: [
+      "celery", "-A", "spir_dynamic.celery_app",
+      "worker",
+      "--loglevel=info",
+      "--concurrency=2",
+      "--max-tasks-per-child=25"
+    ]
 
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    # AOF persistence: Celery tasks survive Redis restart (at most 1s of data loss).
+    command: redis-server --appendonly yes --appendfsync everysec
+    volumes:
+      - redis_data:/data
 
   db:
     image: postgres:15
@@ -35,3 +56,10 @@ services:
       POSTGRES_DB: spir_db
     ports:
       - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+volumes:
+  extracted_rows:
+  redis_data:
+  pg_data:

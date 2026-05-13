@@ -32,6 +32,21 @@ async def lifespan(app: FastAPI):
             log.warning("Database init failed — running in no-DB (legacy) mode")
     else:
         log.info("DATABASE_URL not set — running in no-DB (legacy) mode")
+
+    # Ensure row storage directory exists before accepting requests.
+    # cfg.rows_storage_path is always absolute (resolved in config.py).
+    from pathlib import Path as _Path
+    rows_dir = _Path(cfg.rows_storage_path)
+    try:
+        rows_dir.mkdir(parents=True, exist_ok=True)
+        log.info("Row storage ready: %s", rows_dir)
+    except OSError as exc:
+        log.error(
+            "Row storage directory unavailable — /combine will fail: %s | path=%s",
+            exc,
+            rows_dir,
+        )
+
     yield
     # Shutdown: close DB engine if open
     from spir_dynamic.db.database import is_db_enabled, get_engine

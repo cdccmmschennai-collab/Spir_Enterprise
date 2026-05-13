@@ -7,8 +7,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from functools import lru_cache
+from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
+
+# config.py lives at src/spir_dynamic/app/config.py — project root is 4 levels up.
+# Used to anchor relative storage paths regardless of launch working directory.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 
 class Settings(BaseSettings):
@@ -51,9 +57,18 @@ class Settings(BaseSettings):
     batch_ttl_seconds: int = 7200
 
     # Persistent row storage — extracted rows saved here as JSON for combine feature.
-    # Relative path resolved from the working directory (project root).
-    # Override with ROWS_STORAGE_PATH env var on the VPS if needed.
+    # Relative paths are anchored to _PROJECT_ROOT (project root) at import time,
+    # so the path is stable regardless of where uvicorn/celery is launched from.
+    # Override with an absolute ROWS_STORAGE_PATH env var for Docker/VPS if needed.
     rows_storage_path: str = "storage/extracted_rows"
+
+    @field_validator("rows_storage_path", mode="after")
+    @classmethod
+    def _resolve_storage_path(cls, v: str) -> str:
+        p = Path(v)
+        if not p.is_absolute():
+            p = _PROJECT_ROOT / v
+        return str(p.resolve())
 
     # Celery / Redis
     redis_url: str = "redis://localhost:6379/0"
