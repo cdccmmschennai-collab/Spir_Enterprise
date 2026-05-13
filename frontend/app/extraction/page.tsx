@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CloudUpload,
   FileSpreadsheet,
@@ -23,6 +23,7 @@ import {
 import { SidebarLayout } from "@/components/sidebar";
 import { authHeaders } from "@/lib/auth";
 import { cn } from "@/lib/utils";
+import { saveSession, loadSession, clearSession } from "@/lib/extraction-session";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const ACCEPTED = ".xlsx,.xlsm,.xls";
@@ -346,12 +347,26 @@ export default function ExtractionPage() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ExtractResult | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [savedFilename, setSavedFilename] = useState("");
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    const session = loadSession();
+    if (session?.status === "complete" && session.result) {
+      setResult(session.result as ExtractResult);
+    } else if (session?.status === "loading") {
+      setLoading(true);
+      setSavedFilename(session.filename);
+    }
+    setHydrated(true);
+  }, []);
 
   async function handleExtract() {
     if (!file) return;
     setLoading(true);
     setError(null);
     setResult(null);
+    saveSession({ status: "loading", filename: file.name, savedAt: Date.now() });
 
     const form = new FormData();
     form.append("file", file);
@@ -364,11 +379,13 @@ export default function ExtractionPage() {
       });
 
       if (res.status === 401) {
+        clearSession();
         setError("Session expired. Please log in again.");
         return;
       }
 
       if (!res.ok) {
+        clearSession();
         const data = await res.json().catch(() => ({}));
         setError(data.detail ?? `Extraction failed (${res.status})`);
         return;
@@ -376,8 +393,10 @@ export default function ExtractionPage() {
 
       const data: ExtractResult = await res.json();
       setResult(data);
+      saveSession({ status: "complete", filename: data.filename, savedAt: Date.now(), result: data });
       window.dispatchEvent(new CustomEvent("profile-refresh"));
     } catch {
+      clearSession();
       setError("Could not reach the server. Is the backend running?");
     } finally {
       setLoading(false);
@@ -412,9 +431,15 @@ export default function ExtractionPage() {
   }
 
   function handleReset() {
+    clearSession();
     setFile(null);
     setResult(null);
     setError(null);
+    setSavedFilename("");
+  }
+
+  if (!hydrated) {
+    return <SidebarLayout><></></SidebarLayout>;
   }
 
   return (
@@ -422,8 +447,29 @@ export default function ExtractionPage() {
       {/* ── Dashboard / Upload State ── */}
       {!result && (
         <div className="mx-auto max-w-3xl space-y-6 p-4 sm:p-6 lg:p-8">
-          {/* Upload zone */}
-          <UploadZone file={file} onFile={setFile} disabled={loading} />
+          {/* Restored loading state — shown when file is unavailable (e.g. after navigation/refresh) */}
+          {loading && !file && savedFilename && (
+            <div className="flex flex-col items-center justify-center gap-5 rounded-2xl border-2 border-dashed border-violet-300 bg-violet-50/40 dark:border-violet-700 dark:bg-violet-950/20 px-6 py-16">
+              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-violet-100 dark:bg-violet-900/50">
+                <Loader2 className="h-8 w-8 animate-spin text-violet-600 dark:text-violet-400" />
+              </div>
+              <div className="text-center">
+                <p className="text-base font-semibold text-slate-700 dark:text-slate-300">Extracting…</p>
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{savedFilename}</p>
+              </div>
+              <button
+                onClick={handleReset}
+                className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200 transition-colors"
+              >
+                <X className="h-3.5 w-3.5" /> New Extraction
+              </button>
+            </div>
+          )}
+
+          {/* Upload zone — hidden while restoring loading state */}
+          {!(loading && !file && savedFilename) && (
+            <UploadZone file={file} onFile={setFile} disabled={loading} />
+          )}
 
           {/* Extract button */}
           {file && (
@@ -507,7 +553,7 @@ export default function ExtractionPage() {
               </div>
               <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
                 Successfully processed{" "}
-                <span className="font-semibold text-slate-700 dark:text-slate-300">{file?.name}</span>
+                <span className="font-semibold text-slate-700 dark:text-slate-300">{result.filename || file?.name}</span>
               </p>
             </div>
             <div className="flex items-center gap-2">

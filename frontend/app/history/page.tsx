@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { History, Loader2, Download, CheckSquare, Square, FileX } from "lucide-react";
+import { History, Loader2, Download, CheckSquare, Square, FileX, Trash2 } from "lucide-react";
 import { SidebarLayout } from "@/components/sidebar";
 import { authHeaders } from "@/lib/auth";
 
@@ -26,6 +26,9 @@ export default function HistoryPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [combining, setCombining] = useState(false);
   const [combineError, setCombineError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -82,7 +85,7 @@ export default function HistoryPage() {
           "Content-Type": "application/json",
           ...authHeaders(),
         },
-        body: JSON.stringify({ history_ids: [...selected] }),
+        body: JSON.stringify({ history_ids: Array.from(selected) }),
       });
 
       if (!res.ok) {
@@ -108,6 +111,41 @@ export default function HistoryPage() {
     }
   }
 
+  async function handleDelete() {
+    if (selected.size === 0) return;
+    setDeleting(true);
+    setDeleteError(null);
+    setShowDeleteConfirm(false);
+    try {
+      const res = await fetch(`${API_URL}/api/history`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ history_ids: Array.from(selected) }),
+      });
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail ?? "Delete failed");
+      }
+      const refreshed = await fetch(`${API_URL}/api/history`, {
+        headers: { ...authHeaders() },
+        cache: "no-store",
+      });
+      if (refreshed.ok) {
+        const data: HistoryItem[] = await refreshed.json();
+        setItems(data);
+      }
+      setSelected(new Set());
+    } catch (e: unknown) {
+      setDeleteError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   const allSelected = items.length > 0 && selected.size === items.length;
   const someSelected = selected.size > 0 && selected.size < items.length;
 
@@ -125,20 +163,35 @@ export default function HistoryPage() {
           </div>
 
           {selected.size > 0 && (
-            <button
-              onClick={handleCombine}
-              disabled={combining}
-              className="flex items-center gap-2 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-60 disabled:cursor-not-allowed px-4 py-2 text-sm font-semibold text-white transition-colors shadow-sm"
-            >
-              {combining ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Download className="h-4 w-4" />
-              )}
-              {combining
-                ? "Building combined Excel…"
-                : `Combine ${selected.size} file${selected.size > 1 ? "s" : ""} → Download Excel`}
-            </button>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={handleCombine}
+                disabled={combining || deleting}
+                className="flex items-center gap-2 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-60 disabled:cursor-not-allowed px-4 py-2 text-sm font-semibold text-white transition-colors shadow-sm"
+              >
+                {combining ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4" />
+                )}
+                {combining
+                  ? "Building combined Excel…"
+                  : `Combine ${selected.size} file${selected.size > 1 ? "s" : ""} → Download Excel`}
+              </button>
+
+              <button
+                onClick={() => setShowDeleteConfirm(true)}
+                disabled={deleting || combining}
+                className="flex items-center gap-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-60 disabled:cursor-not-allowed px-4 py-2 text-sm font-semibold text-white transition-colors shadow-sm"
+              >
+                {deleting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Trash2 className="h-4 w-4" />
+                )}
+                {deleting ? "Deleting…" : `Delete ${selected.size} selected`}
+              </button>
+            </div>
           )}
         </div>
 
@@ -147,6 +200,40 @@ export default function HistoryPage() {
           <div className="flex items-start gap-3 rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300">
             <FileX className="mt-0.5 h-4 w-4 shrink-0" />
             <span>{combineError}</span>
+          </div>
+        )}
+
+        {/* Delete error */}
+        {deleteError && (
+          <div className="flex items-start gap-3 rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300">
+            <FileX className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{deleteError}</span>
+          </div>
+        )}
+
+        {/* Delete confirmation dialog */}
+        {showDeleteConfirm && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+            <div className="rounded-2xl bg-white dark:bg-slate-800 p-6 shadow-xl max-w-sm w-full mx-4 space-y-4">
+              <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">Confirm Delete</h2>
+              <p className="text-sm text-slate-600 dark:text-slate-400">
+                Delete selected extraction history and associated stored row data?
+              </p>
+              <div className="flex gap-3 justify-end">
+                <button
+                  onClick={() => setShowDeleteConfirm(false)}
+                  className="px-4 py-2 text-sm rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDelete}
+                  className="px-4 py-2 text-sm rounded-xl bg-red-600 hover:bg-red-700 text-white font-semibold transition-colors"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
           </div>
         )}
 

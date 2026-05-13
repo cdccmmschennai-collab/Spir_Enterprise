@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, memo, useSyncExternalStore } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import {
   FileSpreadsheet,
@@ -16,8 +16,12 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { clearToken, authHeaders, getRole } from "@/lib/auth";
+import { clearSession } from "@/lib/extraction-session";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+// useLayoutEffect on client (fires before first paint), useEffect on server (SSR no-op)
+const useIsomorphicLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
 interface NavItem {
   label: string;
@@ -40,7 +44,7 @@ interface SidebarContentProps {
   isAdmin?: boolean;
 }
 
-function SidebarContent({ pathname, onNavigate, onLogout, isAdmin }: SidebarContentProps) {
+const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, onLogout, isAdmin }: SidebarContentProps) {
   const router = useRouter();
 
   const navItems: NavItem[] = [
@@ -124,11 +128,11 @@ function SidebarContent({ pathname, onNavigate, onLogout, isAdmin }: SidebarCont
       </div>
     </div>
   );
-}
+});
 
 // ─── Top Navbar ───────────────────────────────────────────────────────────────
 
-function TopNavbar({
+const TopNavbar = memo(function TopNavbar({
   onMenuClick,
   darkMode,
   onToggleDark,
@@ -218,7 +222,7 @@ function TopNavbar({
       </div>
     </header>
   );
-}
+});
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
 
@@ -232,19 +236,34 @@ export function SidebarLayout({ children }: SidebarProps) {
   const [userInitials, setUserInitials] = useState("??");
   const [username, setUsername] = useState("");
   const [count, setCount] = useState(0);
-  const [isAdmin, setIsAdmin] = useState(false);
   const router = useRouter();
   const pathname = usePathname();
 
-  // Load persisted theme and role on mount
-  useEffect(() => {
+  // useSyncExternalStore: server snapshot returns false (role unknown during SSR),
+  // client snapshot reads localStorage synchronously. React patches the DOM before
+  // the first paint using the correct client value, eliminating the Admin nav flicker.
+  const isAdmin = useSyncExternalStore(
+    () => () => {},
+    () => getRole() === "admin",
+    () => false,
+  );
+
+  // Runs before first browser paint so darkMode and cached username are set on the first visible frame.
+  useIsomorphicLayoutEffect(() => {
     const saved = localStorage.getItem("theme");
     if (saved === "dark") setDarkMode(true);
-    setIsAdmin(getRole() === "admin");
+
+    // Restore cached username so the profile icon shows real initials immediately,
+    // without waiting for the /api/me network round-trip.
+    const cachedName = localStorage.getItem("profile_username");
+    if (cachedName) {
+      setUsername(cachedName);
+      setUserInitials(cachedName.slice(0, 2).toUpperCase() || "??");
+    }
   }, []);
 
   // Fetch current user profile and extraction count — force logout if token invalid/expired
-  async function refreshProfile() {
+  const refreshProfile = useCallback(async () => {
     try {
       const meRes = await fetch(`${API_URL}/api/me`, { headers: { ...authHeaders() } });
       if (meRes.status === 401) {
@@ -257,11 +276,11 @@ export function SidebarLayout({ children }: SidebarProps) {
       setUsername(name);
       setUserInitials(name.slice(0, 2).toUpperCase() || "??");
       setCount(data.total_files_extracted ?? 0);
-      setIsAdmin((data.role ?? "user") === "admin");
+      if (name) localStorage.setItem("profile_username", name);
     } catch {
       // network error — don't force logout
     }
-  }
+  }, []);
 
   useEffect(() => {
     refreshProfile();
@@ -269,7 +288,7 @@ export function SidebarLayout({ children }: SidebarProps) {
     // Listen for profile-refresh events fired after extraction or when profile is opened
     window.addEventListener("profile-refresh", refreshProfile);
     return () => window.removeEventListener("profile-refresh", refreshProfile);
-  }, []);
+  }, [refreshProfile]);
 
   // Persist theme and apply class to <html>
   useEffect(() => {
@@ -277,7 +296,7 @@ export function SidebarLayout({ children }: SidebarProps) {
     document.documentElement.classList.toggle("dark", darkMode);
   }, [darkMode]);
 
-  async function handleLogout() {
+  const handleLogout = useCallback(async () => {
     try {
       await fetch(`${API_URL}/auth/logout`, {
         method: "POST",
@@ -286,9 +305,15 @@ export function SidebarLayout({ children }: SidebarProps) {
     } catch {
       // ignore network errors — clear token regardless
     }
+    clearSession();
     clearToken();
     window.location.href = "/login";
-  }
+  }, []);
+
+  // Stable callbacks so memo'd children don't re-render on unrelated parent state changes
+  const handleMenuClick = useCallback(() => setMobileOpen(true), []);
+  const handleCloseMobile = useCallback(() => setMobileOpen(false), []);
+  const handleToggleDark = useCallback(() => setDarkMode((d) => !d), []);
 
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50 dark:bg-slate-950">
@@ -301,7 +326,7 @@ export function SidebarLayout({ children }: SidebarProps) {
       {mobileOpen && (
         <div
           className="fixed inset-0 z-40 bg-slate-900/50 backdrop-blur-sm lg:hidden"
-          onClick={() => setMobileOpen(false)}
+          onClick={handleCloseMobile}
         />
       )}
 
@@ -313,14 +338,14 @@ export function SidebarLayout({ children }: SidebarProps) {
         )}
       >
         <button
-          onClick={() => setMobileOpen(false)}
+          onClick={handleCloseMobile}
           className="absolute right-3 top-4 rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
         >
           <X className="h-4 w-4" />
         </button>
         <SidebarContent
           pathname={pathname}
-          onNavigate={() => setMobileOpen(false)}
+          onNavigate={handleCloseMobile}
           onLogout={handleLogout}
           isAdmin={isAdmin}
         />
@@ -329,9 +354,9 @@ export function SidebarLayout({ children }: SidebarProps) {
       {/* Main content */}
       <div className="flex flex-1 flex-col overflow-hidden">
         <TopNavbar
-          onMenuClick={() => setMobileOpen(true)}
+          onMenuClick={handleMenuClick}
           darkMode={darkMode}
-          onToggleDark={() => setDarkMode((d) => !d)}
+          onToggleDark={handleToggleDark}
           userInitials={userInitials}
           username={username}
           count={count}

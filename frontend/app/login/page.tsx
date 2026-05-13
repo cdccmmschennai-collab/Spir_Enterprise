@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Eye, EyeOff, AlertCircle, User, Lock } from "lucide-react";
 import { saveToken, saveRole } from "@/lib/auth";
+import { clearSession } from "@/lib/extraction-session";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL!;
 
@@ -39,6 +40,7 @@ export default function LoginPage() {
       }
 
       const { access_token } = await res.json();
+      clearSession(); // discard any previous user's extraction session
       saveToken(access_token);
 
       // Fetch role from /api/me and persist for sidebar + middleware

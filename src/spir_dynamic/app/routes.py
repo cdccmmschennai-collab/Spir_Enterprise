@@ -46,6 +46,10 @@ class CombineRequest(BaseModel):
     history_ids: list[str]
 
 
+class DeleteRequest(BaseModel):
+    history_ids: list[str]
+
+
 @router.post("/extract")
 async def extract(
     request: Request,
@@ -286,6 +290,68 @@ async def list_history(
             )
         )
     return items
+
+
+# ── Delete history endpoint ────────────────────────────────────────────────────
+
+@router.delete("/history")
+async def delete_history(
+    body: DeleteRequest,
+    td: TokenData = Depends(get_current_user),
+    db=Depends(get_db),
+) -> dict[str, int]:
+    """Delete history records and their associated JSON row files."""
+    if not is_db_enabled() or db is None:
+        raise HTTPException(status_code=503, detail="Database required for history deletion")
+    if not td.user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if not body.history_ids:
+        return {"deleted": 0}
+
+    ownership_filter = (
+        (ExtractionHistory.user_id == td.user_id)
+        if td.role != "admin"
+        else True
+    )
+    q = select(ExtractionHistory).where(
+        ExtractionHistory.id.in_(body.history_ids)
+    ).where(ownership_filter)
+    db_result = await db.execute(q)
+    records = db_result.scalars().all()
+
+    cfg = get_settings()
+    storage_root = Path(cfg.rows_storage_path).resolve()
+
+    for rec in records:
+        if rec.json_path:
+            p = Path(rec.json_path).resolve()
+            try:
+                p.relative_to(storage_root)
+            except ValueError:
+                log.warning("Refusing to delete file outside storage root: %s", p)
+            else:
+                try:
+                    if p.exists():
+                        p.unlink()
+                        log.info("Deleted JSON file: %s", p)
+                    else:
+                        log.warning("JSON file missing during delete: %s", p)
+                except Exception as exc:
+                    log.warning("Failed to delete JSON file %s: %s", p, exc)
+
+        if rec.file_id:
+            try:
+                from spir_dynamic.services.redis_store import RedisStorage
+                rs = RedisStorage(cfg.redis_url)
+                rs.delete(rec.file_id)
+            except Exception as exc:
+                log.warning("Redis cleanup failed for file_id %s: %s", rec.file_id, exc)
+
+        await db.delete(rec)
+        log.info("Deleted history record: %s", rec.id)
+
+    await db.commit()
+    return {"deleted": len(records)}
 
 
 # ── Combine endpoint ────────────────────────────────────────────────────────────
