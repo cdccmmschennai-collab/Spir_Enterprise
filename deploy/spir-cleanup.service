@@ -1,0 +1,19 @@
+[Unit]
+Description=SPIR Dynamic — stale temp file cleanup
+Documentation=https://github.com/your-org/spir-dynamic
+
+[Service]
+Type=oneshot
+User=spir
+Group=spir
+WorkingDirectory=/opt/spir_dynamic
+
+# Inherits ROWS_STORAGE_PATH from .env so cleanup uses the same path as the API.
+EnvironmentFile=/opt/spir_dynamic/.env
+
+ExecStart=/opt/spir_dynamic/deploy/cleanup-stale.sh
+
+# Log cleanup output to journal — view with: journalctl -u spir-cleanup
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=spir-cleanup

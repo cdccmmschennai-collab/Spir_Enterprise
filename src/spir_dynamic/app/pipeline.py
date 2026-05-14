@@ -193,9 +193,17 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
             "sheet_profiles": result.get("sheet_profiles", []),
         }
 
+        try:
+            import resource as _resource
+            _rss_kb = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+            _mem_mb: object = round(_rss_kb / 1024, 1)  # Linux: KB → MB
+        except Exception:
+            _mem_mb = "N/A"
+
         log.info(
-            "Pipeline done: %d rows, %d tags, format=%s",
+            "Pipeline done: %d rows, %d tags, format=%s | mem_rss_mb=%s",
             len(output_rows), result.get("total_tags", 0), result.get("format"),
+            _mem_mb,
         )
 
         return response

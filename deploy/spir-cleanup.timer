@@ -1,0 +1,26 @@
+[Unit]
+Description=Run SPIR stale temp file cleanup every 2 hours
+Requires=spir-cleanup.service
+
+[Timer]
+# First run 5 minutes after boot (gives the API time to start).
+OnBootSec=5min
+# Then every 2 hours from the last activation.
+OnUnitActiveSec=2h
+# If a run was missed (VPS rebooted, timer inactive), run immediately on next boot.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+
+# DEPLOY:
+#   sudo cp deploy/spir-cleanup.service /etc/systemd/system/
+#   sudo cp deploy/spir-cleanup.timer   /etc/systemd/system/
+#   sudo chmod +x /opt/spir_dynamic/deploy/cleanup-stale.sh
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now spir-cleanup.timer
+#
+# VERIFY:
+#   systemctl status spir-cleanup.timer
+#   sudo systemctl start spir-cleanup.service   # manual test run
+#   journalctl -u spir-cleanup -n 10

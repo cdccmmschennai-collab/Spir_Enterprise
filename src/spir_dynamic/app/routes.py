@@ -146,6 +146,9 @@ async def extract(
     cfg = get_settings()
     filename = file.filename or "upload.xlsx"
     tmp_path: Path | None = None
+    queue_wait: float = 0.0  # populated after semaphore is acquired
+    size_mb: float = 0.0     # populated after upload completes
+    extract_dur: float = 0.0 # populated after extraction completes
 
     try:
         # ── Phase A: Stream upload to disk (no full bytes in RAM) ────────────
@@ -184,9 +187,15 @@ async def extract(
                     timeout=cfg.extraction_timeout_seconds,
                 )
             except asyncio.TimeoutError:
+                _elapsed = time.perf_counter() - extract_start
                 log.error(
                     "Extraction timeout | file=%s size_mb=%.1f timeout_s=%d",
                     filename, size_mb, cfg.extraction_timeout_seconds,
+                )
+                log.error(
+                    "EXTRACTION_EVENT | file=%s size_mb=%.1f extract_dur=%.1fs"
+                    " queue_wait=%.1fs status=timeout",
+                    filename, size_mb, _elapsed, queue_wait,
                 )
                 raise HTTPException(
                     status_code=504,
@@ -197,11 +206,22 @@ async def extract(
                 )
             except ValidationError as exc:
                 log.warning("Validation failed | file=%s reason=%s", filename, exc)
+                log.warning(
+                    "EXTRACTION_EVENT | file=%s size_mb=%.1f queue_wait=%.1fs"
+                    " status=validation_error reason=%s",
+                    filename, size_mb, queue_wait, exc,
+                )
                 raise HTTPException(status_code=422, detail=str(exc))
             except MemoryError:
+                _elapsed = time.perf_counter() - extract_start
                 log.error(
                     "Out-of-memory during extraction | file=%s size_mb=%.1f",
                     filename, size_mb,
+                )
+                log.error(
+                    "EXTRACTION_EVENT | file=%s size_mb=%.1f extract_dur=%.1fs"
+                    " queue_wait=%.1fs status=oom",
+                    filename, size_mb, _elapsed, queue_wait,
                 )
                 raise HTTPException(
                     status_code=507,
@@ -212,15 +232,26 @@ async def extract(
                 )
             except (zipfile.BadZipFile, InvalidFileException) as exc:
                 log.warning("Corrupted/unreadable file | file=%s error=%s", filename, exc)
+                log.warning(
+                    "EXTRACTION_EVENT | file=%s size_mb=%.1f queue_wait=%.1fs"
+                    " status=corrupt_file",
+                    filename, size_mb, queue_wait,
+                )
                 raise HTTPException(
                     status_code=422,
                     detail=f"File appears corrupted or unreadable: {exc}",
                 )
             except Exception as exc:
+                _elapsed = time.perf_counter() - extract_start
                 log.error(
                     "Extraction failed | file=%s size_mb=%.1f error=%s",
                     filename, size_mb, exc,
                     exc_info=True,
+                )
+                log.error(
+                    "EXTRACTION_EVENT | file=%s size_mb=%.1f extract_dur=%.1fs"
+                    " queue_wait=%.1fs status=error",
+                    filename, size_mb, _elapsed, queue_wait,
                 )
                 raise HTTPException(
                     status_code=500,
@@ -250,6 +281,18 @@ async def extract(
             )
         except Exception as e:
             log.error("History logging failed (extraction still succeeded): %s", e)
+
+        log.info(
+            "EXTRACTION_EVENT | file=%s spir_no=%s rows=%d tags=%d"
+            " size_mb=%.1f extract_dur=%.1fs queue_wait=%.1fs status=success",
+            filename,
+            result.get("spir_no", ""),
+            result.get("total_rows", 0),
+            result.get("total_tags", 0),
+            size_mb,
+            extract_dur,
+            queue_wait,
+        )
 
         return result
 
@@ -299,14 +342,40 @@ async def download(
 # ── Misc endpoints ──────────────────────────────────────────────────────────────
 
 @router.get("/health")
-async def health() -> dict[str, str]:
+async def health() -> dict:
+    import shutil
+
     cfg = get_settings()
-    from spir_dynamic.db.database import is_db_enabled
-    return {
+    out: dict = {
         "status": "healthy",
         "version": cfg.app_version,
         "db_mode": "enabled" if is_db_enabled() else "legacy",
     }
+
+    # Verify the extraction storage directory is writable.
+    try:
+        rows_dir = Path(cfg.rows_storage_path)
+        probe = rows_dir / ".health_probe"
+        probe.touch()
+        probe.unlink(missing_ok=True)
+        out["extraction_dir"] = "ok"
+    except Exception as exc:
+        out["extraction_dir"] = "error"
+        out["extraction_dir_error"] = str(exc)
+        out["status"] = "degraded"
+
+    # Report free disk space on the filesystem that holds extracted rows.
+    try:
+        anchor = Path(cfg.rows_storage_path).anchor or "/"
+        usage = shutil.disk_usage(anchor)
+        out["disk_free_gb"] = round(usage.free / (1024 ** 3), 1)
+        if out["disk_free_gb"] < 2.0:
+            out["disk_warning"] = "low"
+            out["status"] = "degraded"
+    except Exception:
+        pass  # non-fatal — don't degrade status on a stat failure
+
+    return out
 
 
 @router.get("/currencies")
