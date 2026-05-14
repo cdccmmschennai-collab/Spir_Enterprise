@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     min_column_map_score: int = 30
     discovery_min_score: int = 15
 
+    # Extraction safety
+    extraction_timeout_seconds: int = 600   # env: EXTRACTION_TIMEOUT_SECONDS
+    upload_chunk_size: int = 1_048_576      # 1 MB chunks; env: UPLOAD_CHUNK_SIZE
+    max_concurrent_extractions: int = 4     # env: MAX_CONCURRENT_EXTRACTIONS
+
     # Batch processing
     batch_max_files: int = 20
     batch_ttl_seconds: int = 7200

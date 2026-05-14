@@ -7,13 +7,18 @@ import asyncio
 import io
 import json
 import logging
+import tempfile
+import time
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
+from openpyxl.utils.exceptions import InvalidFileException
 from pydantic import BaseModel
 from sqlalchemy import select, desc
 
@@ -29,6 +34,45 @@ log = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# ── Concurrency control ────────────────────────────────────────────────────────
+# Lazily created after the asyncio event loop is running (first request).
+_extraction_semaphore: asyncio.Semaphore | None = None
+_active_extractions: int = 0
+_active_lock = asyncio.Lock() if False else None  # populated on first use
+
+# Thread pool sized to max_concurrent_extractions so OS scheduler
+# sees at most N extraction threads, not the default unlimited pool.
+_extraction_executor: ThreadPoolExecutor | None = None
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    global _extraction_semaphore
+    if _extraction_semaphore is None:
+        cfg = get_settings()
+        _extraction_semaphore = asyncio.Semaphore(cfg.max_concurrent_extractions)
+        log.info(
+            "Extraction semaphore initialised | max_concurrent=%d",
+            cfg.max_concurrent_extractions,
+        )
+    return _extraction_semaphore
+
+
+def _get_executor() -> ThreadPoolExecutor:
+    global _extraction_executor
+    if _extraction_executor is None:
+        cfg = get_settings()
+        _extraction_executor = ThreadPoolExecutor(
+            max_workers=cfg.max_concurrent_extractions,
+            thread_name_prefix="spir-extract",
+        )
+        log.info(
+            "Extraction thread pool initialised | max_workers=%d",
+            cfg.max_concurrent_extractions,
+        )
+    return _extraction_executor
+
+
+# ── Models ─────────────────────────────────────────────────────────────────────
 
 class HistoryItem(BaseModel):
     id: str
@@ -50,6 +94,47 @@ class DeleteRequest(BaseModel):
     history_ids: list[str]
 
 
+# ── Upload helper ───────────────────────────────────────────────────────────────
+
+async def _stream_to_temp(
+    upload: UploadFile,
+    max_mb: int,
+    chunk_size: int,
+) -> tuple[Path, int]:
+    """
+    Stream UploadFile to a named temp file in chunks.
+
+    Returns (path, total_bytes). Rejects mid-stream with HTTP 413 if the file
+    exceeds max_mb. Cleans up the temp file on any error.
+    """
+    total = 0
+    max_bytes = max_mb * 1024 * 1024
+    suffix = Path(upload.filename or "upload").suffix.lower() or ".xlsx"
+    tmp = tempfile.NamedTemporaryFile(
+        delete=False,
+        suffix=suffix,
+        prefix="spir_upload_",
+    )
+    tmp_path = Path(tmp.name)
+    try:
+        with tmp:
+            while chunk := await upload.read(chunk_size):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File exceeds {max_mb} MB limit",
+                    )
+                tmp.write(chunk)
+        log.debug("Upload streamed to temp | path=%s bytes=%d", tmp_path, total)
+        return tmp_path, total
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+# ── Extract endpoint ────────────────────────────────────────────────────────────
+
 @router.post("/extract")
 async def extract(
     request: Request,
@@ -59,43 +144,127 @@ async def extract(
 ) -> dict[str, Any]:
     """Upload and extract a SPIR Excel file."""
     cfg = get_settings()
-
-    content = await file.read()
     filename = file.filename or "upload.xlsx"
+    tmp_path: Path | None = None
 
-    # Size check
-    size_mb = len(content) / (1024 * 1024)
-    if size_mb > cfg.max_file_size_mb:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File is {size_mb:.1f} MB — exceeds {cfg.max_file_size_mb} MB limit",
-        )
-
-    loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, run_pipeline, content, filename)
-    except ValidationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    except Exception as exc:
-        log.error("Extraction failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Extraction failed: {exc}")
-
-    # Persist extracted rows to disk so they survive restarts (needed for combine).
-    cfg = get_settings()
-    json_path = _save_rows_to_disk(result, cfg)
-
-    from spir_dynamic.services.audit_service import log_extraction
-    ip = _get_ip(request)
-    try:
-        await log_extraction(
-            td.user_id, td.jti, result, ip,
-            original_filename=filename, json_path=json_path,
+        # ── Phase A: Stream upload to disk (no full bytes in RAM) ────────────
+        tmp_path, file_size = await _stream_to_temp(
+            file, cfg.max_file_size_mb, cfg.upload_chunk_size
         )
-    except Exception as e:
-        log.error("History logging failed (extraction still succeeded): %s", e)
+        size_mb = file_size / (1024 * 1024)
+        log.info("Upload received | file=%s size_mb=%.1f", filename, size_mb)
 
-    return result
+        # ── Phase B: Wait for a concurrency slot ─────────────────────────────
+        sem = _get_semaphore()
+        executor = _get_executor()
 
+        log.info(
+            "Extraction queued | file=%s size_mb=%.1f waiting_for_slot=True",
+            filename, size_mb,
+        )
+        queue_wait_start = time.perf_counter()
+
+        async with sem:
+            queue_wait = time.perf_counter() - queue_wait_start
+            if queue_wait > 1.0:
+                log.info(
+                    "Semaphore acquired | file=%s queue_wait=%.1fs",
+                    filename, queue_wait,
+                )
+
+            log.info("Extraction start | file=%s size_mb=%.1f", filename, size_mb)
+            extract_start = time.perf_counter()
+
+            loop = asyncio.get_event_loop()
+            try:
+                # Pass the PATH — pipeline opens workbook from disk, zero bytes copy.
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(executor, run_pipeline, tmp_path, filename),
+                    timeout=cfg.extraction_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                log.error(
+                    "Extraction timeout | file=%s size_mb=%.1f timeout_s=%d",
+                    filename, size_mb, cfg.extraction_timeout_seconds,
+                )
+                raise HTTPException(
+                    status_code=504,
+                    detail=(
+                        f"Extraction timed out after {cfg.extraction_timeout_seconds}s. "
+                        "The file may contain too many sheets, images, or embedded objects."
+                    ),
+                )
+            except ValidationError as exc:
+                log.warning("Validation failed | file=%s reason=%s", filename, exc)
+                raise HTTPException(status_code=422, detail=str(exc))
+            except MemoryError:
+                log.error(
+                    "Out-of-memory during extraction | file=%s size_mb=%.1f",
+                    filename, size_mb,
+                )
+                raise HTTPException(
+                    status_code=507,
+                    detail=(
+                        "Server ran out of memory processing this file. "
+                        "This can happen with files containing many images or embedded objects."
+                    ),
+                )
+            except (zipfile.BadZipFile, InvalidFileException) as exc:
+                log.warning("Corrupted/unreadable file | file=%s error=%s", filename, exc)
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"File appears corrupted or unreadable: {exc}",
+                )
+            except Exception as exc:
+                log.error(
+                    "Extraction failed | file=%s size_mb=%.1f error=%s",
+                    filename, size_mb, exc,
+                    exc_info=True,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Extraction failed: {exc}",
+                )
+
+            extract_dur = time.perf_counter() - extract_start
+            if extract_dur > 120:
+                log.warning(
+                    "Slow extraction | file=%s size_mb=%.1f duration=%.1fs",
+                    filename, size_mb, extract_dur,
+                )
+            log.info(
+                "Extraction done | file=%s rows=%d size_mb=%.1f duration=%.1fs",
+                filename, result.get("total_rows", 0), size_mb, extract_dur,
+            )
+
+        # ── Phase C: Persist rows + audit log (unchanged) ────────────────────
+        json_path = _save_rows_to_disk(result, cfg)
+
+        from spir_dynamic.services.audit_service import log_extraction
+        ip = _get_ip(request)
+        try:
+            await log_extraction(
+                td.user_id, td.jti, result, ip,
+                original_filename=filename, json_path=json_path,
+            )
+        except Exception as e:
+            log.error("History logging failed (extraction still succeeded): %s", e)
+
+        return result
+
+    finally:
+        # Temp-file cleanup runs unconditionally — after workbook.close() has
+        # already completed inside pipeline.py's finally block.
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+                log.debug("Temp file cleaned | path=%s", tmp_path)
+            except Exception as e:
+                log.warning("Temp cleanup failed | path=%s error=%s", tmp_path, e)
+
+
+# ── Download endpoint ───────────────────────────────────────────────────────────
 
 @router.get("/download/{file_id}")
 async def download(
@@ -111,12 +280,10 @@ async def download(
 
     data, filename = result
 
-    # Audit log — direct await (re-enable background_tasks after fix)
     from spir_dynamic.services.audit_service import log_download
     ip = _get_ip(request)
     await log_download(td.user_id, None, file_id, ip)
 
-    # Ensure we have bytes
     if isinstance(data, io.BytesIO):
         data = data.read()
 
@@ -128,6 +295,8 @@ async def download(
         headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
     )
 
+
+# ── Misc endpoints ──────────────────────────────────────────────────────────────
 
 @router.get("/health")
 async def health() -> dict[str, str]:
@@ -179,7 +348,7 @@ async def me(
     }
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# ── Helpers ─────────────────────────────────────────────────────────────────────
 
 def _save_rows_to_disk(result: dict, cfg) -> Optional[str]:
     """
@@ -241,7 +410,7 @@ async def _run_async(coro) -> None:
         log.debug("Background audit task error: %s", exc)
 
 
-# ── History endpoints ──────────────────────────────────────────────────────────
+# ── History endpoints ────────────────────────────────────────────────────────────
 
 @router.get("/history", response_model=list[HistoryItem])
 async def list_history(
@@ -264,8 +433,6 @@ async def list_history(
     )
     result = await db.execute(q)
     rows = result.scalars().all()
-    # Legacy rows may contain blank/NULL values due to older defaults or schema drift.
-    # Normalize the response without changing its shape.
     _ist = ZoneInfo("Asia/Kolkata")
     items: list[HistoryItem] = []
     for r in rows:
@@ -292,7 +459,7 @@ async def list_history(
     return items
 
 
-# ── Delete history endpoint ────────────────────────────────────────────────────
+# ── Delete history endpoint ──────────────────────────────────────────────────────
 
 @router.delete("/history")
 async def delete_history(
@@ -354,7 +521,7 @@ async def delete_history(
     return {"deleted": len(records)}
 
 
-# ── Combine endpoint ────────────────────────────────────────────────────────────
+# ── Combine endpoint ─────────────────────────────────────────────────────────────
 
 @router.post("/combine")
 async def combine(
@@ -375,7 +542,6 @@ async def combine(
     if not td.user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    # Enforce ownership — users can only combine their own files; admins can combine any
     ownership_filter = (
         (ExtractionHistory.user_id == td.user_id)
         if td.role != "admin"
@@ -402,7 +568,6 @@ async def combine(
             detail=f"History records not found or not accessible: {missing}",
         )
 
-    # Load rows from each persisted JSON file
     combined_rows: list[list] = []
     no_json: list[str] = []
     for rec in records:
@@ -436,7 +601,6 @@ async def combine(
     if not combined_rows:
         raise HTTPException(status_code=400, detail="No rows found in selected files")
 
-    # Deduplicate + build Excel in thread pool (CPU-bound, keeps event loop free)
     loop = asyncio.get_event_loop()
     xlsx_bytes = await loop.run_in_executor(None, _build_combined_excel, combined_rows)
 
@@ -445,5 +609,3 @@ async def combine(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": 'attachment; filename="COMBINED_Extraction.xlsx"'},
     )
-
-

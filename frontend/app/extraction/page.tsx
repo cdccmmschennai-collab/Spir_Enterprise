@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, memo } from "react";
 import {
   CloudUpload,
   FileSpreadsheet,
@@ -208,7 +208,7 @@ interface PreviewTableProps {
   totalRows: number;
 }
 
-function PreviewTable({ cols, rows, totalRows }: PreviewTableProps) {
+const PreviewTable = memo(function PreviewTable({ cols, rows, totalRows }: PreviewTableProps) {
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Set<number>>(new Set());
 
@@ -337,7 +337,7 @@ function PreviewTable({ cols, rows, totalRows }: PreviewTableProps) {
       </div>
     </div>
   );
-}
+});
 
 // ─── Page ──────────────────────────────────────────────────────────────────────
 
@@ -349,19 +349,45 @@ export default function ExtractionPage() {
   const [downloading, setDownloading] = useState(false);
   const [savedFilename, setSavedFilename] = useState("");
   const [hydrated, setHydrated] = useState(false);
+  const [recoveredToHistory, setRecoveredToHistory] = useState(false);
 
   useEffect(() => {
     const session = loadSession();
     if (session?.status === "complete" && session.result) {
       setResult(session.result as ExtractResult);
-    } else if (session?.status === "loading") {
-      setLoading(true);
+      setHydrated(true);
+      return;
+    }
+    if (session?.status === "loading") {
       setSavedFilename(session.filename);
+      setLoading(true);
+      // Single recovery fetch — check if backend completed while we were away
+      const { filename, savedAt } = session;
+      fetch(`${API_URL}/api/history`, { headers: authHeaders() })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((items: Array<{ filename: string; created_at: string }> | null) => {
+          if (!items) return;
+          const completed = items.some(
+            (item) =>
+              item.filename === filename &&
+              new Date(item.created_at).getTime() >= savedAt - 10_000
+          );
+          if (completed) {
+            clearSession();
+            setHydrated(true);
+            setLoading(false);
+            setSavedFilename("");
+            setRecoveredToHistory(true);
+          }
+        })
+        .catch(() => {
+          // Network error — keep spinner; "New Extraction" button is the escape hatch
+        });
     }
     setHydrated(true);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function handleExtract() {
+  const handleExtract = useCallback(async () => {
     if (!file) return;
     setLoading(true);
     setError(null);
@@ -401,9 +427,9 @@ export default function ExtractionPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [file]);
 
-  async function handleDownload() {
+  const handleDownload = useCallback(async () => {
     if (!result) return;
     setDownloading(true);
     try {
@@ -428,15 +454,16 @@ export default function ExtractionPage() {
     } finally {
       setDownloading(false);
     }
-  }
+  }, [result]);
 
-  function handleReset() {
+  const handleReset = useCallback(() => {
     clearSession();
     setFile(null);
     setResult(null);
     setError(null);
     setSavedFilename("");
-  }
+    setRecoveredToHistory(false);
+  }, []);
 
   if (!hydrated) {
     return <SidebarLayout><></></SidebarLayout>;
@@ -447,6 +474,24 @@ export default function ExtractionPage() {
       {/* ── Dashboard / Upload State ── */}
       {!result && (
         <div className="mx-auto max-w-3xl space-y-6 p-4 sm:p-6 lg:p-8">
+          {/* Recovery banner — extraction completed on backend while page was away */}
+          {recoveredToHistory && !loading && (
+            <div className="flex items-start gap-3 rounded-xl border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3.5 text-sm text-emerald-700 dark:text-emerald-400">
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>
+                Your extraction completed in the background.{" "}
+                Check{" "}
+                <button
+                  onClick={() => setRecoveredToHistory(false)}
+                  className="underline hover:no-underline"
+                >
+                  History
+                </button>{" "}
+                for results.
+              </span>
+            </div>
+          )}
+
           {/* Restored loading state — shown when file is unavailable (e.g. after navigation/refresh) */}
           {loading && !file && savedFilename && (
             <div className="flex flex-col items-center justify-center gap-5 rounded-2xl border-2 border-dashed border-violet-300 bg-violet-50/40 dark:border-violet-700 dark:bg-violet-950/20 px-6 py-16">

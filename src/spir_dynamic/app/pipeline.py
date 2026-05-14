@@ -5,12 +5,15 @@ post-processing, and output building.
 from __future__ import annotations
 
 import cProfile
+import gc
 import io
 import logging
 import pstats
 import re
+import time
 import uuid
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Optional, Union
 
 import openpyxl
 
@@ -32,11 +35,17 @@ from spir_dynamic.utils.logging import timed
 
 log = logging.getLogger(__name__)
 
+_SLOW_EXTRACTION_WARN_SECONDS = 120
+
 
 @timed
-def run_pipeline(file_bytes: bytes, original_filename: str) -> dict[str, Any]:
+def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict[str, Any]:
     """
     Full extraction pipeline: validate -> extract -> post-process -> build xlsx.
+
+    Accepts either raw bytes (legacy/Celery path) or a Path to a temp file on disk
+    (new streaming path). When given a Path, the workbook is opened directly from
+    disk — no raw-bytes copy is held in memory during extraction.
 
     Returns a metadata dict with file_id, preview_rows, statistics, etc.
     """
@@ -48,29 +57,64 @@ def run_pipeline(file_bytes: bytes, original_filename: str) -> dict[str, Any]:
         _profiler = cProfile.Profile()
         _profiler.enable()
     # ────────────────────────────────────────────────────────────────────────
+
+    is_path = isinstance(file_input, Path)
+
     try:
-        size_mb = len(file_bytes) / (1024 * 1024)
+        if is_path:
+            size_mb = file_input.stat().st_size / (1024 * 1024)
+        else:
+            size_mb = len(file_input) / (1024 * 1024)
+
         log.info("Pipeline start: %s (%.1f MB)", original_filename, size_mb)
+        if size_mb > 500:
+            log.warning(
+                "Large file — extraction may be slow or memory-intensive: %.1f MB | file=%s",
+                size_mb, original_filename,
+            )
 
         cfg = get_settings()
 
         # Step 1: Validate
-        validate_file(original_filename, file_bytes, cfg.max_file_size_mb)
+        validate_file(original_filename, file_input, cfg.max_file_size_mb)
 
         # Step 2: Load workbook (not read_only — merged_cells.ranges used in column_mapper)
         # keep_links=False skips external link parsing, saving ~0.1s on link-heavy files.
-        wb = openpyxl.load_workbook(
-            io.BytesIO(file_bytes), data_only=True, keep_links=False
-        )
-        # Attach raw bytes so VML form-control detection can re-open the archive
-        # (openpyxl 3.x closes the ZIP after loading — _archive is None).
-        wb._spir_raw_bytes = file_bytes
+        _wb_start = time.perf_counter()
+        if is_path:
+            # Open directly from disk — no raw-bytes copy in RAM.
+            wb = openpyxl.load_workbook(str(file_input), data_only=True, keep_links=False)
+            wb._spir_raw_bytes = None
+            # VML form-control detection re-opens the ZIP from the temp-file path.
+            wb._spir_raw_path = str(file_input)
+        else:
+            # Bytes path — original behavior (Celery workers use this).
+            wb = openpyxl.load_workbook(
+                io.BytesIO(file_input), data_only=True, keep_links=False
+            )
+            wb._spir_raw_bytes = file_input
+            wb._spir_raw_path = None
 
+        log.debug("Workbook loaded in %.2fs | file=%s", time.perf_counter() - _wb_start, original_filename)
+
+        _extract_start = time.perf_counter()
         try:
             # Step 3: Extract
             result = extract_workbook(wb, original_filename)
         finally:
             wb.close()
+            # Explicitly release the parsed workbook for large files to reclaim RAM
+            # before building the output Excel (which also needs memory).
+            if size_mb > 100:
+                del wb
+                gc.collect()
+
+        _extract_dur = time.perf_counter() - _extract_start
+        if _extract_dur > _SLOW_EXTRACTION_WARN_SECONDS:
+            log.warning(
+                "Slow extraction — took %.1fs | file=%s size_mb=%.1f",
+                _extract_dur, original_filename, size_mb,
+            )
 
         raw_rows = result.get("rows", [])
         spir_no = result.get("spir_no", "")

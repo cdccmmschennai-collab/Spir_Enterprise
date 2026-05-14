@@ -47,6 +47,19 @@ async def lifespan(app: FastAPI):
             rows_dir,
         )
 
+    # Sweep stale temp files left by crashed extractions from previous runs.
+    import tempfile as _tf
+    import time as _time
+    _tmp_dir = _Path(_tf.gettempdir())
+    _stale_cutoff = _time.time() - 3600
+    for _p in _tmp_dir.glob("spir_upload_*"):
+        try:
+            if _p.stat().st_mtime < _stale_cutoff:
+                _p.unlink(missing_ok=True)
+                log.info("Cleaned stale upload temp: %s", _p)
+        except Exception:
+            pass
+
     yield
     # Shutdown: close DB engine if open
     from spir_dynamic.db.database import is_db_enabled, get_engine

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, memo } from "react";
 import { useRouter } from "next/navigation";
 import {
   Users,
@@ -56,7 +56,7 @@ interface ToastStackProps {
   onRemove: (id: number) => void;
 }
 
-function ToastStack({ toasts, onRemove }: ToastStackProps) {
+const ToastStack = memo(function ToastStack({ toasts, onRemove }: ToastStackProps) {
   if (toasts.length === 0) return null;
   return (
     <div className="fixed bottom-5 right-5 z-[100] flex flex-col gap-2 items-end">
@@ -84,7 +84,7 @@ function ToastStack({ toasts, onRemove }: ToastStackProps) {
       ))}
     </div>
   );
-}
+});
 
 // ─── Confirm Modal ─────────────────────────────────────────────────────────────
 
@@ -365,7 +365,7 @@ export default function AdminPage() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  async function loadData() {
+  const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -393,9 +393,9 @@ export default function AdminPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [router]);
 
-  useEffect(() => { loadData(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadData(); }, [loadData]);
 
   async function toggleActive(user: User) {
     setActionLoading(user.id + "-toggle");

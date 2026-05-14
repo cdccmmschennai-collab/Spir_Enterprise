@@ -58,6 +58,18 @@
   will-change: transform;
 }
 
+/* Admin nav tab: hidden by default; inline-script sets html[data-admin="1"] before
+   first paint for admin users, eliminating the tab-insertion flash on refresh. */
+.admin-nav-item { display: none !important; }
+[data-admin="1"] .admin-nav-item { display: flex !important; }
+
+/* Profile avatar: show cached initials via CSS before React loads.
+   Inline script sets --user-initials on :root from localStorage.
+   Once React mounts it sets html[data-ready], which clears ::before so
+   React's own text content takes over — both happen before the browser repaints. */
+.avatar-btn::before { content: var(--user-initials, ''); }
+[data-ready] .avatar-btn::before { content: none; }
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

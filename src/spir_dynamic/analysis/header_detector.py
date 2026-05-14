@@ -461,7 +461,8 @@ def _detect_spir_type_vml(ws) -> str | None:
     try:
         wb = ws.parent
         raw_bytes = getattr(wb, '_spir_raw_bytes', None)
-        if not raw_bytes:
+        raw_path  = getattr(wb, '_spir_raw_path', None)
+        if not raw_bytes and not raw_path:
             return None
 
         # Find the vmlDrawing relationship from the worksheet rels
@@ -473,7 +474,8 @@ def _detect_spir_type_vml(ws) -> str | None:
         if not vml_path:
             return None
 
-        with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
+        zip_source = str(raw_path) if not raw_bytes else io.BytesIO(raw_bytes)
+        with zipfile.ZipFile(zip_source) as zf:
             try:
                 vml_content = zf.read(vml_path).decode('utf-8', errors='replace')
             except KeyError:

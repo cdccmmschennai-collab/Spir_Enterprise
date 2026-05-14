@@ -20,6 +20,10 @@ import { clearSession } from "@/lib/extraction-session";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+// Module-level: persists across SidebarLayout remounts (each page nav re-mounts it)
+let lastProfileFetchAt = 0;
+const PROFILE_STALE_MS = 2 * 60 * 1000; // 2 minutes
+
 // useLayoutEffect on client (fires before first paint), useEffect on server (SSR no-op)
 const useIsomorphicLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
@@ -46,11 +50,7 @@ interface SidebarContentProps {
 
 const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, onLogout, isAdmin }: SidebarContentProps) {
   const router = useRouter();
-
-  const navItems: NavItem[] = [
-    ...baseNavItems,
-    ...(isAdmin ? [{ label: "Admin", href: "/admin", icon: ShieldCheck }] : []),
-  ];
+  const adminIsActive = pathname === "/admin" || pathname.startsWith("/admin/");
 
   function navigate(href: string) {
     router.push(href);
@@ -84,7 +84,7 @@ const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, onLo
         <p className="mb-2 px-2 text-[10px] font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500">
           Navigation
         </p>
-        {navItems.map((item) => {
+        {baseNavItems.map((item) => {
           const Icon = item.icon;
           const isActive =
             pathname === item.href ||
@@ -114,6 +114,32 @@ const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, onLo
             </button>
           );
         })}
+
+        {/* Admin tab: always in DOM so CSS can reveal it before React loads.
+            display controlled by .admin-nav-item + [data-admin="1"] in globals.css.
+            isAdmin gates aria-hidden/tabIndex only — no visual repaint on refresh. */}
+        <button
+          onClick={() => navigate("/admin")}
+          aria-hidden={!isAdmin}
+          tabIndex={isAdmin ? 0 : -1}
+          className={cn(
+            "admin-nav-item flex w-full min-h-[40px] items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150",
+            adminIsActive
+              ? "bg-violet-50 text-violet-700 dark:bg-violet-950/50 dark:text-violet-400"
+              : "text-slate-600 hover:bg-slate-50 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
+          )}
+        >
+          <ShieldCheck
+            className={cn(
+              "h-4 w-4 shrink-0",
+              adminIsActive ? "text-violet-600 dark:text-violet-400" : "text-slate-400 dark:text-slate-500"
+            )}
+          />
+          Admin
+          {adminIsActive && (
+            <span className="ml-auto h-1.5 w-1.5 rounded-full bg-amber-500" />
+          )}
+        </button>
       </nav>
 
       {/* Logout */}
@@ -206,7 +232,7 @@ const TopNavbar = memo(function TopNavbar({
               setShowProfile((p) => !p);
             }}
             title={username}
-            className="flex h-8 w-8 items-center justify-center rounded-full bg-violet-100 text-xs font-bold text-violet-700 cursor-pointer hover:bg-violet-200 dark:bg-violet-900 dark:text-violet-300 dark:hover:bg-violet-800 transition-colors"
+            className="avatar-btn flex h-8 w-8 items-center justify-center rounded-full bg-violet-100 text-xs font-bold text-violet-700 cursor-pointer hover:bg-violet-200 dark:bg-violet-900 dark:text-violet-300 dark:hover:bg-violet-800 transition-colors"
           >
             {userInitials}
           </button>
@@ -233,7 +259,8 @@ interface SidebarProps {
 export function SidebarLayout({ children }: SidebarProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
-  const [userInitials, setUserInitials] = useState("??");
+  const [mounted, setMounted] = useState(false);
+  const [userInitials, setUserInitials] = useState("");
   const [username, setUsername] = useState("");
   const [count, setCount] = useState(0);
   const router = useRouter();
@@ -255,15 +282,33 @@ export function SidebarLayout({ children }: SidebarProps) {
 
     // Restore cached username so the profile icon shows real initials immediately,
     // without waiting for the /api/me network round-trip.
-    const cachedName = localStorage.getItem("profile_username");
+    const cachedName = localStorage.getItem("profile_username") ?? "";
     if (cachedName) {
       setUsername(cachedName);
-      setUserInitials(cachedName.slice(0, 2).toUpperCase() || "??");
+      setUserInitials(cachedName.slice(0, 2).toUpperCase() || "");
     }
+
+    // Sync the data-admin DOM attribute so the CSS rule in globals.css shows the
+    // Admin tab correctly on both refresh (inline script) AND client-side navigation
+    // after login (inline script doesn't re-run, this useLayoutEffect does).
+    if (getRole() === "admin") {
+      document.documentElement.setAttribute("data-admin", "1");
+    } else {
+      document.documentElement.removeAttribute("data-admin");
+    }
+
+    // Mark React as mounted so CSS clears the ::before avatar initials and
+    // admin-nav-item ::before, handing full control to React's text/display.
+    document.documentElement.setAttribute("data-ready", "1");
+
+    // Gate admin tab and avatar behind mounted so both update in one batched
+    // re-render before the browser's next paint — eliminates the server-HTML flash.
+    setMounted(true);
   }, []);
 
   // Fetch current user profile and extraction count — force logout if token invalid/expired
   const refreshProfile = useCallback(async () => {
+    lastProfileFetchAt = Date.now();
     try {
       const meRes = await fetch(`${API_URL}/api/me`, { headers: { ...authHeaders() } });
       if (meRes.status === 401) {
@@ -274,7 +319,7 @@ export function SidebarLayout({ children }: SidebarProps) {
       const data = await meRes.json();
       const name: string = data.username ?? "";
       setUsername(name);
-      setUserInitials(name.slice(0, 2).toUpperCase() || "??");
+      setUserInitials(name.slice(0, 2).toUpperCase() || "");
       setCount(data.total_files_extracted ?? 0);
       if (name) localStorage.setItem("profile_username", name);
     } catch {
@@ -283,9 +328,11 @@ export function SidebarLayout({ children }: SidebarProps) {
   }, []);
 
   useEffect(() => {
-    refreshProfile();
-
-    // Listen for profile-refresh events fired after extraction or when profile is opened
+    // Skip refetch if profile was fetched recently (e.g. navigating between pages remounts this)
+    if (Date.now() - lastProfileFetchAt >= PROFILE_STALE_MS) {
+      refreshProfile();
+    }
+    // profile-refresh events (fired after extraction) always bypass the staleness guard
     window.addEventListener("profile-refresh", refreshProfile);
     return () => window.removeEventListener("profile-refresh", refreshProfile);
   }, [refreshProfile]);
@@ -319,7 +366,7 @@ export function SidebarLayout({ children }: SidebarProps) {
     <div className="flex h-screen overflow-hidden bg-slate-50 dark:bg-slate-950">
       {/* Desktop sidebar */}
       <aside className="hidden w-60 shrink-0 border-r border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 lg:flex lg:flex-col">
-        <SidebarContent pathname={pathname} onLogout={handleLogout} isAdmin={isAdmin} />
+        <SidebarContent pathname={pathname} onLogout={handleLogout} isAdmin={mounted && isAdmin} />
       </aside>
 
       {/* Mobile overlay */}
@@ -347,7 +394,7 @@ export function SidebarLayout({ children }: SidebarProps) {
           pathname={pathname}
           onNavigate={handleCloseMobile}
           onLogout={handleLogout}
-          isAdmin={isAdmin}
+          isAdmin={mounted && isAdmin}
         />
       </aside>
 

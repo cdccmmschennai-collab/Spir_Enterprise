@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { History, Loader2, Download, CheckSquare, Square, FileX, Trash2 } from "lucide-react";
 import { SidebarLayout } from "@/components/sidebar";
@@ -29,32 +29,37 @@ export default function HistoryPage() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const lastFetchRef = useRef<number>(0);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/api/history`, {
+        headers: { ...authHeaders() },
+        cache: "no-store",
+      });
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+      if (!res.ok) return;
+      const data: HistoryItem[] = await res.json();
+      setItems(data);
+      setSelected(new Set());
+      lastFetchRef.current = Date.now();
+    } finally {
+      setLoading(false);
+    }
+  }, [router]);
 
   useEffect(() => {
-    async function load() {
-      try {
-        const res = await fetch(`${API_URL}/api/history`, {
-          headers: { ...authHeaders() },
-          cache: "no-store",
-        });
-        if (res.status === 401) {
-          router.push("/login");
-          return;
-        }
-        if (!res.ok) return;
-        const data: HistoryItem[] = await res.json();
-        setItems(data);
-        setSelected(new Set()); // reset selection on reload
-      } finally {
-        setLoading(false);
-      }
-    }
     load();
-
-    const onFocus = () => load();
+    const onFocus = () => {
+      if (Date.now() - lastFetchRef.current >= 30_000) load();
+    };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [router]);
+  }, [load]);
 
   function toggleRow(id: string) {
     setSelected((prev) => {

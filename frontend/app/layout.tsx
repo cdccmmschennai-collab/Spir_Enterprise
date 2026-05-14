@@ -21,6 +21,15 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Runs before first paint — marks html[data-admin] so CSS can reveal the
+            Admin nav tab without waiting for React. Eliminates the insertion flash. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{var r=localStorage.getItem('role'),n=localStorage.getItem('profile_username')||'',i=n.slice(0,2).toUpperCase();if(r==='admin')document.documentElement.setAttribute('data-admin','1');if(i)document.documentElement.style.setProperty('--user-initials','"'+i+'"')}catch(e){}`,
+          }}
+        />
+      </head>
       <body className={inter.className}>{children}</body>
     </html>
   );
