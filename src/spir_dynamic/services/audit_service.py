@@ -122,7 +122,11 @@ async def log_extraction(
         return
 
     if not user_id:
-        log.warning("log_extraction: user_id is None — history skipped (re-login required)")
+        log.error(
+            "log_extraction: user_id is missing — extraction_history NOT written. "
+            "file=%s This indicates user_id was not passed at enqueue time.",
+            result.get("filename", "unknown"),
+        )
         return
 
     output_filename = result.get("filename")
@@ -208,6 +212,161 @@ async def log_extraction(
     except Exception as exc:
         # Keep extraction pipeline unaffected.
         log.error("Extraction history write failed: %s", exc, exc_info=True)
+
+
+def log_extraction_sync(
+    user_id: str,
+    session_id: Optional[str],
+    result: dict,
+    ip_address: Optional[str] = None,
+    original_filename: Optional[str] = None,
+    json_path: Optional[str] = None,
+) -> None:
+    """
+    Synchronous wrapper around log_extraction — safe to call from Celery tasks.
+
+    Creates a fresh, isolated event loop for each call so it cannot conflict
+    with any existing event loop in the calling thread (gevent, eventlet, etc.).
+    The loop is always closed in the finally block to prevent file-descriptor leaks.
+    """
+    import asyncio
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(
+            log_extraction(
+                user_id=user_id,
+                session_id=session_id,
+                result=result,
+                ip_address=ip_address,
+                original_filename=original_filename,
+                json_path=json_path,
+            )
+        )
+    finally:
+        loop.close()
+
+
+def log_extraction_worker(
+    user_id: str,
+    result: dict,
+    original_filename: str,
+    json_path: Optional[str] = None,
+) -> None:
+    """
+    Synchronous history writer for Celery workers.
+
+    Uses a psycopg2-backed SQLAlchemy sync engine with NullPool — no asyncio,
+    no event loops, no shared connection state between worker processes.
+    Each call: connect → insert → commit → close.
+
+    The async log_extraction() used by FastAPI routes is NOT touched.
+    """
+    from spir_dynamic.app.config import get_settings
+    from spir_dynamic.db.models import ExtractionHistory, UserActivityLog
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import NullPool
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from uuid import uuid4 as _uuid4
+
+    cfg = get_settings()
+    if not cfg.database_url:
+        log.debug("log_extraction_worker: DATABASE_URL not set — skipping history write")
+        return
+
+    if not user_id:
+        log.error(
+            "log_extraction_worker: user_id missing — extraction_history NOT written. file=%s",
+            result.get("filename", "unknown"),
+        )
+        return
+
+    if not original_filename:
+        log.error("log_extraction_worker: original_filename missing — history NOT written")
+        return
+
+    output_filename = result.get("filename") or ""
+    if not output_filename:
+        log.error("log_extraction_worker: result['filename'] missing — history NOT written")
+        return
+
+    # Convert asyncpg URL → psycopg2 URL for synchronous access.
+    # database.py stores the URL as postgresql+asyncpg://... — strip that prefix.
+    sync_url = cfg.database_url
+    sync_url = sync_url.replace("+asyncpg", "+psycopg2")
+    if sync_url.startswith("postgres://"):
+        sync_url = "postgresql+psycopg2://" + sync_url[len("postgres://"):]
+
+    # NullPool: no connection pooling — open, write, close.
+    # Safe for multiple worker processes that each call this independently.
+    engine = create_engine(sync_url, poolclass=NullPool, pool_pre_ping=True)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+
+    try:
+        total_rows = int(result.get("total_rows", 0) or 0)
+        total_tags = int(result.get("total_tags", 0) or 0)
+        spare_items = int(result.get("spare_items", 0) or 0)
+        now = datetime.now(ZoneInfo("Asia/Kolkata"))
+
+        history = ExtractionHistory(
+            id=str(_uuid4()),
+            user_id=user_id,
+            session_id=None,
+            filename=output_filename,
+            output_filename=output_filename,
+            original_filename=original_filename,
+            spir_no=result.get("spir_no") or None,
+            format=result.get("format"),
+            total_rows=total_rows,
+            total_tags=total_tags,
+            spare_items=spare_items,
+            annexure_count=int(result.get("annexure_count", 0) or 0),
+            dup_count=int(result.get("dup1_count", 0) or 0),
+            sap_count=int(result.get("sap_count", 0) or 0),
+            equipment=result.get("equipment"),
+            manufacturer=result.get("manufacturer"),
+            supplier=result.get("supplier"),
+            file_id=result.get("file_id"),
+            json_path=json_path,
+            tag_count=total_tags,
+            spare_count=spare_items,
+            created_at=now,
+        )
+        session.add(history)
+
+        session.add(UserActivityLog(
+            user_id=user_id,
+            session_id=None,
+            action="extract",
+            details={
+                "filename": output_filename,
+                "original_filename": original_filename,
+                "spir_no": result.get("spir_no"),
+                "tag_count": total_tags,
+                "spare_count": spare_items,
+            },
+            ip_address=None,
+        ))
+
+        session.commit()
+        log.info(
+            "Extraction history written (worker) | user=%s file=%s rows=%d tags=%d",
+            user_id, original_filename, total_rows, total_tags,
+        )
+
+    except Exception as exc:
+        session.rollback()
+        log.error(
+            "Extraction history write failed (worker) | user=%s file=%s: %s",
+            user_id, original_filename, exc, exc_info=True,
+        )
+        raise
+
+    finally:
+        session.close()
+        engine.dispose()
 
 
 async def log_download(

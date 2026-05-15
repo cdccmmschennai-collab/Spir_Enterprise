@@ -35,6 +35,7 @@ def process_file_task(
     file_idx: int,
     input_key: str,
     filename: str,
+    user_id: str = "",
 ) -> dict:
     """
     Extract a single SPIR file as part of a batch job.
@@ -81,8 +82,8 @@ def process_file_task(
             file_id=result.get("file_id", ""),
         ))
 
-        # Store extracted row data in Redis so the combine endpoint can reuse it
-        # without re-running the extraction pipeline.
+        # Store extracted row data + metadata in Redis so combine and async polling
+        # can reuse it without re-running the extraction pipeline.
         # Key: rows:{file_id}  — namespaced to avoid collision with xlsx storage.
         try:
             import json as _json
@@ -91,6 +92,20 @@ def process_file_task(
                 "cols": result.get("preview_cols", []),
                 "rows": result.get("preview_rows", []),
                 "spir_no": result.get("spir_no", ""),
+                "file_id": result.get("file_id", ""),
+                "filename": result.get("filename", ""),
+                "format": result.get("format", ""),
+                "equipment": result.get("equipment", ""),
+                "manufacturer": result.get("manufacturer", ""),
+                "supplier": result.get("supplier", ""),
+                "spir_type": result.get("spir_type"),
+                "eqpt_qty": result.get("eqpt_qty", 0),
+                "spare_items": result.get("spare_items", 0),
+                "total_tags": result.get("total_tags", 0),
+                "annexure_count": result.get("annexure_count", 0),
+                "total_rows": result.get("total_rows", 0),
+                "dup1_count": result.get("dup1_count", 0),
+                "sap_count": result.get("sap_count", 0),
             }).encode("utf-8")
             storage.put(
                 f"rows:{result['file_id']}",
@@ -101,6 +116,49 @@ def process_file_task(
         except Exception as _row_exc:
             # Non-fatal: row storage failing does not break extraction or download.
             log.warning("Row data storage failed (combine unavailable for this file): %s", _row_exc)
+
+        # ── Persist rows to disk so history-based combine can read them ──────────
+        # The sync route writes {rows_storage_path}/{file_id}.json; we do the same
+        # here so both code paths produce the same on-disk artefact and the combine
+        # endpoint works for async-extracted files.
+        json_path: str | None = None
+        try:
+            import json as _json_disk
+            from pathlib import Path as _Path
+            from spir_dynamic.app.config import get_settings as _gs_disk
+            _cfg = _gs_disk()
+            _rows_dir = _Path(_cfg.rows_storage_path)
+            _rows_dir.mkdir(parents=True, exist_ok=True)
+            _file_id = result.get("file_id", "")
+            if _file_id:
+                _disk_payload = _json_disk.dumps({
+                    "file_id": _file_id,
+                    "filename": result.get("filename", ""),
+                    "spir_no": result.get("spir_no", ""),
+                    "cols": result.get("preview_cols", []),
+                    "rows": result.get("preview_rows", []),
+                }, ensure_ascii=False)
+                _disk_path = _rows_dir / f"{_file_id}.json"
+                _disk_path.write_text(_disk_payload, encoding="utf-8")
+                json_path = str(_disk_path)
+                log.debug("Rows written to disk: %s (%d rows)", _disk_path, result.get("total_rows", 0))
+        except Exception as _disk_exc:
+            log.warning("Disk row storage failed (non-fatal, combine will be unavailable): %s", _disk_exc)
+
+        # ── Write to extraction_history so frontend history is populated ─────────
+        # Uses a dedicated synchronous DB writer (psycopg2 + NullPool) — zero
+        # asyncio, zero event loops, safe across all Celery concurrency models.
+        # user_id is passed at enqueue time so no store.get() lookup is needed.
+        try:
+            from spir_dynamic.services.audit_service import log_extraction_worker as _log_worker
+            _log_worker(
+                user_id=user_id,
+                result=result,
+                original_filename=filename,
+                json_path=json_path,
+            )
+        except Exception as _hist_exc:
+            log.warning("History logging failed in Celery task (non-fatal): %s", _hist_exc)
 
         log.info("process_file_task done | job=%s idx=%d file=%s rows=%d",
                  job_id, file_idx, filename, result.get("total_rows", 0))

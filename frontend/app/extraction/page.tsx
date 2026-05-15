@@ -28,6 +28,7 @@ import { saveSession, loadSession, clearSession } from "@/lib/extraction-session
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const ACCEPTED = ".xlsx,.xlsm,.xls";
 const ROWS_PER_PAGE = 10;
+const USE_ASYNC_EXTRACT = process.env.NEXT_PUBLIC_USE_ASYNC_EXTRACT === "true";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -351,6 +352,77 @@ export default function ExtractionPage() {
   const [hydrated, setHydrated] = useState(false);
   const [recoveredToHistory, setRecoveredToHistory] = useState(false);
 
+  // Async polling refs — stable across renders, cleaned up on unmount
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const activeJobIdRef = useRef<string | null>(null);
+
+  const stopPolling = useCallback(() => {
+    if (pollIntervalRef.current !== null) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+    activeJobIdRef.current = null;
+  }, []);
+
+  // Clean up polling interval on unmount
+  useEffect(() => () => stopPolling(), [stopPolling]);
+
+  const startPolling = useCallback((job_id: string) => {
+    activeJobIdRef.current = job_id;
+    let attempts = 0;
+
+    const poll = async () => {
+      if (activeJobIdRef.current !== job_id) return; // stale poll after reset
+      try {
+        const res = await fetch(`${API_URL}/api/batch/${job_id}/result`, {
+          headers: authHeaders(),
+        });
+        if (res.status === 401) {
+          stopPolling();
+          clearSession();
+          setError("Session expired. Please log in again.");
+          setLoading(false);
+          return;
+        }
+        if (!res.ok) {
+          stopPolling();
+          clearSession();
+          setError(`Polling failed (${res.status}). Please try again.`);
+          setLoading(false);
+          return;
+        }
+        const data = await res.json();
+        if (data.status === "done") {
+          stopPolling();
+          const extracted = data as ExtractResult;
+          setResult(extracted);
+          saveSession({ status: "complete", filename: extracted.filename, savedAt: Date.now(), result: extracted });
+          window.dispatchEvent(new CustomEvent("profile-refresh"));
+          setLoading(false);
+        } else if (data.status === "error") {
+          stopPolling();
+          clearSession();
+          setError(data.error ?? "Extraction failed. Please try again.");
+          setLoading(false);
+        } else {
+          // still processing
+          attempts++;
+          if (attempts > 120) { // ~4 min at 2s intervals
+            stopPolling();
+            clearSession();
+            setError("Extraction timed out. The file may be too large or complex.");
+            setLoading(false);
+          }
+        }
+      } catch {
+        // transient network error during poll — keep retrying silently
+      }
+    };
+
+    poll(); // immediate first check
+    pollIntervalRef.current = setInterval(poll, 2000);
+  }, [stopPolling]);
+
   useEffect(() => {
     const session = loadSession();
     if (session?.status === "complete" && session.result) {
@@ -361,28 +433,34 @@ export default function ExtractionPage() {
     if (session?.status === "loading") {
       setSavedFilename(session.filename);
       setLoading(true);
-      // Single recovery fetch — check if backend completed while we were away
-      const { filename, savedAt } = session;
-      fetch(`${API_URL}/api/history`, { headers: authHeaders() })
-        .then((res) => (res.ok ? res.json() : null))
-        .then((items: Array<{ filename: string; created_at: string }> | null) => {
-          if (!items) return;
-          const completed = items.some(
-            (item) =>
-              item.filename === filename &&
-              new Date(item.created_at).getTime() >= savedAt - 10_000
-          );
-          if (completed) {
-            clearSession();
-            setHydrated(true);
-            setLoading(false);
-            setSavedFilename("");
-            setRecoveredToHistory(true);
-          }
-        })
-        .catch(() => {
-          // Network error — keep spinner; "New Extraction" button is the escape hatch
-        });
+
+      if (USE_ASYNC_EXTRACT && session.job_id) {
+        // Async recovery: resume polling the in-flight job
+        startPolling(session.job_id);
+      } else {
+        // Sync recovery: single check against history
+        const { filename, savedAt } = session;
+        fetch(`${API_URL}/api/history`, { headers: authHeaders() })
+          .then((res) => (res.ok ? res.json() : null))
+          .then((items: Array<{ filename: string; created_at: string }> | null) => {
+            if (!items) return;
+            const completed = items.some(
+              (item) =>
+                item.filename === filename &&
+                new Date(item.created_at).getTime() >= savedAt - 10_000
+            );
+            if (completed) {
+              clearSession();
+              setHydrated(true);
+              setLoading(false);
+              setSavedFilename("");
+              setRecoveredToHistory(true);
+            }
+          })
+          .catch(() => {
+            // Network error — keep spinner; "New Extraction" button is the escape hatch
+          });
+      }
     }
     setHydrated(true);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -392,42 +470,74 @@ export default function ExtractionPage() {
     setLoading(true);
     setError(null);
     setResult(null);
-    saveSession({ status: "loading", filename: file.name, savedAt: Date.now() });
+    stopPolling();
 
-    const form = new FormData();
-    form.append("file", file);
-
-    try {
-      const res = await fetch(`${API_URL}/api/extract`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: form,
-      });
-
-      if (res.status === 401) {
+    if (!USE_ASYNC_EXTRACT) {
+      // ── Sync path (existing behaviour, unchanged) ──────────────────────────
+      saveSession({ status: "loading", filename: file.name, savedAt: Date.now() });
+      const form = new FormData();
+      form.append("file", file);
+      try {
+        const res = await fetch(`${API_URL}/api/extract`, {
+          method: "POST",
+          headers: authHeaders(),
+          body: form,
+        });
+        if (res.status === 401) {
+          clearSession();
+          setError("Session expired. Please log in again.");
+          return;
+        }
+        if (!res.ok) {
+          clearSession();
+          const data = await res.json().catch(() => ({}));
+          setError(data.detail ?? `Extraction failed (${res.status})`);
+          return;
+        }
+        const data: ExtractResult = await res.json();
+        setResult(data);
+        saveSession({ status: "complete", filename: data.filename, savedAt: Date.now(), result: data });
+        window.dispatchEvent(new CustomEvent("profile-refresh"));
+      } catch {
         clearSession();
-        setError("Session expired. Please log in again.");
-        return;
+        setError("Could not reach the server. Is the backend running?");
+      } finally {
+        setLoading(false);
       }
-
-      if (!res.ok) {
+    } else {
+      // ── Async path: upload → job_id → poll ────────────────────────────────
+      const form = new FormData();
+      form.append("files", file); // batch endpoint accepts "files" (plural)
+      try {
+        const res = await fetch(`${API_URL}/api/batch/extract`, {
+          method: "POST",
+          headers: authHeaders(),
+          body: form,
+        });
+        if (res.status === 401) {
+          clearSession();
+          setError("Session expired. Please log in again.");
+          setLoading(false);
+          return;
+        }
+        if (!res.ok) {
+          clearSession();
+          const data = await res.json().catch(() => ({}));
+          setError(data.detail ?? `Upload failed (${res.status})`);
+          setLoading(false);
+          return;
+        }
+        const { job_id } = await res.json();
+        saveSession({ status: "loading", filename: file.name, savedAt: Date.now(), job_id });
+        startPolling(job_id);
+        // loading stays true — cleared by poll when done
+      } catch {
         clearSession();
-        const data = await res.json().catch(() => ({}));
-        setError(data.detail ?? `Extraction failed (${res.status})`);
-        return;
+        setError("Could not reach the server. Is the backend running?");
+        setLoading(false);
       }
-
-      const data: ExtractResult = await res.json();
-      setResult(data);
-      saveSession({ status: "complete", filename: data.filename, savedAt: Date.now(), result: data });
-      window.dispatchEvent(new CustomEvent("profile-refresh"));
-    } catch {
-      clearSession();
-      setError("Could not reach the server. Is the backend running?");
-    } finally {
-      setLoading(false);
     }
-  }, [file]);
+  }, [file, startPolling, stopPolling]);
 
   const handleDownload = useCallback(async () => {
     if (!result) return;
@@ -457,13 +567,14 @@ export default function ExtractionPage() {
   }, [result]);
 
   const handleReset = useCallback(() => {
+    stopPolling();
     clearSession();
     setFile(null);
     setResult(null);
     setError(null);
     setSavedFilename("");
     setRecoveredToHistory(false);
-  }, []);
+  }, [stopPolling]);
 
   if (!hydrated) {
     return <SidebarLayout><></></SidebarLayout>;

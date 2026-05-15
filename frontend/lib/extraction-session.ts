@@ -5,6 +5,7 @@ export interface ExtractionSession {
   status: "loading" | "complete";
   filename: string;
   savedAt: number;
+  job_id?: string;
   result?: unknown;
 }
 

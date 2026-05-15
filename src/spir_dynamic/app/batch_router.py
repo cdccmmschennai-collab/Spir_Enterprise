@@ -55,7 +55,7 @@ async def batch_extract(
     ]
 
     if cfg.celery_enabled:
-        _dispatch_celery(job_id, file_data, cfg.batch_ttl_seconds)
+        _dispatch_celery(job_id, file_data, cfg.batch_ttl_seconds, user_id)
     else:
         asyncio.create_task(_process_batch(job_id, file_data))
 
@@ -113,6 +113,91 @@ async def batch_download(
 
 class CombineRequest(BaseModel):
     file_ids: list[str]
+
+
+# ── Single-file async result (frontend polling UX) ──────────────────────────────
+
+@batch_router.get("/{job_id}/result")
+async def batch_single_result(
+    job_id: str,
+    td: TokenData = Depends(get_current_user),
+) -> dict[str, Any]:
+    """
+    Return full extraction result for a single-file async job.
+
+    The frontend polls this after POSTing to /api/batch/extract with one file.
+    Returns { status: "processing" } while the worker runs, then a payload that
+    mirrors the synchronous /api/extract response so existing preview and download
+    UI works without modification. Download uses GET /api/download/{file_id}.
+    """
+    job = get_job_store().get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found or expired")
+    _assert_job_access(job.user_id, td)
+
+    if not job.results:
+        return {"status": "processing", "completed": 0, "total": job.total}
+
+    result = job.results[0]
+
+    if result.status in ("pending", "running"):
+        return {"status": "processing", "completed": job.completed, "total": job.total}
+
+    if result.status == "error":
+        return {"status": "error", "error": result.error or "Extraction failed"}
+
+    # status == "ok" — fetch full payload stored by the Celery worker
+    storage = get_storage()
+    entry = storage.get(f"rows:{result.file_id}")
+    if entry is None:
+        # Row data expired or not stored (e.g. celery_enabled=False fallback).
+        return {
+            "status": "done",
+            "file_id": result.file_id,
+            "filename": result.filename,
+            "format": "",
+            "spir_no": result.spir_no,
+            "equipment": "",
+            "manufacturer": "",
+            "supplier": "",
+            "spir_type": None,
+            "eqpt_qty": 0,
+            "spare_items": result.total_rows,
+            "total_tags": result.total_tags,
+            "annexure_count": 0,
+            "total_rows": result.total_rows,
+            "dup1_count": 0,
+            "sap_count": 0,
+            "preview_cols": [],
+            "preview_rows": [],
+        }
+
+    raw_bytes, _ = entry
+    try:
+        payload = json.loads(raw_bytes.decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Result data corrupted: {exc}")
+
+    return {
+        "status": "done",
+        "file_id": result.file_id,
+        "filename": payload.get("filename", result.filename),
+        "format": payload.get("format", ""),
+        "spir_no": payload.get("spir_no", result.spir_no),
+        "equipment": payload.get("equipment", ""),
+        "manufacturer": payload.get("manufacturer", ""),
+        "supplier": payload.get("supplier", ""),
+        "spir_type": payload.get("spir_type"),
+        "eqpt_qty": payload.get("eqpt_qty", 0),
+        "spare_items": payload.get("spare_items", 0),
+        "total_tags": result.total_tags,
+        "annexure_count": payload.get("annexure_count", 0),
+        "total_rows": result.total_rows,
+        "dup1_count": payload.get("dup1_count", 0),
+        "sap_count": payload.get("sap_count", 0),
+        "preview_cols": payload.get("cols", []),
+        "preview_rows": payload.get("rows", []),
+    }
 
 
 # ── Per-file preview ────────────────────────────────────────────────────────────
@@ -269,12 +354,17 @@ def _dispatch_celery(
     job_id: str,
     file_data: list[tuple[bytes, str]],
     ttl_seconds: int,
+    user_id: str = "",
 ) -> None:
     """
     Store each file's bytes in Redis, then enqueue one Celery task per file.
 
     The API returns immediately after this call. Workers pick up tasks from the
     Redis queue independently, in separate processes.
+
+    user_id is passed explicitly so the worker can write extraction_history
+    without needing to look it up from the job store (which can race or be
+    unavailable by the time the task runs).
 
     Input bytes TTL = ttl_seconds + 600 so the file survives in Redis even if
     all workers are busy and a task is delayed by queue backlog or retries
@@ -288,7 +378,7 @@ def _dispatch_celery(
     for idx, (file_bytes, filename) in enumerate(file_data):
         input_key = f"input:{job_id}:{idx}"
         storage.put(input_key, file_bytes, filename, ttl=input_ttl)
-        process_file_task.delay(job_id, idx, input_key, filename)
+        process_file_task.delay(job_id, idx, input_key, filename, user_id)
         log.debug("Celery task enqueued | job=%s idx=%d file=%s", job_id, idx, filename)
 
 

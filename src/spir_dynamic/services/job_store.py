@@ -154,6 +154,17 @@ def get_job_store():
                     else:
                         _job_store = JobStore(ttl_seconds=settings.batch_ttl_seconds)
                         log.debug("Job store: in-memory")
-                except Exception:
+                except Exception as _exc:
+                    try:
+                        from spir_dynamic.app.config import get_settings as _gs
+                        if _gs().celery_enabled:
+                            log.critical(
+                                "Redis job store unavailable while celery_enabled=True — "
+                                "falling back to IN-MEMORY. Worker results will NOT be "
+                                "visible to the API process. Check REDIS_URL and Redis "
+                                "connectivity. Error: %s", _exc
+                            )
+                    except Exception:
+                        pass
                     _job_store = JobStore(ttl_seconds=7200)
     return _job_store
