@@ -126,9 +126,8 @@ def process_file_task(
             import json as _json_disk
             from pathlib import Path as _Path
             from spir_dynamic.app.config import get_settings as _gs_disk
+            from spir_dynamic.utils.safe_storage import safe_path as _safe_path
             _cfg = _gs_disk()
-            _rows_dir = _Path(_cfg.rows_storage_path)
-            _rows_dir.mkdir(parents=True, exist_ok=True)
             _file_id = result.get("file_id", "")
             if _file_id:
                 _disk_payload = _json_disk.dumps({
@@ -138,7 +137,10 @@ def process_file_task(
                     "cols": result.get("preview_cols", []),
                     "rows": result.get("preview_rows", []),
                 }, ensure_ascii=False)
-                _disk_path = _rows_dir / f"{_file_id}.json"
+                _storage_root = _Path(_cfg.rows_storage_path)
+                _uid = user_id or "_anon"
+                _disk_path = _safe_path(_storage_root, _uid, job_id, f"{_file_id}.json")
+                _disk_path.parent.mkdir(parents=True, exist_ok=True)
                 _disk_path.write_text(_disk_payload, encoding="utf-8")
                 json_path = str(_disk_path)
                 log.debug("Rows written to disk: %s (%d rows)", _disk_path, result.get("total_rows", 0))

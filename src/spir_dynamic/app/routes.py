@@ -29,6 +29,7 @@ from spir_dynamic.db.database import get_db, is_db_enabled
 from spir_dynamic.db.models import ExtractionHistory
 from spir_dynamic.extraction.file_validator import ValidationError
 from spir_dynamic.services.currency_service import conversion_summary
+from spir_dynamic.utils.safe_storage import safe_path
 
 log = logging.getLogger(__name__)
 
@@ -270,7 +271,7 @@ async def extract(
             )
 
         # ── Phase C: Persist rows + audit log (unchanged) ────────────────────
-        json_path = _save_rows_to_disk(result, cfg)
+        json_path = _save_rows_to_disk(result, cfg, td.user_id)
 
         from spir_dynamic.services.audit_service import log_extraction
         ip = _get_ip(request)
@@ -419,7 +420,7 @@ async def me(
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
 
-def _save_rows_to_disk(result: dict, cfg) -> Optional[str]:
+def _save_rows_to_disk(result: dict, cfg, user_id: str = "") -> Optional[str]:
     """
     Write extracted preview_rows to a JSON file on disk.
 
@@ -428,11 +429,13 @@ def _save_rows_to_disk(result: dict, cfg) -> Optional[str]:
     The file is needed only for the /combine endpoint.
     """
     try:
-        rows_dir = Path(cfg.rows_storage_path)
-        rows_dir.mkdir(parents=True, exist_ok=True)
+        storage_root = Path(cfg.rows_storage_path)
         file_id = result.get("file_id", "")
         if not file_id:
             return None
+        uid = user_id or "_anon"
+        path = safe_path(storage_root, uid, f"{file_id}.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps({
             "file_id": file_id,
             "filename": result.get("filename", ""),
@@ -440,7 +443,6 @@ def _save_rows_to_disk(result: dict, cfg) -> Optional[str]:
             "cols": result.get("preview_cols", []),
             "rows": result.get("preview_rows", []),
         }, ensure_ascii=False)
-        path = rows_dir / f"{file_id}.json"
         path.write_text(payload, encoding="utf-8")
         log.debug("Rows persisted to disk: %s (%d rows)", path, len(result.get("preview_rows", [])))
         return str(path)
@@ -556,25 +558,17 @@ async def delete_history(
     records = db_result.scalars().all()
 
     cfg = get_settings()
-    storage_root = Path(cfg.rows_storage_path).resolve()
+    storage_root = Path(cfg.rows_storage_path)
+
+    from spir_dynamic.services.deletion_service import delete_storage_for_records
+    file_counts = delete_storage_for_records(records, storage_root)
+    log.info(
+        "Storage deletion complete | deleted=%d missing=%d blocked=%d errors=%d",
+        file_counts["deleted"], file_counts["missing"],
+        file_counts["blocked"], file_counts["errors"],
+    )
 
     for rec in records:
-        if rec.json_path:
-            p = Path(rec.json_path).resolve()
-            try:
-                p.relative_to(storage_root)
-            except ValueError:
-                log.warning("Refusing to delete file outside storage root: %s", p)
-            else:
-                try:
-                    if p.exists():
-                        p.unlink()
-                        log.info("Deleted JSON file: %s", p)
-                    else:
-                        log.warning("JSON file missing during delete: %s", p)
-                except Exception as exc:
-                    log.warning("Failed to delete JSON file %s: %s", p, exc)
-
         if rec.file_id:
             try:
                 from spir_dynamic.services.redis_store import RedisStorage
@@ -584,9 +578,9 @@ async def delete_history(
                 log.warning("Redis cleanup failed for file_id %s: %s", rec.file_id, exc)
 
         await db.delete(rec)
-        log.info("Deleted history record: %s", rec.id)
 
     await db.commit()
+    log.info("History records deleted | count=%d user_id=%s", len(records), td.user_id)
     return {"deleted": len(records)}
 
 
@@ -637,13 +631,20 @@ async def combine(
             detail=f"History records not found or not accessible: {missing}",
         )
 
+    cfg = get_settings()
+    storage_root = Path(cfg.rows_storage_path).resolve()
     combined_rows: list[list] = []
     no_json: list[str] = []
     for rec in records:
         if not rec.json_path:
             no_json.append(rec.filename or rec.id)
             continue
-        p = Path(rec.json_path)
+        p = Path(rec.json_path).resolve()
+        try:
+            p.relative_to(storage_root)
+        except ValueError:
+            log.warning("combine: refusing path outside storage root uid=%s path=%s", td.user_id, p)
+            raise HTTPException(status_code=403, detail=f"Access denied for '{rec.filename}'")
         if not p.exists():
             no_json.append(rec.filename or rec.id)
             continue
