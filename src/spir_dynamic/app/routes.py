@@ -405,7 +405,9 @@ async def me(
                 "email": user.email,
                 "role": user.role,
                 "created_at": user.created_at,
+                "last_login_at": user.last_login_at,
                 "total_files_extracted": total_files,
+                "avatar_url": user.avatar_url,
             }
     return {
         "id": None,
@@ -413,8 +415,96 @@ async def me(
         "email": None,
         "role": td.role,
         "created_at": None,
+        "last_login_at": None,
         "total_files_extracted": 0,
+        "avatar_url": None,
     }
+
+
+_AVATAR_DIR = Path("storage/avatars")
+_ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+_MIME_TO_EXT = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}
+
+
+@router.post("/avatar")
+async def upload_avatar(
+    file: UploadFile = File(...),
+    td: TokenData = Depends(get_current_user),
+    db=Depends(get_db),
+) -> dict:
+    """Upload a profile avatar image (max 5 MB)."""
+    content_type = (file.content_type or "").split(";")[0].strip()
+    if content_type not in _ALLOWED_MIME:
+        raise HTTPException(status_code=422, detail="Only JPEG, PNG, WebP or GIF images are allowed")
+
+    content = await file.read(5 * 1024 * 1024 + 1)
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Avatar must be under 5 MB")
+
+    if not td.user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    ext = _MIME_TO_EXT[content_type]
+    _AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Remove old avatar files for this user before writing the new one
+    for old in _AVATAR_DIR.glob(f"{td.user_id}.*"):
+        old.unlink(missing_ok=True)
+
+    avatar_path = _AVATAR_DIR / f"{td.user_id}.{ext}"
+    avatar_path.write_bytes(content)
+
+    import time as _time
+    versioned_url = f"/api/avatar/{td.user_id}?v={int(_time.time())}"
+
+    if is_db_enabled() and db is not None:
+        from spir_dynamic.db.models import User
+        user = await db.get(User, td.user_id)
+        if user:
+            user.avatar_url = versioned_url
+            await db.commit()
+
+    log.info("Avatar uploaded | user_id=%s size=%d", td.user_id, len(content))
+    return {"avatar_url": versioned_url}
+
+
+@router.delete("/avatar")
+async def delete_avatar(
+    td: TokenData = Depends(get_current_user),
+    db=Depends(get_db),
+) -> dict:
+    """Remove a user's profile avatar."""
+    if not td.user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    for ext in ("jpg", "png", "webp", "gif"):
+        (_AVATAR_DIR / f"{td.user_id}.{ext}").unlink(missing_ok=True)
+
+    if is_db_enabled() and db is not None:
+        from spir_dynamic.db.models import User
+        user = await db.get(User, td.user_id)
+        if user:
+            user.avatar_url = None
+            await db.commit()
+
+    log.info("Avatar removed | user_id=%s", td.user_id)
+    return {"avatar_url": None}
+
+
+@router.get("/avatar/{user_id}")
+async def get_avatar(user_id: str):
+    """Serve a user's avatar image (public — no auth required)."""
+    import mimetypes
+    for ext in ("jpg", "png", "webp", "gif"):
+        path = _AVATAR_DIR / f"{user_id}.{ext}"
+        if path.exists():
+            mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
+            return StreamingResponse(
+                open(path, "rb"),  # noqa: WPS515
+                media_type=mime,
+                headers={"Cache-Control": "public, max-age=86400"},
+            )
+    raise HTTPException(status_code=404, detail="Avatar not found")
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────

@@ -104,6 +104,8 @@ def build_xlsx(rows: list[list], spir_no: str = "") -> bytes:
 
         # Sanitize sentinel "." → None
         r = [None if v == "." else v for v in r]
+        # Uppercase all string values in the output
+        r = [v.upper() if isinstance(v, str) else v for v in r]
         ws.append(r)
 
     # ── Auto-filter ───────────────────────────────────────────────────────────

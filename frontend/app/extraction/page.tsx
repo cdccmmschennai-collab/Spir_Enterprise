@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, memo } from "react";
+import { useRouter } from "next/navigation";
 import {
   CloudUpload,
   FileSpreadsheet,
@@ -13,7 +14,6 @@ import {
   Tag,
   Layers,
   AlertTriangle,
-  History,
   BookOpen,
   ChevronLeft,
   ChevronRight,
@@ -51,6 +51,30 @@ interface ExtractResult {
   preview_rows: (string | number | null)[][];
   file_id: string;
   filename: string;
+}
+
+function normalizeResult(data: Partial<ExtractResult>): ExtractResult {
+  return {
+    status: "",
+    format: "",
+    spir_no: "",
+    equipment: "",
+    manufacturer: "",
+    supplier: "",
+    spir_type: null,
+    eqpt_qty: 0,
+    spare_items: 0,
+    total_tags: 0,
+    annexure_count: 0,
+    total_rows: 0,
+    dup1_count: 0,
+    sap_count: 0,
+    preview_cols: [],
+    preview_rows: [],
+    file_id: "",
+    filename: "",
+    ...data,
+  };
 }
 
 function formatBytes(bytes: number): string {
@@ -147,7 +171,7 @@ function UploadZone({ file, onFile, disabled }: UploadZoneProps) {
               Drag and drop your SPIR Excel file here, or click to browse
             </p>
             <p className="mt-1 text-xs text-slate-300 dark:text-slate-600">
-              Supports .xlsx, .xlsm, .xls · Max 2 GB
+              Supports .xlsx, .xlsm, .xls
             </p>
           </div>
           <button
@@ -343,6 +367,7 @@ const PreviewTable = memo(function PreviewTable({ cols, rows, totalRows }: Previ
 // ─── Page ──────────────────────────────────────────────────────────────────────
 
 export default function ExtractionPage() {
+  const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -394,7 +419,7 @@ export default function ExtractionPage() {
         const data = await res.json();
         if (data.status === "done") {
           stopPolling();
-          const extracted = data as ExtractResult;
+          const extracted = normalizeResult(data as Partial<ExtractResult>);
           setResult(extracted);
           saveSession({ status: "complete", filename: extracted.filename, savedAt: Date.now(), result: extracted });
           window.dispatchEvent(new CustomEvent("profile-refresh"));
@@ -426,7 +451,7 @@ export default function ExtractionPage() {
   useEffect(() => {
     const session = loadSession();
     if (session?.status === "complete" && session.result) {
-      setResult(session.result as ExtractResult);
+      setResult(normalizeResult(session.result as Partial<ExtractResult>));
       setHydrated(true);
       return;
     }
@@ -494,7 +519,7 @@ export default function ExtractionPage() {
           setError(data.detail ?? `Extraction failed (${res.status})`);
           return;
         }
-        const data: ExtractResult = await res.json();
+        const data = normalizeResult(await res.json() as Partial<ExtractResult>);
         setResult(data);
         saveSession({ status: "complete", filename: data.filename, savedAt: Date.now(), result: data });
         window.dispatchEvent(new CustomEvent("profile-refresh"));
@@ -658,39 +683,24 @@ export default function ExtractionPage() {
             </div>
           )}
 
-          {/* Bottom cards */}
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5 shadow-sm">
-              <div className="mb-3 flex items-center gap-2.5">
-                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-violet-50 dark:bg-violet-950/50">
-                  <History className="h-4 w-4 text-violet-600 dark:text-violet-400" />
-                </div>
-                <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Recent History</h3>
-              </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                View your previously extracted SPIR files and download past results.
-              </p>
-              <button className="mt-4 flex items-center gap-1.5 text-xs font-semibold text-violet-700 hover:text-violet-800 transition-colors">
-                View History
-                <ArrowUpRight className="h-3.5 w-3.5" />
-              </button>
+          {/* System Guide card */}
+          <div className="rounded-2xl border border-emerald-200 dark:border-emerald-800/50 bg-white dark:bg-slate-800 p-5 shadow-sm flex items-center gap-4">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 dark:bg-emerald-950/50">
+              <BookOpen className="h-4.5 w-4.5 h-[18px] w-[18px] text-emerald-600 dark:text-emerald-400" />
             </div>
-
-            <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5 shadow-sm">
-              <div className="mb-3 flex items-center gap-2.5">
-                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-50 dark:bg-emerald-950/50">
-                  <BookOpen className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-                </div>
-                <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">System Guide</h3>
-              </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                Learn how to use SPIR Tool — formats, column mapping, error codes.
+            <div className="flex-1 min-w-0">
+              <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">System Guide</h3>
+              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                Step-by-step workflow — upload, extract, combine, download.
               </p>
-              <button className="mt-4 flex items-center gap-1.5 text-xs font-semibold text-emerald-700 hover:text-emerald-800 transition-colors">
-                Open Guide
-                <ArrowUpRight className="h-3.5 w-3.5" />
-              </button>
             </div>
+            <button
+              onClick={() => router.push("/guide")}
+              className="flex shrink-0 items-center gap-1.5 text-xs font-semibold text-emerald-700 hover:text-emerald-800 dark:text-emerald-400 dark:hover:text-emerald-300 transition-colors"
+            >
+              Open Guide
+              <ArrowUpRight className="h-3.5 w-3.5" />
+            </button>
           </div>
         </div>
       )}
@@ -846,6 +856,7 @@ export default function ExtractionPage() {
           </div>
         </div>
       )}
+
     </SidebarLayout>
   );
 }

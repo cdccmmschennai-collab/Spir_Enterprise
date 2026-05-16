@@ -17,6 +17,11 @@ import {
   Activity,
   UserCheck,
   CheckCircle2,
+  Lock,
+  Eye,
+  EyeOff,
+  KeyRound,
+  Clock,
 } from "lucide-react";
 import { SidebarLayout } from "@/components/sidebar";
 import { authHeaders, getRole } from "@/lib/auth";
@@ -47,6 +52,17 @@ interface Stats {
   active_users: number;
   total_extractions: number;
   today_extractions: number;
+}
+
+interface ResetRequest {
+  id: string;
+  username: string;
+  email: string | null;
+  reason: string | null;
+  status: "pending" | "resolved";
+  created_at: string;
+  resolved_at: string | null;
+  resolved_by: string | null;
 }
 
 // ─── Toast Stack ───────────────────────────────────────────────────────────────
@@ -142,6 +158,7 @@ interface CreateModalProps {
 function CreateUserModal({ onClose, onCreated }: CreateModalProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showPass, setShowPass] = useState(false);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -195,13 +212,23 @@ function CreateUserModal({ onClose, onCreated }: CreateModalProps) {
           </div>
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">Password *</label>
-            <input
-              name="password"
-              type="password"
-              required
-              minLength={8}
-              className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-sm text-slate-900 dark:text-slate-100 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
-            />
+            <div className="relative">
+              <input
+                name="password"
+                type={showPass ? "text" : "password"}
+                required
+                minLength={8}
+                className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 pr-9 text-sm text-slate-900 dark:text-slate-100 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPass((p) => !p)}
+                tabIndex={-1}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
+                {showPass ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              </button>
+            </div>
           </div>
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">Email</label>
@@ -263,6 +290,7 @@ interface ResetPasswordModalProps {
 function ResetPasswordModal({ user, onClose, onSuccess }: ResetPasswordModalProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showPass, setShowPass] = useState(false);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -304,13 +332,23 @@ function ResetPasswordModal({ user, onClose, onSuccess }: ResetPasswordModalProp
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">New Password *</label>
-            <input
-              name="new_password"
-              type="password"
-              required
-              minLength={8}
-              className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-sm text-slate-900 dark:text-slate-100 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
-            />
+            <div className="relative">
+              <input
+                name="new_password"
+                type={showPass ? "text" : "password"}
+                required
+                minLength={8}
+                className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 pr-9 text-sm text-slate-900 dark:text-slate-100 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPass((p) => !p)}
+                tabIndex={-1}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
+                {showPass ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              </button>
+            </div>
           </div>
 
           {error && (
@@ -334,6 +372,113 @@ function ResetPasswordModal({ user, onClose, onSuccess }: ResetPasswordModalProp
   );
 }
 
+// ─── Resolve Reset Request Modal ──────────────────────────────────────────────
+
+interface ResolveRequestModalProps {
+  request: ResetRequest;
+  onClose: () => void;
+  onSuccess: () => void;
+}
+
+function ResolveRequestModal({ request, onClose, onSuccess }: ResolveRequestModalProps) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showPass, setShowPass] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    const form = new FormData(e.currentTarget);
+    try {
+      const res = await fetch(`${API_URL}/api/admin/reset-requests/${request.id}/resolve`, {
+        method: "PUT",
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ new_password: form.get("new_password") }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.detail ?? `Failed (${res.status})`);
+        return;
+      }
+      onSuccess();
+      onClose();
+    } catch {
+      setError("Network error.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+      <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 p-6 shadow-2xl">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
+            Resolve Request — <span className="text-violet-600">{request.username}</span>
+          </h2>
+          <button onClick={onClose} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Request context — never show stored passwords */}
+        <div className="mb-4 rounded-lg bg-slate-50 dark:bg-slate-800 p-3 space-y-1 text-xs">
+          {request.email && <p className="text-slate-500 dark:text-slate-400"><span className="font-medium text-slate-600 dark:text-slate-300">Email:</span> {request.email}</p>}
+          {request.reason && <p className="text-slate-500 dark:text-slate-400"><span className="font-medium text-slate-600 dark:text-slate-300">Reason:</span> {request.reason}</p>}
+          <p className="text-slate-400 dark:text-slate-500">Requested: {new Date(request.created_at).toLocaleString()}</p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+              Set New Password *
+            </label>
+            <p className="text-[11px] text-slate-400 dark:text-slate-500">
+              This will reset the user's password. Previous password is never shown or stored.
+            </p>
+            <div className="relative">
+              <input
+                name="new_password"
+                type={showPass ? "text" : "password"}
+                required
+                minLength={8}
+                placeholder="Min. 8 characters"
+                className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 pr-9 text-sm text-slate-900 dark:text-slate-100 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPass((p) => !p)}
+                tabIndex={-1}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
+                {showPass ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              </button>
+            </div>
+          </div>
+
+          {error && (
+            <div className="flex items-start gap-2 rounded-lg bg-red-50 dark:bg-red-950/30 p-3 text-xs text-red-600 dark:text-red-400">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              {error}
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <button type="button" onClick={onClose} className="flex-1 h-9 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+              Cancel
+            </button>
+            <button type="submit" disabled={loading} className="flex-1 h-9 rounded-xl bg-violet-700 text-sm font-semibold text-white hover:bg-violet-800 disabled:opacity-60 transition-colors">
+              {loading ? <Loader2 className="mx-auto h-4 w-4 animate-spin" /> : "Reset & Resolve"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+
 // ─── Page ──────────────────────────────────────────────────────────────────────
 
 export default function AdminPage() {
@@ -347,6 +492,9 @@ export default function AdminPage() {
   const [confirmTarget, setConfirmTarget] = useState<{ user: User; action: "delete" } | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [resetRequests, setResetRequests] = useState<ResetRequest[]>([]);
+  const [resolveTarget, setResolveTarget] = useState<ResetRequest | null>(null);
 
   // Client-side admin guard
   useEffect(() => {
@@ -369,9 +517,11 @@ export default function AdminPage() {
     setLoading(true);
     setError(null);
     try {
-      const [usersRes, statsRes] = await Promise.all([
+      const [usersRes, statsRes, meRes, resetRes] = await Promise.all([
         fetch(`${API_URL}/api/admin/users`, { headers: { ...authHeaders() } }),
         fetch(`${API_URL}/api/admin/stats`, { headers: { ...authHeaders() } }),
+        fetch(`${API_URL}/api/me`, { headers: { ...authHeaders() } }),
+        fetch(`${API_URL}/api/admin/reset-requests`, { headers: { ...authHeaders() } }),
       ]);
 
       if (usersRes.status === 401 || usersRes.status === 403) {
@@ -387,6 +537,15 @@ export default function AdminPage() {
 
       if (statsRes.ok) {
         setStats(await statsRes.json());
+      }
+
+      if (meRes.ok) {
+        const me = await meRes.json();
+        setCurrentUserId(me.id ?? null);
+      }
+
+      if (resetRes.ok) {
+        setResetRequests(await resetRes.json());
       }
     } catch {
       setError("Network error. Is the backend running?");
@@ -545,7 +704,12 @@ export default function AdminPage() {
                   {users.map((user) => (
                     <tr key={user.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors">
                       <td className="px-4 py-3 font-medium text-slate-800 dark:text-slate-200">
-                        {user.username}
+                        <span className="flex items-center gap-1.5">
+                          {user.username}
+                          {user.id === currentUserId && (
+                            <span className="rounded-full bg-violet-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-violet-600 dark:bg-violet-950 dark:text-violet-400">You</span>
+                          )}
+                        </span>
                         {user.email && (
                           <p className="text-xs text-slate-400 dark:text-slate-500">{user.email}</p>
                         )}
@@ -588,27 +752,36 @@ export default function AdminPage() {
                             <Key className="h-3.5 w-3.5" />
                           </button>
 
-                          {/* Toggle Active */}
-                          <button
-                            onClick={() => toggleActive(user)}
-                            title={user.is_active ? "Deactivate" : "Activate"}
-                            disabled={actionLoading === user.id + "-toggle"}
-                            className="rounded-lg p-1.5 text-slate-400 hover:bg-amber-50 hover:text-amber-600 dark:hover:bg-amber-950/30 dark:hover:text-amber-400 transition-colors disabled:opacity-50"
-                          >
-                            {actionLoading === user.id + "-toggle"
-                              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              : user.is_active
-                                ? <ToggleRight className="h-3.5 w-3.5" />
-                                : <ToggleLeft className="h-3.5 w-3.5" />
-                            }
-                          </button>
+                          {/* Toggle Active — admin accounts are immutable */}
+                          {user.role === "admin" ? (
+                            <span
+                              title="Admin accounts cannot be disabled"
+                              className="rounded-lg p-1.5 text-slate-300 dark:text-slate-600 cursor-not-allowed"
+                            >
+                              <Lock className="h-3.5 w-3.5" />
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() => toggleActive(user)}
+                              title={user.is_active ? "Deactivate" : "Activate"}
+                              disabled={actionLoading === user.id + "-toggle"}
+                              className="rounded-lg p-1.5 text-slate-400 hover:bg-amber-50 hover:text-amber-600 dark:hover:bg-amber-950/30 dark:hover:text-amber-400 transition-colors disabled:opacity-50"
+                            >
+                              {actionLoading === user.id + "-toggle"
+                                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                : user.is_active
+                                  ? <ToggleRight className="h-3.5 w-3.5" />
+                                  : <ToggleLeft className="h-3.5 w-3.5" />
+                              }
+                            </button>
+                          )}
 
-                          {/* Delete */}
+                          {/* Delete — cannot delete self */}
                           <button
                             onClick={() => setConfirmTarget({ user, action: "delete" })}
-                            title="Delete user"
-                            disabled={actionLoading === user.id + "-delete"}
-                            className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/30 dark:hover:text-red-400 transition-colors disabled:opacity-50"
+                            title={user.id === currentUserId ? "Cannot delete your own account" : "Delete user"}
+                            disabled={actionLoading === user.id + "-delete" || user.id === currentUserId}
+                            className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/30 dark:hover:text-red-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             {actionLoading === user.id + "-delete"
                               ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -616,6 +789,103 @@ export default function AdminPage() {
                             }
                           </button>
                         </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Password Reset Requests */}
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm overflow-hidden">
+          <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-700 px-5 py-4">
+            <div className="flex items-center gap-2">
+              <KeyRound className="h-4 w-4 text-amber-500" />
+              <h2 className="text-sm font-bold text-slate-800 dark:text-slate-200">
+                Password Reset Requests
+              </h2>
+              {resetRequests.filter((r) => r.status === "pending").length > 0 && (
+                <span className="rounded-full bg-amber-100 dark:bg-amber-950 px-2 py-0.5 text-[10px] font-bold text-amber-700 dark:text-amber-400">
+                  {resetRequests.filter((r) => r.status === "pending").length} pending
+                </span>
+              )}
+            </div>
+          </div>
+
+          {resetRequests.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-10 text-center">
+              <KeyRound className="h-7 w-7 text-slate-300 dark:text-slate-600" />
+              <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">No reset requests</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900">
+                    {["User", "Contact", "Reason", "Requested", "Status", "Action"].map((h, i) => (
+                      <th
+                        key={h}
+                        className={cn(
+                          "px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400",
+                          i === 5 ? "text-right" : "text-left"
+                        )}
+                      >
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+                  {resetRequests.map((req) => (
+                    <tr key={req.id} className={cn(
+                      "hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors",
+                      req.status === "pending" && "bg-amber-50/30 dark:bg-amber-950/10"
+                    )}>
+                      <td className="px-4 py-3 font-medium text-slate-800 dark:text-slate-200">
+                        {req.username}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400">
+                        {req.email ?? "—"}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400 max-w-[160px] truncate">
+                        {req.reason ?? "—"}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                        <div className="flex items-center gap-1">
+                          <Clock className="h-3 w-3 shrink-0" />
+                          {formatDate(req.created_at)}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        {req.status === "pending" ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 dark:bg-amber-950 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-700 dark:text-amber-400">
+                            <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+                            Pending
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 dark:bg-emerald-950 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                            Resolved
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {req.status === "pending" && (
+                          <button
+                            onClick={() => setResolveTarget(req)}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-800 transition-colors"
+                          >
+                            <Key className="h-3 w-3" />
+                            Reset Password
+                          </button>
+                        )}
+                        {req.status === "resolved" && req.resolved_by && (
+                          <span className="text-xs text-slate-400 dark:text-slate-500">
+                            by {req.resolved_by}
+                          </span>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -648,6 +918,17 @@ export default function AdminPage() {
           loading={actionLoading === confirmTarget.user.id + "-delete"}
           onConfirm={confirmDelete}
           onCancel={() => setConfirmTarget(null)}
+        />
+      )}
+
+      {resolveTarget && (
+        <ResolveRequestModal
+          request={resolveTarget}
+          onClose={() => setResolveTarget(null)}
+          onSuccess={() => {
+            addToast("success", `Password reset for "${resolveTarget.username}" — request resolved`);
+            loadData();
+          }}
         />
       )}
 

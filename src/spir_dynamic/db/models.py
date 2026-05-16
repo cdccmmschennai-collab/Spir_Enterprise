@@ -52,6 +52,7 @@ class User(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     sessions: Mapped[list[Session]] = relationship(
         "Session", back_populates="user", lazy="noload"
@@ -161,6 +162,25 @@ class ExtractionHistory(Base):
     )
 
     user: Mapped[User] = relationship("User", back_populates="extraction_history")
+
+
+# ── Password Reset Requests ────────────────────────────────────────────────────
+
+class PasswordResetRequest(Base):
+    __tablename__ = "password_reset_requests"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    username: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", index=True
+    )  # pending | resolved
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, index=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
 
 # ── Batch Jobs ─────────────────────────────────────────────────────────────────
