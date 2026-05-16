@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useLayoutEffect, useRef, useCallback, memo, useSyncExternalStore } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, memo } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import {
   FileSpreadsheet,
@@ -9,10 +9,13 @@ import {
   X,
   History,
   Settings,
-  Moon,
-  Sun,
   Search,
   ShieldCheck,
+  User,
+  Pencil,
+  ImagePlus,
+  ImageOff,
+  RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { clearToken, authHeaders, getRole } from "@/lib/auth";
@@ -20,11 +23,9 @@ import { clearSession } from "@/lib/extraction-session";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-// Module-level: persists across SidebarLayout remounts (each page nav re-mounts it)
 let lastProfileFetchAt = 0;
-const PROFILE_STALE_MS = 2 * 60 * 1000; // 2 minutes
+const PROFILE_STALE_MS = 2 * 60 * 1000;
 
-// useLayoutEffect on client (fires before first paint), useEffect on server (SSR no-op)
 const useIsomorphicLayoutEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
 interface NavItem {
@@ -44,11 +45,10 @@ const baseNavItems: NavItem[] = [
 interface SidebarContentProps {
   pathname: string;
   onNavigate?: () => void;
-  onLogout: () => void;
   isAdmin?: boolean;
 }
 
-const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, onLogout, isAdmin }: SidebarContentProps) {
+const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, isAdmin }: SidebarContentProps) {
   const router = useRouter();
   const adminIsActive = pathname === "/admin" || pathname.startsWith("/admin/");
 
@@ -81,9 +81,6 @@ const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, onLo
 
       {/* Nav */}
       <nav className="flex-1 space-y-0.5 p-3 overflow-y-auto">
-        <p className="mb-2 px-2 text-[10px] font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500">
-          Navigation
-        </p>
         {baseNavItems.map((item) => {
           const Icon = item.icon;
           const isActive =
@@ -115,9 +112,6 @@ const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, onLo
           );
         })}
 
-        {/* Admin tab: always in DOM so CSS can reveal it before React loads.
-            display controlled by .admin-nav-item + [data-admin="1"] in globals.css.
-            isAdmin gates aria-hidden/tabIndex only — no visual repaint on refresh. */}
         <button
           onClick={() => navigate("/admin")}
           aria-hidden={!isAdmin}
@@ -141,17 +135,6 @@ const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, onLo
           )}
         </button>
       </nav>
-
-      {/* Logout */}
-      <div className="border-t border-slate-100 dark:border-slate-700 p-3">
-        <button
-          onClick={onLogout}
-          className="flex w-full min-h-[40px] items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-500 dark:text-slate-400 transition-all duration-150 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/30 dark:hover:text-red-400"
-        >
-          <LogOut className="h-4 w-4 shrink-0" />
-          Sign out
-        </button>
-      </div>
     </div>
   );
 });
@@ -160,21 +143,32 @@ const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, onLo
 
 const TopNavbar = memo(function TopNavbar({
   onMenuClick,
-  darkMode,
-  onToggleDark,
   userInitials,
   username,
+  email,
+  role,
   count,
+  avatarUrl,
+  onLogout,
+  onAvatarUploaded,
+  onAvatarRemoved,
 }: {
   onMenuClick?: () => void;
-  darkMode: boolean;
-  onToggleDark: () => void;
   userInitials: string;
   username: string;
+  email: string;
+  role: string;
   count: number;
+  avatarUrl: string;
+  onLogout: () => void;
+  onAvatarUploaded: (url: string) => void;
+  onAvatarRemoved: () => void;
 }) {
   const [showProfile, setShowProfile] = useState(false);
+  const [showAvatarMenu, setShowAvatarMenu] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const profileRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -182,9 +176,64 @@ const TopNavbar = memo(function TopNavbar({
         setShowProfile(false);
       }
     }
+    function handleEscape(e: KeyboardEvent) {
+      if (e.key === "Escape") setShowProfile(false);
+    }
     document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
   }, []);
+
+  useEffect(() => {
+    if (!showProfile) setShowAvatarMenu(false);
+  }, [showProfile]);
+
+  async function handleAvatarUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch(`${API_URL}/api/avatar`, {
+        method: "POST",
+        headers: { ...authHeaders() },
+        body: form,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        onAvatarUploaded(data.avatar_url);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function handleAvatarRemove() {
+    setShowAvatarMenu(false);
+    setUploading(true);
+    try {
+      const res = await fetch(`${API_URL}/api/avatar`, {
+        method: "DELETE",
+        headers: { ...authHeaders() },
+      });
+      if (res.ok) {
+        onAvatarRemoved();
+      }
+    } catch {
+      // ignore
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  const avatarSrc = avatarUrl ? `${API_URL}${avatarUrl}` : "";
 
   return (
     <header className="flex h-14 items-center gap-3 border-b border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 px-4 lg:px-6">
@@ -208,22 +257,7 @@ const TopNavbar = memo(function TopNavbar({
         />
       </div>
 
-      <div className="ml-auto flex items-center gap-3">
-        {/* Dark mode toggle */}
-        <button
-          onClick={onToggleDark}
-          className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200 transition-colors"
-          title={darkMode ? "Switch to light mode" : "Switch to dark mode"}
-        >
-          {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-        </button>
-
-        {/* Online badge */}
-        <div className="flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 dark:border-emerald-800 dark:bg-emerald-950">
-          <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-          <span className="text-xs font-medium text-emerald-700 dark:text-emerald-400">Online</span>
-        </div>
-
+      <div className="ml-auto flex items-center">
         {/* User avatar + profile dropdown */}
         <div className="relative" ref={profileRef}>
           <button
@@ -232,16 +266,128 @@ const TopNavbar = memo(function TopNavbar({
               setShowProfile((p) => !p);
             }}
             title={username}
-            className="avatar-btn flex h-8 w-8 items-center justify-center rounded-full bg-violet-100 text-xs font-bold text-violet-700 cursor-pointer hover:bg-violet-200 dark:bg-violet-900 dark:text-violet-300 dark:hover:bg-violet-800 transition-colors"
+            aria-label="Open profile menu"
+            aria-expanded={showProfile}
+            className="avatar-btn flex h-8 w-8 shrink-0 items-center justify-center rounded-full overflow-hidden bg-violet-600 text-xs font-bold text-white ring-2 ring-violet-300 ring-offset-1 dark:ring-violet-700 dark:ring-offset-slate-900 cursor-pointer hover:ring-violet-400 transition-all duration-150 shadow-sm"
           >
-            {userInitials}
+            {avatarSrc ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={avatarSrc} alt={username} className="h-full w-full object-cover" />
+            ) : (
+              userInitials || <User className="h-4 w-4" />
+            )}
           </button>
+
           {showProfile && (
-            <div className="absolute right-0 top-10 z-50 w-48 rounded-xl border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-800 p-3 space-y-1">
-              <p className="text-xs font-semibold text-slate-700 dark:text-slate-200 truncate">{username || "—"}</p>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                {count} file{count !== 1 ? "s" : ""} extracted
-              </p>
+            <div
+              role="menu"
+              className="absolute right-0 top-10 z-50 w-64 rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900 overflow-hidden animate-in fade-in-0 zoom-in-95 duration-150"
+            >
+              {/* Hidden file input */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                className="hidden"
+                onChange={handleAvatarUpload}
+              />
+
+              {/* Identity block */}
+              <div className="flex items-center gap-3 px-4 pt-4 pb-3">
+                <div className="relative shrink-0">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-xl overflow-hidden bg-violet-100 dark:bg-violet-900/60 shadow-sm ring-1 ring-violet-200 dark:ring-violet-800">
+                    {avatarSrc ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={avatarSrc} alt={username} className="h-full w-full object-cover" />
+                    ) : (
+                      <span className="text-base font-bold text-violet-700 dark:text-violet-300">
+                        {userInitials || <User className="h-5 w-5" />}
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => setShowAvatarMenu((p) => !p)}
+                    disabled={uploading}
+                    title="Edit photo"
+                    className="absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-violet-600 text-white hover:bg-violet-700 transition-colors shadow-sm disabled:opacity-60"
+                  >
+                    <Pencil className="h-2.5 w-2.5" />
+                  </button>
+                  {showAvatarMenu && (
+                    <div className="absolute top-full left-0 mt-1.5 z-[70] min-w-[168px] rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl overflow-hidden">
+                      {avatarSrc ? (
+                        <>
+                          <button
+                            onClick={() => { setShowAvatarMenu(false); fileInputRef.current?.click(); }}
+                            className="flex w-full items-center gap-2 px-3 py-2 text-xs text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                          >
+                            <RefreshCw className="h-3 w-3 shrink-0 text-slate-400" />
+                            Change Profile Photo
+                          </button>
+                          <button
+                            onClick={handleAvatarRemove}
+                            className="flex w-full items-center gap-2 px-3 py-2 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
+                          >
+                            <ImageOff className="h-3 w-3 shrink-0" />
+                            Remove Profile Photo
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          onClick={() => { setShowAvatarMenu(false); fileInputRef.current?.click(); }}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-xs text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                        >
+                          <ImagePlus className="h-3 w-3 shrink-0 text-slate-400" />
+                          Upload Profile Photo
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 mb-0.5">
+                    <p className="truncate text-sm font-bold text-slate-900 dark:text-slate-100 leading-tight">
+                      {username || "—"}
+                    </p>
+                    {role && (
+                      <span className={cn(
+                        "shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide",
+                        role === "admin"
+                          ? "bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300"
+                          : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+                      )}>
+                        {role}
+                      </span>
+                    )}
+                  </div>
+                  {email && (
+                    <p className="truncate text-xs text-slate-500 dark:text-slate-400">{email}</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Extractions count */}
+              <div className="mx-4 mb-3 flex items-center justify-between rounded-lg bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
+                <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
+                  Total Extractions
+                </span>
+                <span className="text-base font-bold text-violet-700 dark:text-violet-400 tabular-nums">
+                  {count.toLocaleString()}
+                </span>
+              </div>
+
+              {/* Sign out */}
+              <div className="px-4 pb-4">
+                <button
+                  role="menuitem"
+                  onClick={() => { setShowProfile(false); onLogout(); }}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 dark:bg-violet-900 dark:hover:bg-violet-800 transition-all duration-150 active:scale-[0.98]"
+                >
+                  <LogOut className="h-4 w-4" />
+                  Sign Out
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -262,51 +408,39 @@ export function SidebarLayout({ children }: SidebarProps) {
   const [mounted, setMounted] = useState(false);
   const [userInitials, setUserInitials] = useState("");
   const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState("");
   const [count, setCount] = useState(0);
-  const router = useRouter();
+  const [avatarUrl, setAvatarUrl] = useState("");
   const pathname = usePathname();
 
-  // useSyncExternalStore: server snapshot returns false (role unknown during SSR),
-  // client snapshot reads localStorage synchronously. React patches the DOM before
-  // the first paint using the correct client value, eliminating the Admin nav flicker.
-  const isAdmin = useSyncExternalStore(
-    () => () => {},
-    () => getRole() === "admin",
-    () => false,
-  );
+  const [isAdmin, setIsAdmin] = useState(false);
 
-  // Runs before first browser paint so darkMode and cached username are set on the first visible frame.
   useIsomorphicLayoutEffect(() => {
     const saved = localStorage.getItem("theme");
     if (saved === "dark") setDarkMode(true);
 
-    // Restore cached username so the profile icon shows real initials immediately,
-    // without waiting for the /api/me network round-trip.
     const cachedName = localStorage.getItem("profile_username") ?? "";
     if (cachedName) {
       setUsername(cachedName);
       setUserInitials(cachedName.slice(0, 2).toUpperCase() || "");
     }
 
-    // Sync the data-admin DOM attribute so the CSS rule in globals.css shows the
-    // Admin tab correctly on both refresh (inline script) AND client-side navigation
-    // after login (inline script doesn't re-run, this useLayoutEffect does).
-    if (getRole() === "admin") {
+    const cachedAvatar = localStorage.getItem("profile_avatar_url") ?? "";
+    if (cachedAvatar) setAvatarUrl(cachedAvatar);
+
+    const admin = getRole() === "admin";
+    setIsAdmin(admin);
+    if (admin) {
       document.documentElement.setAttribute("data-admin", "1");
     } else {
       document.documentElement.removeAttribute("data-admin");
     }
 
-    // Mark React as mounted so CSS clears the ::before avatar initials and
-    // admin-nav-item ::before, handing full control to React's text/display.
     document.documentElement.setAttribute("data-ready", "1");
-
-    // Gate admin tab and avatar behind mounted so both update in one batched
-    // re-render before the browser's next paint — eliminates the server-HTML flash.
     setMounted(true);
   }, []);
 
-  // Fetch current user profile and extraction count — force logout if token invalid/expired
   const refreshProfile = useCallback(async () => {
     lastProfileFetchAt = Date.now();
     try {
@@ -320,19 +454,23 @@ export function SidebarLayout({ children }: SidebarProps) {
       const name: string = data.username ?? "";
       setUsername(name);
       setUserInitials(name.slice(0, 2).toUpperCase() || "");
+      setEmail(data.email ?? "");
+      setRole(data.role ?? "");
       setCount(data.total_files_extracted ?? 0);
+      const av: string = data.avatar_url ?? "";
+      setAvatarUrl(av);
       if (name) localStorage.setItem("profile_username", name);
+      if (av) localStorage.setItem("profile_avatar_url", av);
+      else localStorage.removeItem("profile_avatar_url");
     } catch {
       // network error — don't force logout
     }
   }, []);
 
   useEffect(() => {
-    // Skip refetch if profile was fetched recently (e.g. navigating between pages remounts this)
     if (Date.now() - lastProfileFetchAt >= PROFILE_STALE_MS) {
       refreshProfile();
     }
-    // profile-refresh events (fired after extraction) always bypass the staleness guard
     window.addEventListener("profile-refresh", refreshProfile);
     return () => window.removeEventListener("profile-refresh", refreshProfile);
   }, [refreshProfile]);
@@ -350,23 +488,32 @@ export function SidebarLayout({ children }: SidebarProps) {
         headers: { ...authHeaders() },
       });
     } catch {
-      // ignore network errors — clear token regardless
+      // ignore
     }
     clearSession();
     clearToken();
+    localStorage.removeItem("profile_avatar_url");
     window.location.href = "/login";
   }, []);
 
-  // Stable callbacks so memo'd children don't re-render on unrelated parent state changes
+  const handleAvatarUploaded = useCallback((url: string) => {
+    setAvatarUrl(url);
+    localStorage.setItem("profile_avatar_url", url);
+  }, []);
+
+  const handleAvatarRemoved = useCallback(() => {
+    setAvatarUrl("");
+    localStorage.removeItem("profile_avatar_url");
+  }, []);
+
   const handleMenuClick = useCallback(() => setMobileOpen(true), []);
   const handleCloseMobile = useCallback(() => setMobileOpen(false), []);
-  const handleToggleDark = useCallback(() => setDarkMode((d) => !d), []);
 
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50 dark:bg-slate-950">
       {/* Desktop sidebar */}
       <aside className="hidden w-60 shrink-0 border-r border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 lg:flex lg:flex-col">
-        <SidebarContent pathname={pathname} onLogout={handleLogout} isAdmin={mounted && isAdmin} />
+        <SidebarContent pathname={pathname} isAdmin={mounted && isAdmin} />
       </aside>
 
       {/* Mobile overlay */}
@@ -393,7 +540,6 @@ export function SidebarLayout({ children }: SidebarProps) {
         <SidebarContent
           pathname={pathname}
           onNavigate={handleCloseMobile}
-          onLogout={handleLogout}
           isAdmin={mounted && isAdmin}
         />
       </aside>
@@ -402,11 +548,15 @@ export function SidebarLayout({ children }: SidebarProps) {
       <div className="flex flex-1 flex-col overflow-hidden">
         <TopNavbar
           onMenuClick={handleMenuClick}
-          darkMode={darkMode}
-          onToggleDark={handleToggleDark}
           userInitials={userInitials}
           username={username}
+          email={email}
+          role={role}
           count={count}
+          avatarUrl={avatarUrl}
+          onLogout={handleLogout}
+          onAvatarUploaded={handleAvatarUploaded}
+          onAvatarRemoved={handleAvatarRemoved}
         />
         <main className="flex-1 overflow-y-auto">{children}</main>
       </div>

@@ -19,6 +19,7 @@ import bcrypt as _bcrypt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
+from pydantic import BaseModel, Field
 
 from spir_dynamic.app.config import get_settings
 
@@ -201,6 +202,7 @@ async def auth_me(td: TokenData = Depends(get_current_user)) -> dict:
                     "email": user.email,
                     "role": user.role,
                     "created_at": user.created_at,
+                    "last_login_at": user.last_login_at,
                     "total_files_extracted": total_files,
                 }
     return {
@@ -209,6 +211,7 @@ async def auth_me(td: TokenData = Depends(get_current_user)) -> dict:
         "email": None,
         "role": td.role,
         "created_at": None,
+        "last_login_at": None,
         "total_files_extracted": 0,
     }
 
@@ -244,6 +247,43 @@ async def logout(
                 ip_address=_get_ip(request),
             )
     return {"detail": "Logged out"}
+
+
+class PasswordResetRequestIn(BaseModel):
+    username: str = Field(..., min_length=1, max_length=100)
+    email: Optional[str] = None
+    reason: Optional[str] = Field(None, max_length=500)
+
+
+@auth_router.post("/reset-request", status_code=201)
+async def create_reset_request(body: PasswordResetRequestIn) -> dict:
+    """
+    Submit a password reset request for admin approval. No auth required.
+    Always returns the same success message regardless of whether the username exists
+    — avoids leaking account information.
+    """
+    from spir_dynamic.db.database import is_db_enabled, get_session_factory
+    from spir_dynamic.db.models import PasswordResetRequest
+
+    if not is_db_enabled():
+        # In legacy mode there's no admin user management — direct reply
+        return {"message": "Request received. Contact your system administrator directly."}
+
+    try:
+        factory = get_session_factory()
+        async with factory() as db:
+            req = PasswordResetRequest(
+                username=body.username.strip(),
+                email=body.email.strip() if body.email else None,
+                reason=body.reason.strip() if body.reason else None,
+                status="pending",
+            )
+            db.add(req)
+            await db.commit()
+    except Exception:
+        pass  # silently swallow — never reveal internal errors to unauthenticated callers
+
+    return {"message": "Your request has been sent to admin for approval. You will be notified once your access is restored."}
 
 
 # ---------------------------------------------------------------------------

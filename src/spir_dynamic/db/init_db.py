@@ -12,7 +12,7 @@ import logging
 from sqlalchemy import select, text
 
 from spir_dynamic.db.database import Base, get_engine, get_session_factory
-from spir_dynamic.db.models import User, Job  # noqa: F401 — Job must be imported for create_all
+from spir_dynamic.db.models import User, Job, PasswordResetRequest  # noqa: F401 — all models must be imported for create_all
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +51,21 @@ async def ensure_schema() -> None:
             except Exception as exc:
                 log.warning("Schema sync statement skipped: %s — %s", stmt[:60], exc)
     log.info("extraction_history schema verified/synced")
+
+
+async def ensure_user_schema() -> None:
+    """Idempotently add any columns missing from users table."""
+    engine = get_engine()
+    ddl = [
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500)",
+    ]
+    async with engine.begin() as conn:
+        for stmt in ddl:
+            try:
+                await conn.execute(text(stmt))
+            except Exception as exc:
+                log.warning("User schema sync skipped: %s — %s", stmt[:60], exc)
+    log.info("users schema verified/synced")
 
 
 async def seed_admin(username: str, plain_password: str) -> None:
@@ -108,6 +123,7 @@ async def initialize(database_url: str, app_user: str, app_pass: str) -> bool:
         setup_engine(database_url)
         await create_tables()
         await ensure_schema()
+        await ensure_user_schema()
         await seed_admin(app_user, app_pass)
         return True
     except Exception as exc:

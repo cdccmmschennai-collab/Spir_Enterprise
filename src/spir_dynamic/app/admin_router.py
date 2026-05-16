@@ -66,6 +66,23 @@ class ResetPasswordIn(BaseModel):
     new_password: str = Field(..., min_length=8)
 
 
+class ResetRequestOut(BaseModel):
+    id: str
+    username: str
+    email: Optional[str]
+    reason: Optional[str]
+    status: str
+    created_at: datetime
+    resolved_at: Optional[datetime]
+    resolved_by: Optional[str]
+
+    model_config = {"from_attributes": True}
+
+
+class ResolveResetIn(BaseModel):
+    new_password: str = Field(..., min_length=8)
+
+
 class ActivityLogOut(BaseModel):
     id: str
     user_id: str
@@ -200,10 +217,12 @@ async def reset_password(
 @admin_router.delete("/users/{user_id}", status_code=204)
 async def delete_user(
     user_id: str,
-    _: TokenData = Depends(require_admin),
+    td: TokenData = Depends(require_admin),
     db=Depends(get_db),
 ) -> None:
     """Permanently delete a user and all their data (cascades). Admin only."""
+    if td.user_id and td.user_id == user_id:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
     user: User | None = await db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -215,15 +234,75 @@ async def delete_user(
 async def set_user_status(
     user_id: str,
     is_active: bool,
-    _: TokenData = Depends(require_admin),
+    td: TokenData = Depends(require_admin),
     db=Depends(get_db),
 ) -> None:
     """Activate or deactivate a user. Admin only."""
+    if td.user_id and td.user_id == user_id:
+        raise HTTPException(status_code=400, detail="Cannot disable your own account")
     user: User | None = await db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
+    if user.role == "admin":
+        raise HTTPException(status_code=400, detail="Admin accounts cannot be disabled")
     user.is_active = is_active
     log.info("User '%s' is_active set to %s", user.username, is_active)
+
+
+# ── Password reset request endpoints ──────────────────────────────────────────
+
+@admin_router.get("/reset-requests", response_model=list[ResetRequestOut])
+async def list_reset_requests(
+    status: Optional[str] = None,
+    td: TokenData = Depends(require_admin),
+    db=Depends(get_db),
+) -> list[ResetRequestOut]:
+    """List password reset requests. Filter by status=pending|resolved. Admin only."""
+    from spir_dynamic.db.models import PasswordResetRequest
+    q = select(PasswordResetRequest).order_by(desc(PasswordResetRequest.created_at))
+    if status:
+        q = q.where(PasswordResetRequest.status == status)
+    result = await db.execute(q)
+    rows = result.scalars().all()
+    return [ResetRequestOut.model_validate(r) for r in rows]
+
+
+@admin_router.put("/reset-requests/{request_id}/resolve", status_code=204)
+async def resolve_reset_request(
+    request_id: str,
+    body: ResolveResetIn,
+    td: TokenData = Depends(require_admin),
+    db=Depends(get_db),
+) -> None:
+    """
+    Resolve a password reset request: reset the user's password and mark the request resolved.
+    Password is stored as bcrypt hash only — admin never sees the previous password.
+    """
+    from spir_dynamic.app.auth import _hash_password
+    from spir_dynamic.db.models import PasswordResetRequest
+
+    req: PasswordResetRequest | None = await db.get(PasswordResetRequest, request_id)
+    if req is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if req.status == "resolved":
+        raise HTTPException(status_code=400, detail="Request already resolved")
+
+    user: User | None = await db.scalar(select(User).where(User.username == req.username))
+    if user is None:
+        raise HTTPException(status_code=404, detail=f"User '{req.username}' not found")
+
+    if len(body.new_password.encode("utf-8")) > 72:
+        raise HTTPException(status_code=400, detail="Password too long (max 72 characters)")
+
+    user.password_hash = _hash_password(body.new_password[:72])
+    req.status = "resolved"
+    req.resolved_at = datetime.now(timezone.utc)
+    req.resolved_by = td.username
+
+    log.info(
+        "Password reset for user '%s' via reset request '%s', resolved by admin '%s'",
+        user.username, request_id, td.username,
+    )
 
 
 # ── Stats endpoint ────────────────────────────────────────────────────────────
