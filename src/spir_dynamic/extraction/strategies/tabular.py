@@ -10,6 +10,7 @@ columns for description/qty/price/etc., and a tag column or global tag.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from spir_dynamic.models.sheet_profile import SheetProfile, TagLayout
@@ -18,6 +19,38 @@ from spir_dynamic.analysis.header_detector import is_footer_row
 from spir_dynamic.utils.logging import timed
 
 log = logging.getLogger(__name__)
+
+
+def _split_serial_for_tags(serial_val: str | None, tag_count: int) -> list:
+    """Split a serial range string into one value per tag.
+
+    Mirrors the separator logic in _split_serial_range (unified_extractor),
+    applied at the point where multi-tag cells are expanded into rows.
+    """
+    if not serial_val or tag_count <= 1:
+        return [serial_val] * tag_count
+    s = str(serial_val).strip()
+    # "X to Y"
+    parts = re.split(r"\s+to\s+", s, flags=re.IGNORECASE)
+    if len(parts) == tag_count:
+        return [p.strip() for p in parts]
+    # "/" separator
+    if "/" in s:
+        parts = [p.strip() for p in s.split("/") if p.strip()]
+        if len(parts) == tag_count:
+            return parts
+    # "," separator
+    if "," in s:
+        parts = [p.strip() for p in s.split(",") if p.strip()]
+        if len(parts) == tag_count:
+            return parts
+    # Numeric hyphen range: "240430-240431" or "240458-240459-240460"
+    if "-" in s:
+        parts = [p.strip() for p in s.split("-") if p.strip()]
+        if len(parts) == tag_count and all(p.isdigit() for p in parts):
+            return parts
+    return [serial_val] * tag_count
+
 
 # Fields that should be read as numbers
 _NUMERIC_FIELDS = frozenset(
@@ -111,10 +144,12 @@ class TabularStrategy:
             # Expand multi-tag values
             raw_tag = item.get("tag")
             tags = split_tags(raw_tag) if raw_tag else [None]
+            serials = _split_serial_for_tags(item.get("serial"), len(tags))
 
-            for tag in tags:
+            for i, tag in enumerate(tags):
                 row = dict(item)
                 row["tag"] = tag
+                row["serial"] = serials[i]
                 # Map field names to output schema field names
                 row["tag_no"] = tag
                 row["desc"] = row.pop("description", None)

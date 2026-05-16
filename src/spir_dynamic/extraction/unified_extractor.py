@@ -425,7 +425,7 @@ def _resolve_spir_no(profiles: list[SheetProfile], filename: str) -> str:
     """
     if filename:
         patterns = [
-            r"([A-Z0-9]{2,}-[A-Z0-9]{2,}-[A-Z0-9][\w\-]*)",
+            r"([A-Z0-9]{2,}-[A-Z0-9]{2,}-[A-Z0-9][A-Z0-9\-]*)",
             r"(\d{4,}[\-_]\w+[\-_]\w+)",
         ]
         name = filename.rsplit(".", 1)[0]
@@ -1650,6 +1650,13 @@ def _split_serial_range(serial_str: str, expected_count: int) -> list[str]:
     if "," in s:
         parts = [p.strip() for p in s.split(",") if p.strip()]
         if len(parts) >= 2:
+            return parts
+
+    # Numeric hyphen range: "240430-240431" → ["240430", "240431"]
+    # Only triggers when all parts are pure digits and count matches expected tags.
+    if "-" in s and expected_count > 1:
+        parts = [p.strip() for p in s.split("-") if p.strip()]
+        if len(parts) == expected_count and all(p.isdigit() for p in parts):
             return parts
 
     return [s]

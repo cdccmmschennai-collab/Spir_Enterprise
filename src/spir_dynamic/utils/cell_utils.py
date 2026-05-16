@@ -95,9 +95,8 @@ def split_tags(raw_tag: Any) -> list[str]:
 
     first = parts[0]
     if len(parts) > 1:
-        # Case 1: Alphanumeric suffix pattern
-        # Handles single-letter suffixes ("P-3425 A/B") and multi-char codes
-        # ("23-P-7100 XA/XB", "TAG-001 1A/1B", etc.)
+        # Case 1: Alphanumeric suffix pattern with space separator
+        # Handles "P-3425 A/B", "23-P-7100 XA/XB", "TAG-001 1A/1B", etc.
         # First part ends with "<space><1-4 char alphanum starting with letter>".
         # All remaining parts must follow the same short-code pattern.
         suffix_match = re.match(r"^(.+\s)([A-Za-z][A-Za-z0-9]{0,3})$", first)
@@ -107,6 +106,23 @@ def split_tags(raw_tag: Any) -> list[str]:
             )
             if remaining_are_short_alphanum:
                 base = suffix_match.group(1)  # "P-3425 " or "23-P-7100 "
+                result = [first]
+                for p in parts[1:]:
+                    result.append(base + p)
+                return result
+
+        # Case 1b: Alphanumeric suffix directly attached (no space)
+        # Handles "89-BC-001A/B" → ["89-BC-001A", "89-BC-001B"]
+        #         "23V01-A/B"    → ["23V01-A", "23V01-B"]
+        # First part ends with a non-letter followed by a 1-4 char letter-code.
+        # All remaining parts must be the same short-code pattern.
+        suffix_direct_match = re.match(r"^(.*[^A-Za-z])([A-Za-z][A-Za-z0-9]{0,3})$", first)
+        if suffix_direct_match:
+            remaining_are_short_alphanum = all(
+                re.match(r"^[A-Za-z][A-Za-z0-9]{0,3}$", p) for p in parts[1:]
+            )
+            if remaining_are_short_alphanum:
+                base = suffix_direct_match.group(1)  # "89-BC-001" or "23V01-"
                 result = [first]
                 for p in parts[1:]:
                     result.append(base + p)
