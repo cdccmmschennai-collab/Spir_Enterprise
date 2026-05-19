@@ -35,7 +35,7 @@ function ReadOnlyField({ label, value }: { label: string; value: string }) {
     <div className="space-y-1">
       <label className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{label}</label>
       <div className="flex h-9 items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 text-sm text-slate-700 dark:text-slate-300">
-        {value || "—"}
+        {value}
       </div>
     </div>
   );
@@ -82,7 +82,7 @@ export default function SettingsPage() {
   }
 
   function formatDate(iso: string | null) {
-    if (!iso) return "—";
+    if (!iso) return "-";
     return new Date(iso).toLocaleString("en-IN", {
       timeZone: "Asia/Kolkata",
       day: "2-digit",
@@ -143,7 +143,7 @@ export default function SettingsPage() {
     }
   }
 
-  const initials = profile?.username?.slice(0, 2).toUpperCase() ?? "—";
+  const initials = profile?.username?.slice(0, 2).toUpperCase() ?? "";
 
   return (
     <SidebarLayout>
@@ -209,14 +209,14 @@ export default function SettingsPage() {
                 )}
               </div>
               <div>
-                <p className="text-base font-bold text-slate-800 dark:text-slate-100">{profile?.username ?? "—"}</p>
+                <p className="text-base font-bold text-slate-800 dark:text-slate-100">{profile?.username ?? ""}</p>
                 <span className={cn(
                   "inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide",
                   profile?.role === "admin"
                     ? "bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300"
                     : "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300"
                 )}>
-                  {profile?.role ?? "—"}
+                  {profile?.role ?? ""}
                 </span>
                 {uploading && (
                   <p className="mt-1 text-xs text-slate-400">Updating…</p>

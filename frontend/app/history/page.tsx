@@ -322,10 +322,10 @@ export default function HistoryPage() {
                         {item.filename}
                       </td>
                       <td className="px-4 py-3 text-slate-600 dark:text-slate-400">
-                        {item.spir_no ?? "—"}
+                        {item.spir_no ?? "-"}
                       </td>
                       <td className="px-4 py-3 text-right tabular-nums text-slate-600 dark:text-slate-400">
-                        {item.total_rows ?? "—"}
+                        {item.total_rows ?? "-"}
                       </td>
                       <td className="px-4 py-3 text-right tabular-nums text-slate-600 dark:text-slate-400">
                         {item.tag_count}

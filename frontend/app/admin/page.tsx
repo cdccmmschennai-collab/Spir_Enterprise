@@ -322,7 +322,7 @@ function ResetPasswordModal({ user, onClose, onSuccess }: ResetPasswordModalProp
       <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 p-6 shadow-2xl">
         <div className="mb-5 flex items-center justify-between">
           <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
-            Reset Password — <span className="text-violet-600">{user.username}</span>
+            Reset Password: <span className="text-violet-600">{user.username}</span>
           </h2>
           <button onClick={onClose} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800">
             <X className="h-4 w-4" />
@@ -415,7 +415,7 @@ function ResolveRequestModal({ request, onClose, onSuccess }: ResolveRequestModa
       <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 p-6 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
-            Resolve Request — <span className="text-violet-600">{request.username}</span>
+            Resolve Request: <span className="text-violet-600">{request.username}</span>
           </h2>
           <button onClick={onClose} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800">
             <X className="h-4 w-4" />
@@ -602,7 +602,7 @@ export default function AdminPage() {
   }
 
   function formatDate(iso: string | null) {
-    if (!iso) return "—";
+    if (!iso) return "-";
     return new Date(iso).toLocaleString("en-IN", {
       timeZone: "Asia/Kolkata",
       day: "2-digit",
@@ -847,10 +847,10 @@ export default function AdminPage() {
                         {req.username}
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400">
-                        {req.email ?? "—"}
+                        {req.email ?? "-"}
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400 max-w-[160px] truncate">
-                        {req.reason ?? "—"}
+                        {req.reason ?? "-"}
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">
                         <div className="flex items-center gap-1">
@@ -926,7 +926,7 @@ export default function AdminPage() {
           request={resolveTarget}
           onClose={() => setResolveTarget(null)}
           onSuccess={() => {
-            addToast("success", `Password reset for "${resolveTarget.username}" — request resolved`);
+            addToast("success", `Password reset for "${resolveTarget.username}" - request resolved`);
             loadData();
           }}
         />

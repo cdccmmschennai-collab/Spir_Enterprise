@@ -1,19 +1,22 @@
 """
 Celery task: process one file within a batch job.
 
-Each uploaded file gets its own task so workers can process files for
-different users (and different files of the same user) in true parallel
-without any shared mutable state.
+Each uploaded file gets its own task so workers process files for
+different users (and different files of the same user) without shared state.
 
 State flow:  pending → running → ok | error
-Input bytes are stored in Redis before enqueue (to avoid large messages in
-the broker queue) and cleaned up by the task on first attempt.
+
+Input files are saved to disk by the API process (storage/batch_uploads/)
+before enqueue. The worker reads directly from disk — no bytes copy in RAM —
+and deletes the upload file after extraction completes (or exhausts retries).
+Orphaned upload files (from crashed workers) are swept on startup.
 """
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
-from celery.exceptions import MaxRetriesExceededError
+from celery.exceptions import MaxRetriesExceededError, SoftTimeLimitExceeded
 
 from spir_dynamic.celery_app import celery_app
 from spir_dynamic.tasks.base import BaseTask
@@ -33,7 +36,7 @@ def process_file_task(
     self,
     job_id: str,
     file_idx: int,
-    input_key: str,
+    upload_path: str,
     filename: str,
     user_id: str = "",
 ) -> dict:
@@ -41,37 +44,39 @@ def process_file_task(
     Extract a single SPIR file as part of a batch job.
 
     Args:
-        job_id:    Batch job identifier — shared across all files in the batch.
-        file_idx:  Position of this file in the batch (0-based).
-        input_key: Redis storage key where the raw input bytes were pre-stored.
-        filename:  Original upload filename (used for pipeline and error reporting).
+        job_id:      Batch job identifier — shared across all files in the batch.
+        file_idx:    Position of this file in the batch (0-based).
+        upload_path: Absolute path to the file on disk (streamed there by the API).
+        filename:    Original upload filename (used for pipeline and error reporting).
 
     Returns:
         Dict with status + result metadata (mirrors run_pipeline output keys).
     """
     from spir_dynamic.app.pipeline import run_pipeline
+    from spir_dynamic.services.cleanup import safe_delete
     from spir_dynamic.services.job_store import FileResult, get_job_store
-    from spir_dynamic.services.storage import get_storage
+
+    _upload_path = Path(upload_path)
+    _log_ctx = f"batch job={job_id} idx={file_idx}"
 
     store = get_job_store()
-    storage = get_storage()
 
     # Mark this slot as running so the status endpoint shows progress
     store.update_result(job_id, file_idx, FileResult(filename=filename, status="running"))
 
     try:
-        # Retrieve and immediately delete the input bytes stored by the API process
-        entry = storage.get(input_key)
-        if entry is None:
-            raise RuntimeError(f"Input file not found in storage (key={input_key}); "
-                               "it may have expired or been cleaned up on a prior retry")
-        file_bytes, _ = entry
-        if self.request.retries == 0:
-            # Only delete on first attempt — retries re-use the same key
-            storage.delete(input_key)
+        if not _upload_path.exists():
+            raise RuntimeError(
+                f"Upload file not found on disk: {upload_path} — "
+                "it may have been removed by a prior attempt or a system restart"
+            )
 
-        # run_pipeline is CPU-bound/sync — runs directly in the Celery worker process
-        result = run_pipeline(file_bytes, filename)
+        # run_pipeline opens the workbook directly from the Path — no bytes copy.
+        result = run_pipeline(_upload_path, filename)
+
+        # Extraction done — the upload file is no longer needed.
+        safe_delete(_upload_path, log_context=_log_ctx)
+        print(f"Deleted upload: {_upload_path}")
 
         store.update_result(job_id, file_idx, FileResult(
             filename=filename,
@@ -82,12 +87,12 @@ def process_file_task(
             file_id=result.get("file_id", ""),
         ))
 
-        # Store extracted row data + metadata in Redis so combine and async polling
-        # can reuse it without re-running the extraction pipeline.
+        # ── Persist row payload to Redis for real-time preview / combine ─────────
         # Key: rows:{file_id}  — namespaced to avoid collision with xlsx storage.
         try:
             import json as _json
             from spir_dynamic.app.config import get_settings as _gs
+            from spir_dynamic.services.storage import get_storage as _get_storage
             _row_payload = _json.dumps({
                 "cols": result.get("preview_cols", []),
                 "rows": result.get("preview_rows", []),
@@ -107,27 +112,23 @@ def process_file_task(
                 "dup1_count": result.get("dup1_count", 0),
                 "sap_count": result.get("sap_count", 0),
             }).encode("utf-8")
-            storage.put(
+            _storage = _get_storage()
+            _storage.put(
                 f"rows:{result['file_id']}",
                 _row_payload,
                 "rows.json",
                 ttl=_gs().batch_ttl_seconds,
             )
         except Exception as _row_exc:
-            # Non-fatal: row storage failing does not break extraction or download.
             log.warning("Row data storage failed (combine unavailable for this file): %s", _row_exc)
 
-        # ── Persist rows to disk so history-based combine can read them ──────────
-        # The sync route writes {rows_storage_path}/{file_id}.json; we do the same
-        # here so both code paths produce the same on-disk artefact and the combine
-        # endpoint works for async-extracted files.
+        # ── Persist rows to disk for history-based combine ────────────────────────
         json_path: str | None = None
         try:
             import json as _json_disk
-            from pathlib import Path as _Path
             from spir_dynamic.app.config import get_settings as _gs_disk
             _cfg = _gs_disk()
-            _rows_dir = _Path(_cfg.rows_storage_path)
+            _rows_dir = Path(_cfg.rows_storage_path)
             _rows_dir.mkdir(parents=True, exist_ok=True)
             _file_id = result.get("file_id", "")
             if _file_id:
@@ -143,12 +144,9 @@ def process_file_task(
                 json_path = str(_disk_path)
                 log.debug("Rows written to disk: %s (%d rows)", _disk_path, result.get("total_rows", 0))
         except Exception as _disk_exc:
-            log.warning("Disk row storage failed (non-fatal, combine will be unavailable): %s", _disk_exc)
+            log.warning("Disk row storage failed (non-fatal): %s", _disk_exc)
 
-        # ── Write to extraction_history so frontend history is populated ─────────
-        # Uses a dedicated synchronous DB writer (psycopg2 + NullPool) — zero
-        # asyncio, zero event loops, safe across all Celery concurrency models.
-        # user_id is passed at enqueue time so no store.get() lookup is needed.
+        # ── Write extraction_history so frontend history is populated ─────────────
         try:
             from spir_dynamic.services.audit_service import log_extraction_worker as _log_worker
             _log_worker(
@@ -160,14 +158,35 @@ def process_file_task(
         except Exception as _hist_exc:
             log.warning("History logging failed in Celery task (non-fatal): %s", _hist_exc)
 
-        log.info("process_file_task done | job=%s idx=%d file=%s rows=%d",
-                 job_id, file_idx, filename, result.get("total_rows", 0))
+        log.info(
+            "process_file_task done | job=%s idx=%d file=%s rows=%d",
+            job_id, file_idx, filename, result.get("total_rows", 0),
+        )
         return {
             "status": "ok",
             "job_id": job_id,
             "file_idx": file_idx,
             "file_id": result.get("file_id", ""),
             "total_rows": result.get("total_rows", 0),
+        }
+
+    except SoftTimeLimitExceeded:
+        # Soft time limit fired — not retryable; clean up the upload file.
+        safe_delete(_upload_path, log_context=f"timeout {_log_ctx}")
+        log.error(
+            "process_file_task timed out (soft limit) | job=%s idx=%d file=%s",
+            job_id, file_idx, filename,
+        )
+        store.update_result(job_id, file_idx, FileResult(
+            filename=filename,
+            status="error",
+            error="Extraction timed out",
+        ))
+        return {
+            "status": "error",
+            "job_id": job_id,
+            "file_idx": file_idx,
+            "error": "Extraction timed out",
         }
 
     except Exception as exc:
@@ -179,8 +198,11 @@ def process_file_task(
             job_id, file_idx, filename, exc,
         )
         try:
+            # Upload file stays on disk — next retry needs it.
             raise self.retry(exc=exc, countdown=backoff)
         except MaxRetriesExceededError:
+            # Final failure — no more retries; clean up the upload file.
+            safe_delete(_upload_path, log_context=f"max-retries {_log_ctx}")
             log.error(
                 "process_file_task exhausted retries | job=%s idx=%d file=%s: %s",
                 job_id, file_idx, filename, exc, exc_info=True,
@@ -190,7 +212,4 @@ def process_file_task(
                 status="error",
                 error=str(exc),
             ))
-            # Return rather than re-raise so Celery marks as SUCCESS (result stored
-            # in job store). The batch status endpoint reads status from the store,
-            # not from the Celery task result.
             return {"status": "error", "job_id": job_id, "file_idx": file_idx, "error": str(exc)}

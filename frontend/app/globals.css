@@ -65,9 +65,23 @@
 
 /* Profile avatar: show cached initials via CSS before React loads.
    Inline script sets --user-initials on :root from localStorage.
-   Once React mounts it sets html[data-ready], which clears ::before so
-   React's own text content takes over — both happen before the browser repaints. */
-.avatar-btn::before { content: var(--user-initials, ''); }
+   The ::before is an absolute overlay that covers the button content so the
+   <User> icon never flashes. Once React mounts it sets html[data-ready],
+   which removes the overlay and React's own content takes over. */
+.avatar-btn { position: relative; }
+.avatar-btn::before {
+  content: var(--user-initials, '');
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  background-color: #7c3aed; /* violet-600 — matches button bg */
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.025em;
+}
 [data-ready] .avatar-btn::before { content: none; }
 
 /* Custom scrollbar */

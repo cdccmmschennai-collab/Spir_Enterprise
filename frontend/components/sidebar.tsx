@@ -4,6 +4,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback, memo } from 
 import { useRouter, usePathname } from "next/navigation";
 import {
   FileSpreadsheet,
+  Layers,
   LogOut,
   Menu,
   X,
@@ -36,6 +37,7 @@ interface NavItem {
 
 const baseNavItems: NavItem[] = [
   { label: "Extraction",  href: "/extraction",   icon: FileSpreadsheet },
+  { label: "Batch Extraction", href: "/batch",     icon: Layers },
   { label: "History",     href: "/history",      icon: History },
   { label: "Settings",    href: "/settings",     icon: Settings },
 ];
@@ -348,7 +350,7 @@ const TopNavbar = memo(function TopNavbar({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5 mb-0.5">
                     <p className="truncate text-sm font-bold text-slate-900 dark:text-slate-100 leading-tight">
-                      {username || "—"}
+                      {username}
                     </p>
                     {role && (
                       <span className={cn(
@@ -476,10 +478,12 @@ export function SidebarLayout({ children }: SidebarProps) {
   }, [refreshProfile]);
 
   // Persist theme and apply class to <html>
+  // mounted guard prevents removing the pre-paint dark class on initial render
   useEffect(() => {
+    if (!mounted) return;
     localStorage.setItem("theme", darkMode ? "dark" : "light");
     document.documentElement.classList.toggle("dark", darkMode);
-  }, [darkMode]);
+  }, [darkMode, mounted]);
 
   const handleLogout = useCallback(async () => {
     try {

@@ -47,7 +47,19 @@ async def lifespan(app: FastAPI):
             rows_dir,
         )
 
-    # Sweep stale temp files left by crashed extractions from previous runs.
+    # Ensure batch upload staging directory exists.
+    from spir_dynamic.services.cleanup import cleanup_stale_uploads as _sweep
+    upload_dir = _Path(cfg.batch_upload_dir)
+    try:
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        log.info("Batch upload dir ready: %s", upload_dir)
+        stale = _sweep(upload_dir, max_age_seconds=86400)
+        if stale:
+            log.info("Startup cleanup: removed %d orphaned batch upload(s)", stale)
+    except OSError as exc:
+        log.error("Batch upload dir unavailable — batch extract may fail: %s | path=%s", exc, upload_dir)
+
+    # Sweep stale single-file temp uploads left by crashed extractions.
     import tempfile as _tf
     import time as _time
     _tmp_dir = _Path(_tf.gettempdir())
@@ -85,6 +97,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["Content-Disposition"],
     )
 
     app.include_router(auth_router, prefix="/auth")

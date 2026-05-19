@@ -1,16 +1,27 @@
 """
 Batch extraction API — accept multiple files, process via Celery queue, combine results.
+
+Upload flow (safe for large files):
+  POST /api/batch/extract
+    ├─ Stream each file to storage/batch_uploads/ (never loads all bytes into RAM)
+    ├─ Enqueue one Celery task per file — small files → 'normal' queue,
+    │  large files → 'heavy' queue (dedicated worker, higher time limits)
+    └─ Return job_id immediately; frontend polls GET /api/batch/{job_id}
+
+Workers pick up tasks from their respective queues, process one file at a time
+per worker process, and delete the upload file when done.
 """
-from typing import Annotated, List
-from fastapi import File, UploadFile
+from __future__ import annotations
 
 import asyncio
 import io
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone, timedelta
-from typing import Any
+from pathlib import Path
+from typing import Annotated, Any, List
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -19,6 +30,7 @@ from pydantic import BaseModel
 from spir_dynamic.app.auth import get_current_user, TokenData
 from spir_dynamic.app.config import get_settings
 from spir_dynamic.app.pipeline import run_pipeline
+from spir_dynamic.services.cleanup import safe_delete
 from spir_dynamic.services.job_store import FileResult, get_job_store
 from spir_dynamic.services.storage import get_storage
 from spir_dynamic.services.zip_builder import build_zip
@@ -27,6 +39,11 @@ log = logging.getLogger(__name__)
 
 batch_router = APIRouter()
 
+# Celery time limits for the heavy queue (files above large_file_threshold_mb).
+# Normal queue uses the defaults set in celery_app.py (300s / 360s).
+_HEAVY_SOFT_LIMIT = 900   # 15 minutes
+_HEAVY_HARD_LIMIT = 1080  # 18 minutes
+
 
 @batch_router.post("/extract")
 async def batch_extract(
@@ -34,8 +51,11 @@ async def batch_extract(
     td: TokenData = Depends(get_current_user),
 ) -> dict[str, Any]:
     """
-    Accept 1–N files. Launch extraction for each file concurrently.
+    Accept 1–N files. Stream each to disk, then enqueue one Celery task per file.
     Returns job_id immediately — poll GET /api/batch/{job_id} for status.
+
+    Files above large_file_threshold_mb are routed to the 'heavy' queue so
+    normal jobs are never blocked by a single massive extraction.
     """
     cfg = get_settings()
     if len(files) > cfg.batch_max_files:
@@ -49,15 +69,34 @@ async def batch_extract(
     user_id = td.user_id or ""
     get_job_store().create(job_id, filenames, user_id=user_id)
 
-    # Read all file contents before launching tasks (UploadFile is not thread-safe)
-    file_data: list[tuple[bytes, str]] = [
-        (await f.read(), name) for f, name in zip(files, filenames)
-    ]
+    # Stream all uploads to disk before enqueuing tasks.
+    # This is done sequentially — one file at a time — so RAM usage stays flat
+    # regardless of how many files are in the batch.
+    upload_dir = Path(cfg.batch_upload_dir)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    file_data: list[tuple[Path, str, int]] = []  # (disk_path, original_name, size_bytes)
+    try:
+        for idx, (f, name) in enumerate(zip(files, filenames)):
+            disk_path, size_bytes = await _stream_batch_upload(
+                f, name, upload_dir, job_id, idx, cfg.max_file_size_mb
+            )
+            file_data.append((disk_path, name, size_bytes))
+            print(f"Saved upload: {disk_path}")
+            log.info(
+                "Batch upload saved | job=%s idx=%d file=%s size_mb=%.1f path=%s",
+                job_id, idx, name, size_bytes / (1024 * 1024), disk_path,
+            )
+    except HTTPException:
+        # Clean up any files already saved if one upload fails
+        for p, _, _ in file_data:
+            safe_delete(p, log_context=f"upload-abort job={job_id}")
+        raise
 
     if cfg.celery_enabled:
-        _dispatch_celery(job_id, file_data, cfg.batch_ttl_seconds, user_id)
+        _dispatch_celery(job_id, file_data, cfg, user_id)
     else:
-        asyncio.create_task(_process_batch(job_id, file_data))
+        asyncio.create_task(_process_batch_from_disk(job_id, file_data))
 
     asyncio.create_task(_persist_job_to_db(job_id, user_id, filenames, cfg.batch_ttl_seconds))
 
@@ -109,7 +148,7 @@ async def batch_download(
     )
 
 
-# ── Request models ─────────────────────────────────────────────────────────────
+# ── Request models ──────────────────────────────────────────────────────────────
 
 class CombineRequest(BaseModel):
     file_ids: list[str]
@@ -128,7 +167,7 @@ async def batch_single_result(
     The frontend polls this after POSTing to /api/batch/extract with one file.
     Returns { status: "processing" } while the worker runs, then a payload that
     mirrors the synchronous /api/extract response so existing preview and download
-    UI works without modification. Download uses GET /api/download/{file_id}.
+    UI works without modification.
     """
     job = get_job_store().get(job_id)
     if not job:
@@ -150,7 +189,6 @@ async def batch_single_result(
     storage = get_storage()
     entry = storage.get(f"rows:{result.file_id}")
     if entry is None:
-        # Row data expired or not stored (e.g. celery_enabled=False fallback).
         return {
             "status": "done",
             "file_id": result.file_id,
@@ -200,7 +238,7 @@ async def batch_single_result(
     }
 
 
-# ── Per-file preview ────────────────────────────────────────────────────────────
+# ── Per-file preview ─────────────────────────────────────────────────────────────
 
 @batch_router.get("/{job_id}/preview/{file_idx}")
 async def batch_file_preview(
@@ -211,11 +249,8 @@ async def batch_file_preview(
     """
     Return extracted row data for ONE file in the batch.
 
-    The frontend calls this to show a preview table for an individual file
-    before the user decides which files to combine.
-
-    Row data is stored in Redis by the Celery worker immediately after extraction
-    (key: rows:{file_id}) and expires after batch_ttl_seconds.
+    Row data is stored in Redis by the Celery worker immediately after
+    extraction and expires after batch_ttl_seconds.
     """
     job = get_job_store().get(job_id)
     if not job:
@@ -239,7 +274,7 @@ async def batch_file_preview(
     if entry is None:
         raise HTTPException(
             status_code=404,
-            detail="Row data not found — it may have expired or was not stored (check worker version)",
+            detail="Row data not found — it may have expired or was not stored",
         )
 
     raw_bytes, _ = entry
@@ -258,7 +293,7 @@ async def batch_file_preview(
     }
 
 
-# ── Selective combine ────────────────────────────────────────────────────────────
+# ── Selective combine ─────────────────────────────────────────────────────────────
 
 @batch_router.post("/{job_id}/combine")
 async def batch_combine(
@@ -268,12 +303,7 @@ async def batch_combine(
 ) -> dict[str, Any]:
     """
     Combine extracted row data from selected files into ONE Excel file.
-
-    Uses already-extracted rows stored in Redis — does NOT re-run extraction.
-    The combined file is stored with a new file_id and downloadable via
-    GET /api/download/{file_id} (the standard single-file download endpoint).
-
-    Request body: {"file_ids": ["uuid1", "uuid2", ...]}
+    Uses already-extracted rows from Redis — does NOT re-run extraction.
     """
     job = get_job_store().get(job_id)
     if not job:
@@ -283,7 +313,6 @@ async def batch_combine(
     if not body.file_ids:
         raise HTTPException(status_code=400, detail="file_ids must not be empty")
 
-    # Security: only allow file_ids that belong to this job
     valid_file_ids = {r.file_id for r in job.results if r.file_id and r.status == "ok"}
     invalid = [fid for fid in body.file_ids if fid not in valid_file_ids]
     if invalid:
@@ -309,7 +338,89 @@ async def batch_combine(
     }
 
 
-# ── Helpers ─────────────────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────────────
+
+async def _stream_batch_upload(
+    upload: UploadFile,
+    filename: str,
+    upload_dir: Path,
+    job_id: str,
+    idx: int,
+    max_mb: int,
+    chunk_size: int = 1_048_576,
+) -> tuple[Path, int]:
+    """
+    Stream one UploadFile to upload_dir in chunks.
+
+    File is never fully in RAM — each 1 MB chunk is written to disk and
+    released. Raises HTTP 413 if the file exceeds max_mb mid-stream.
+    Returns (disk_path, total_bytes).
+    """
+    max_bytes = max_mb * 1024 * 1024
+
+    # Build a safe filename: strip path separators and non-printable characters.
+    safe_name = re.sub(r'[^\w\-_. ]', '_', Path(filename).name)[:80] or "upload"
+    disk_filename = f"{job_id}_{idx:03d}_{safe_name}"
+    disk_path = upload_dir / disk_filename
+
+    total = 0
+    try:
+        with disk_path.open("wb") as fh:
+            while chunk := await upload.read(chunk_size):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File '{filename}' exceeds {max_mb} MB limit",
+                    )
+                fh.write(chunk)
+    except Exception:
+        safe_delete(disk_path, log_context=f"upload-error job={job_id} idx={idx}")
+        raise
+
+    return disk_path, total
+
+
+def _dispatch_celery(
+    job_id: str,
+    file_data: list[tuple[Path, str, int]],
+    cfg,
+    user_id: str = "",
+) -> None:
+    """
+    Enqueue one Celery task per file.
+
+    Files above large_file_threshold_mb go to the 'heavy' queue — a dedicated
+    worker with higher time limits. Smaller files use the 'normal' queue.
+
+    The API returns immediately after this call. Workers pick up tasks
+    independently, in separate processes, paced by their concurrency setting.
+    """
+    from spir_dynamic.tasks.extraction_tasks import process_file_task
+
+    threshold_bytes = cfg.large_file_threshold_mb * 1024 * 1024
+
+    for idx, (disk_path, filename, size_bytes) in enumerate(file_data):
+        is_heavy = size_bytes > threshold_bytes
+        queue = "heavy" if is_heavy else "normal"
+        size_mb = size_bytes / (1024 * 1024)
+
+        kwargs: dict = {}
+        if is_heavy:
+            # Override time limits for heavy files so they don't get killed at 5 min.
+            kwargs["soft_time_limit"] = _HEAVY_SOFT_LIMIT
+            kwargs["time_limit"] = _HEAVY_HARD_LIMIT
+
+        process_file_task.apply_async(
+            args=[job_id, idx, str(disk_path), filename, user_id],
+            queue=queue,
+            **kwargs,
+        )
+        log.info(
+            "Celery task enqueued | job=%s idx=%d file=%s size_mb=%.1f queue=%s",
+            job_id, idx, filename, size_mb, queue,
+        )
+
 
 def _do_combine(file_ids: list[str]) -> tuple[str, str, int]:
     """
@@ -336,7 +447,8 @@ def _do_combine(file_ids: list[str]) -> tuple[str, str, int]:
 
     if missing:
         raise RuntimeError(
-            f"Row data missing or expired for {len(missing)} file(s): {missing[:3]}{'...' if len(missing) > 3 else ''}"
+            f"Row data missing or expired for {len(missing)} file(s): {missing[:3]}"
+            + ("..." if len(missing) > 3 else "")
         )
 
     xlsx_bytes = build_xlsx(all_rows, "COMBINED")
@@ -345,41 +457,11 @@ def _do_combine(file_ids: list[str]) -> tuple[str, str, int]:
     cfg = get_settings()
     storage.put(combined_id, xlsx_bytes, out_filename, ttl=cfg.batch_ttl_seconds)
 
-    log.info("Combine complete | file_count=%d total_rows=%d file_id=%s",
-             len(file_ids), len(all_rows), combined_id)
+    log.info(
+        "Combine complete | file_count=%d total_rows=%d file_id=%s",
+        len(file_ids), len(all_rows), combined_id,
+    )
     return combined_id, out_filename, len(all_rows)
-
-
-def _dispatch_celery(
-    job_id: str,
-    file_data: list[tuple[bytes, str]],
-    ttl_seconds: int,
-    user_id: str = "",
-) -> None:
-    """
-    Store each file's bytes in Redis, then enqueue one Celery task per file.
-
-    The API returns immediately after this call. Workers pick up tasks from the
-    Redis queue independently, in separate processes.
-
-    user_id is passed explicitly so the worker can write extraction_history
-    without needing to look it up from the job store (which can race or be
-    unavailable by the time the task runs).
-
-    Input bytes TTL = ttl_seconds + 600 so the file survives in Redis even if
-    all workers are busy and a task is delayed by queue backlog or retries
-    (max backoff = 10 * 3^2 = 90s × 3 retries = 270s, well within 600s).
-    """
-    from spir_dynamic.tasks.extraction_tasks import process_file_task
-
-    storage = get_storage()
-    input_ttl = ttl_seconds + 600
-
-    for idx, (file_bytes, filename) in enumerate(file_data):
-        input_key = f"input:{job_id}:{idx}"
-        storage.put(input_key, file_bytes, filename, ttl=input_ttl)
-        process_file_task.delay(job_id, idx, input_key, filename, user_id)
-        log.debug("Celery task enqueued | job=%s idx=%d file=%s", job_id, idx, filename)
 
 
 def _assert_job_access(job_user_id: str, td: TokenData) -> None:
@@ -424,14 +506,22 @@ async def _persist_job_to_db(
         log.warning("Batch job DB persist failed (non-fatal): %s", exc)
 
 
-async def _process_batch(job_id: str, file_data: list[tuple[bytes, str]]) -> None:
-    """Background coroutine: run each file through the pipeline in a thread pool."""
+async def _process_batch_from_disk(
+    job_id: str,
+    file_data: list[tuple[Path, str, int]],
+) -> None:
+    """
+    Fallback coroutine used when celery_enabled=False (dev/test mode).
+
+    Processes files SEQUENTIALLY — one at a time — from their on-disk paths.
+    Each file is cleaned up after extraction regardless of success or failure.
+    """
     loop = asyncio.get_event_loop()
     store = get_job_store()
 
-    async def _extract_one(idx: int, content: bytes, filename: str) -> None:
+    for idx, (disk_path, filename, _) in enumerate(file_data):
         try:
-            result = await loop.run_in_executor(None, run_pipeline, content, filename)
+            result = await loop.run_in_executor(None, run_pipeline, disk_path, filename)
             store.update_result(job_id, idx, FileResult(
                 filename=filename,
                 status="ok",
@@ -447,8 +537,5 @@ async def _process_batch(job_id: str, file_data: list[tuple[bytes, str]]) -> Non
                 status="error",
                 error=str(exc),
             ))
-
-    await asyncio.gather(*[
-        _extract_one(i, content, name)
-        for i, (content, name) in enumerate(file_data)
-    ])
+        finally:
+            safe_delete(disk_path, log_context=f"fallback job={job_id} idx={idx}")

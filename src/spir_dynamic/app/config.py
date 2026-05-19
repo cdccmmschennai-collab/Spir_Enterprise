@@ -75,6 +75,23 @@ class Settings(BaseSettings):
             p = _PROJECT_ROOT / v
         return str(p.resolve())
 
+    # Batch upload staging directory — batch files are streamed here on upload
+    # and deleted by the Celery worker after extraction completes. Orphaned
+    # files (from crashed workers) are swept on API/worker startup.
+    batch_upload_dir: str = "storage/batch_uploads"
+
+    @field_validator("batch_upload_dir", mode="after")
+    @classmethod
+    def _resolve_batch_upload_dir(cls, v: str) -> str:
+        p = Path(v)
+        if not p.is_absolute():
+            p = _PROJECT_ROOT / v
+        return str(p.resolve())
+
+    # Files above this size (MB) are routed to the 'heavy' Celery queue so
+    # normal-sized files never wait behind a 500 MB job.
+    large_file_threshold_mb: int = 100
+
     # Celery / Redis
     redis_url: str = "redis://localhost:6379/0"
     # Set CELERY_ENABLED=true to route batch processing through Celery workers.

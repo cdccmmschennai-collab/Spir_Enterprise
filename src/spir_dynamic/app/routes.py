@@ -669,7 +669,9 @@ async def delete_history(
             try:
                 from spir_dynamic.services.redis_store import RedisStorage
                 rs = RedisStorage(cfg.redis_url)
-                rs.delete(rec.file_id)
+                rs.delete(rec.file_id)           # final XLSX
+                rs.delete(f"rows:{rec.file_id}") # row JSON payload
+                log.info("Redis keys deleted for file_id: %s", rec.file_id)
             except Exception as exc:
                 log.warning("Redis cleanup failed for file_id %s: %s", rec.file_id, exc)
 

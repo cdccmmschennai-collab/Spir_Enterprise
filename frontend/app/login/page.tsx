@@ -103,7 +103,7 @@ function ForgotPasswordForm({ onBack }: { onBack: () => void }) {
 
         <div className="space-y-1.5">
           <label htmlFor="fp-email" className="text-sm font-medium text-slate-700">
-            Email <span className="text-slate-400 font-normal">(optional — helps admin identify you)</span>
+            Email <span className="text-slate-400 font-normal">(optional - helps admin identify you)</span>
           </label>
           <div className="relative">
             <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
