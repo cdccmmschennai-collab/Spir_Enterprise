@@ -1421,6 +1421,18 @@ def _read_annexure_equipment(
     serial_col = col_map.get("serial")
     mfr_col = col_map.get("manufacturer")
 
+    # Correct left-of-tag model/serial columns for multi-section annexure layouts.
+    # (e.g. "SKID Model No" at col 4 beats "Pump Model No" at col 11 in first-match
+    # scanning when the tag column is at col 10 — this corrects that.)
+    if tag_col:
+        fixed_model, fixed_serial = _fix_annexure_col_positions(
+            ws, profile.header_row or 1, tag_col, model_col, serial_col,
+        )
+        if fixed_model is not None:
+            model_col = fixed_model
+        if fixed_serial is not None:
+            serial_col = fixed_serial
+
     # If manufacturer and model point to the same column (e.g. "Manufacturer Model No"),
     # treat it as model-only — the real manufacturer comes from sheet metadata.
     if mfr_col and model_col and mfr_col == model_col:
@@ -1580,7 +1592,94 @@ def _scan_annexure_headers(ws, sheet_name: str = None) -> tuple[dict[str, int], 
 
     col_map = {field: col for field, (col, _, _) in best_match.items()}
     header_row_found = max((row for _, _, row in best_match.values()), default=1) if best_match else 1
+
+    # Correct left-of-tag model/serial columns (same logic as _fix_annexure_col_positions).
+    tag_c = col_map.get("tag")
+    if tag_c:
+        fixed_model, fixed_serial = _fix_annexure_col_positions(
+            ws, header_row_found, tag_c,
+            col_map.get("model"),
+            col_map.get("serial"),
+        )
+        if fixed_model is not None:
+            col_map["model"] = fixed_model
+        if fixed_serial is not None:
+            col_map["serial"] = fixed_serial
+
     return col_map, header_row_found
+
+
+def _fix_annexure_col_positions(
+    ws, header_row: int, tag_col: int, model_col, serial_col
+) -> tuple:
+    """
+    Correct model/serial column detection for multi-section annexure layouts.
+
+    Some annexure sheets have a left section (skid / manifold context columns such
+    as "SKID Model No", "SKID MFG Serial no") followed by a right section that
+    contains the real equipment columns ("Pump Model No", "Pump Serial N°", "S/N").
+
+    When model_col or serial_col land LEFT of tag_col the column mapper picked from
+    the wrong section.  This function rescans the header row starting just AFTER
+    tag_col to find a better match.  If nothing is found to the right, the original
+    column is kept — so the fix is always conservative.
+
+    Additionally, when serial_col is None, the scan looks for "s/n" / "s.n." headers
+    that the column mapper maps to item_number instead of serial.
+
+    Returns (corrected_model_col, corrected_serial_col).
+    A None return value means "no change" for that field.
+    """
+    needs_model_fix  = model_col  is not None and model_col  < tag_col
+    needs_serial_fix = serial_col is None     or (serial_col is not None and serial_col < tag_col)
+
+    if not needs_model_fix and not needs_serial_fix:
+        return None, None
+
+    _MODEL_KWS  = ["model no", "model number", "model"]
+    _SERIAL_KWS = ["serial no", "serial number", "serial", "ser no", "s/n", "s.n."]
+
+    max_col = min(ws.max_column or 20, 30)
+    new_model  = None
+    new_serial = None
+
+    # Scan the header row (and one row above/below for tolerance)
+    for r in range(max(1, header_row - 1), min(header_row + 2, 9)):
+        for c in range(tag_col + 1, max_col + 1):
+            raw = ws.cell(r, c).value
+            if raw is None:
+                continue
+            cell_lower = str(raw).lower().strip()
+
+            if needs_model_fix and new_model is None:
+                if any(kw in cell_lower for kw in _MODEL_KWS):
+                    new_model = c
+
+            if needs_serial_fix and new_serial is None:
+                if any(kw in cell_lower for kw in _SERIAL_KWS):
+                    new_serial = c
+
+        if (new_model is not None or not needs_model_fix) and \
+           (new_serial is not None or not needs_serial_fix):
+            break
+
+    final_model  = new_model  if (needs_model_fix  and new_model  is not None) else None
+    final_serial = new_serial if  needs_serial_fix                              else None
+
+    if final_model is not None:
+        log.info(
+            "[annexure_col_fix] header_row=%d tag_col=%d: model col %s→%s "
+            "(left-of-tag corrected to right-section column)",
+            header_row, tag_col, model_col, final_model,
+        )
+    if final_serial is not None:
+        log.info(
+            "[annexure_col_fix] header_row=%d tag_col=%d: serial col %s→%s (%s)",
+            header_row, tag_col, serial_col, final_serial,
+            "S/N detection" if serial_col is None else "left-of-tag corrected",
+        )
+
+    return final_model, final_serial
 
 
 def _find_theme_tag_col(ws, sheet_name: str, current_col: int, max_col: int, scan_rows: int):
