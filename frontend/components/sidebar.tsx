@@ -494,7 +494,23 @@ export function SidebarLayout({ children }: SidebarProps) {
     } catch {
       // ignore
     }
-    clearSession();
+    // Clear user-scoped batch session BEFORE clearToken() — token is needed to
+    // compute the uid-scoped key (JWT uid claim).
+    try {
+      const token = localStorage.getItem("token");
+      if (token) {
+        const parts = token.split(".");
+        if (parts.length === 3) {
+          const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+          const payload = JSON.parse(atob(b64)) as Record<string, unknown>;
+          const uid = String(payload.uid ?? payload.sub ?? "");
+          if (uid) sessionStorage.removeItem(`spir_batch_session-${uid}`);
+        }
+      }
+    } catch {
+      // non-fatal — isolation is still guaranteed by user-scoped keys
+    }
+    clearSession(); // single-file extraction session (also user-scoped in extraction-session.ts)
     clearToken();
     localStorage.removeItem("profile_avatar_url");
     window.location.href = "/login";

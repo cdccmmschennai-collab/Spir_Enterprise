@@ -27,8 +27,31 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const ACCEPTED = ".xlsx,.xlsm,.xls";
 const MAX_FILES = 20;
 const POLL_MS = 2500;
-const SESSION_KEY = "spir_batch_session";
+const SESSION_KEY_PREFIX = "spir_batch_session";
 const SESSION_TTL_MS = 2 * 60 * 60 * 1000; // 2 h — matches backend batch_ttl_seconds
+
+// Decode the JWT uid claim (DB UUID) so each user's batch state is isolated.
+// Falls back to the sub claim (username) in legacy/no-DB mode.
+// Reads payload.uid — the same field the backend uses for extraction_history.user_id.
+function getUserId(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    const token = localStorage.getItem("token");
+    if (!token) return "";
+    const parts = token.split(".");
+    if (parts.length !== 3) return "";
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(atob(b64)) as Record<string, unknown>;
+    return String(payload.uid ?? payload.sub ?? "");
+  } catch {
+    return "";
+  }
+}
+
+function getSessionKey(): string {
+  const uid = getUserId();
+  return uid ? `${SESSION_KEY_PREFIX}-${uid}` : SESSION_KEY_PREFIX;
+}
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -56,11 +79,13 @@ interface BatchJob {
 type CombineState = "idle" | "combining" | "ready" | "error";
 
 // ─── Session persistence (sessionStorage — clears when browser tab closes) ─────
+// Keys are user-scoped via getSessionKey() so batch state never leaks between
+// accounts sharing the same browser tab within the same session.
 
 function saveSession(jobId: string, status: BatchJob): void {
   try {
     sessionStorage.setItem(
-      SESSION_KEY,
+      getSessionKey(),
       JSON.stringify({ jobId, status, savedAt: Date.now() })
     );
   } catch {
@@ -70,7 +95,8 @@ function saveSession(jobId: string, status: BatchJob): void {
 
 function loadSession(): { jobId: string; status: BatchJob } | null {
   try {
-    const raw = sessionStorage.getItem(SESSION_KEY);
+    const key = getSessionKey();
+    const raw = sessionStorage.getItem(key);
     if (!raw) return null;
     const { jobId, status, savedAt } = JSON.parse(raw) as {
       jobId: string;
@@ -78,7 +104,7 @@ function loadSession(): { jobId: string; status: BatchJob } | null {
       savedAt: number;
     };
     if (!jobId || Date.now() - savedAt > SESSION_TTL_MS) {
-      sessionStorage.removeItem(SESSION_KEY);
+      sessionStorage.removeItem(key);
       return null;
     }
     return { jobId, status };
@@ -89,7 +115,7 @@ function loadSession(): { jobId: string; status: BatchJob } | null {
 
 function clearSession(): void {
   try {
-    sessionStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem(getSessionKey());
   } catch {}
 }
 
