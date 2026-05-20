@@ -26,7 +26,7 @@ import { cn } from "@/lib/utils";
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const ACCEPTED = ".xlsx,.xlsm,.xls";
 const MAX_FILES = 20;
-const POLL_MS = 2500;
+const POLL_MS = 1500;
 const SESSION_KEY_PREFIX = "spir_batch_session";
 const SESSION_TTL_MS = 2 * 60 * 60 * 1000; // 2 h — matches backend batch_ttl_seconds
 
@@ -66,6 +66,21 @@ interface FileResult {
   queue_position: number | null;
 }
 
+// Display-only status extending backend statuses with upload-phase states
+type BadgeStatus = FileResult["status"] | "uploading" | "waiting";
+
+function getBadgeStatus(
+  r: FileResult,
+  idx: number,
+  uploadingIdx: number | null
+): BadgeStatus {
+  if (uploadingIdx !== null && r.status === "pending") {
+    if (idx === uploadingIdx) return "uploading";
+    if (idx > uploadingIdx) return "waiting";
+  }
+  return r.status;
+}
+
 interface BatchJob {
   job_id: string;
   status: "processing" | "done" | "partial" | "failed";
@@ -84,7 +99,7 @@ type CombineState = "idle" | "combining" | "ready" | "error";
 
 function saveSession(jobId: string, status: BatchJob): void {
   try {
-    sessionStorage.setItem(
+    localStorage.setItem(
       getSessionKey(),
       JSON.stringify({ jobId, status, savedAt: Date.now() })
     );
@@ -96,7 +111,7 @@ function saveSession(jobId: string, status: BatchJob): void {
 function loadSession(): { jobId: string; status: BatchJob } | null {
   try {
     const key = getSessionKey();
-    const raw = sessionStorage.getItem(key);
+    const raw = localStorage.getItem(key);
     if (!raw) return null;
     const { jobId, status, savedAt } = JSON.parse(raw) as {
       jobId: string;
@@ -104,7 +119,7 @@ function loadSession(): { jobId: string; status: BatchJob } | null {
       savedAt: number;
     };
     if (!jobId || Date.now() - savedAt > SESSION_TTL_MS) {
-      sessionStorage.removeItem(key);
+      localStorage.removeItem(key);
       return null;
     }
     return { jobId, status };
@@ -115,7 +130,7 @@ function loadSession(): { jobId: string; status: BatchJob } | null {
 
 function clearSession(): void {
   try {
-    sessionStorage.removeItem(getSessionKey());
+    localStorage.removeItem(getSessionKey());
   } catch {}
 }
 
@@ -133,14 +148,30 @@ function FileStatusBadge({
   status,
   queuePosition,
 }: {
-  status: FileResult["status"];
+  status: BadgeStatus;
   queuePosition: number | null;
 }) {
+  if (status === "uploading") {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 dark:border-violet-800 dark:bg-violet-950/50 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-violet-700 dark:text-violet-400 whitespace-nowrap">
+        <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+        Uploading…
+      </span>
+    );
+  }
+  if (status === "waiting") {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 dark:bg-slate-700 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-400 dark:text-slate-500 whitespace-nowrap">
+        <Clock className="h-3 w-3 shrink-0" />
+        Waiting
+      </span>
+    );
+  }
   if (status === "pending") {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 dark:bg-slate-700 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400 whitespace-nowrap">
         <Clock className="h-3 w-3 shrink-0" />
-        {queuePosition ? `Queued #${queuePosition}` : "Waiting"}
+        {queuePosition ? `Queued #${queuePosition}` : "Queued"}
       </span>
     );
   }
@@ -148,7 +179,7 @@ function FileStatusBadge({
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-950/50 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-blue-700 dark:text-blue-400 whitespace-nowrap">
         <Loader2 className="h-3 w-3 animate-spin shrink-0" />
-        Processing
+        Processing…
       </span>
     );
   }
@@ -156,7 +187,7 @@ function FileStatusBadge({
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950/50 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-400 whitespace-nowrap">
         <CheckCircle2 className="h-3 w-3 shrink-0" />
-        Completed
+        Extracted
       </span>
     );
   }
@@ -184,6 +215,8 @@ export default function BatchPage() {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
   const [combineState, setCombineState] = useState<CombineState>("idle");
   const [combinedFileId, setCombinedFileId] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
+  const [uploadingFileIdx, setUploadingFileIdx] = useState<number | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -201,36 +234,71 @@ export default function BatchPage() {
 
   useEffect(() => () => stopPolling(), [stopPolling]);
 
-  const startPolling = useCallback(
-    (jid: string) => {
-      activeJobIdRef.current = jid;
-
-      const poll = async () => {
-        if (activeJobIdRef.current !== jid) return; // stale poll after reset
-        try {
-          const res = await fetch(`${API_URL}/api/batch/${jid}`, {
-            headers: authHeaders(),
-          });
-          if (res.status === 401) {
-            stopPolling();
-            setError("Session expired. Please log in again.");
-            return;
-          }
-          if (!res.ok) return; // transient server error — keep retrying
-          const data: BatchJob = await res.json();
-          setJobStatus(data);
-          saveSession(jid, data); // persist latest state for navigation recovery
-          if (data.status !== "processing") stopPolling();
-        } catch {
-          // transient network error — keep polling silently
+  // Standalone poll tick — called by interval AND by visibility/focus/online handlers.
+  const poll = useCallback(
+    async (jid: string) => {
+      if (activeJobIdRef.current !== jid) return; // stale call after reset
+      try {
+        const res = await fetch(`${API_URL}/api/batch/${jid}`, {
+          headers: authHeaders(),
+        });
+        if (res.status === 401) {
+          stopPolling();
+          setError("Session expired. Please log in again.");
+          return;
         }
-      };
-
-      poll(); // immediate first check
-      pollIntervalRef.current = setInterval(poll, POLL_MS);
+        if (res.status === 404) {
+          // Job expired on the backend (TTL elapsed) or server restarted
+          clearSession();
+          stopPolling();
+          setError("Batch job expired or not found on server. Please start a new batch.");
+          return;
+        }
+        if (!res.ok) return; // transient server error — keep retrying
+        const data: BatchJob = await res.json();
+        setJobStatus(data);
+        saveSession(jid, data);
+        if (data.status !== "processing") stopPolling();
+      } catch {
+        // transient network error — keep polling silently
+      }
     },
     [stopPolling]
   );
+
+  const startPolling = useCallback(
+    (jid: string) => {
+      // Clear any existing interval first to avoid duplicate intervals
+      if (pollIntervalRef.current !== null) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+      activeJobIdRef.current = jid;
+      poll(jid); // immediate first check
+      pollIntervalRef.current = setInterval(() => poll(jid), POLL_MS);
+    },
+    [poll]
+  );
+
+  // Re-poll immediately when the tab becomes visible, window regains focus, or
+  // network reconnects — prevents stale UI after the browser throttles setInterval.
+  useEffect(() => {
+    const resume = () => {
+      const jid = activeJobIdRef.current;
+      if (jid) poll(jid); // single immediate fetch — does NOT reset the interval
+    };
+    const onVisibility = () => {
+      if (!document.hidden) resume();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", resume);
+    window.addEventListener("online", resume);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", resume);
+      window.removeEventListener("online", resume);
+    };
+  }, [poll]);
 
   // ── Session restore on mount ─────────────────────────────────────────────────
 
@@ -239,10 +307,11 @@ export default function BatchPage() {
     if (session?.jobId) {
       setJobId(session.jobId);
       if (session.status) setJobStatus(session.status);
-      // Resume polling only if job was still in-flight when we navigated away
-      if (session.status?.status === "processing") {
-        startPolling(session.jobId);
-      }
+      // Always start polling on restore — immediately fetches latest backend state.
+      // For terminal jobs this fires once and stops; for in-progress jobs it runs continuously.
+      // This ensures the UI is never stuck showing stale "Queued" state after a refresh or
+      // navigation, even if the job completed while the page was hidden or unloaded.
+      startPolling(session.jobId);
     }
     setHydrated(true);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -277,6 +346,8 @@ export default function BatchPage() {
   const handleUpload = useCallback(async () => {
     if (files.length === 0) return;
     setUploading(true);
+    setUploadProgress(null);
+    setUploadingFileIdx(null);
     setError(null);
     setJobStatus(null);
     setCombineState("idle");
@@ -285,32 +356,57 @@ export default function BatchPage() {
     stopPolling();
     clearSession();
 
-    const form = new FormData();
-    for (const f of files) form.append("files", f);
-
     try {
-      const res = await fetch(`${API_URL}/api/batch/extract`, {
+      // Phase 1: register — send filenames only, no file bytes
+      const regRes = await fetch(`${API_URL}/api/batch/register`, {
         method: "POST",
-        headers: authHeaders(),
-        body: form,
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ filenames: files.map((f) => f.name) }),
       });
-      if (res.status === 401) {
+      if (regRes.status === 401) {
         setError("Session expired. Please log in again.");
         return;
       }
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setError(data.detail ?? `Upload failed (${res.status})`);
+      if (!regRes.ok) {
+        const d = await regRes.json().catch(() => ({}));
+        setError(d.detail ?? `Failed to create batch (${regRes.status})`);
         return;
       }
-      const { job_id } = await res.json();
+      const { job_id } = await regRes.json();
       setJobId(job_id);
-      setFiles([]); // clear selection — files are now queued on the server
+      setUploadProgress({ done: 0, total: files.length });
+      // Start polling immediately so session is saved within the first tick and
+      // live Celery updates appear in the queue UI while remaining files upload.
       startPolling(job_id);
+
+      // Phase 2: upload files one at a time
+      for (let idx = 0; idx < files.length; idx++) {
+        setUploadingFileIdx(idx); // show "Uploading…" badge for current file
+        const form = new FormData();
+        form.append("file", files[idx]);
+        form.append("file_idx", String(idx));
+
+        const upRes = await fetch(`${API_URL}/api/batch/${job_id}/upload`, {
+          method: "POST",
+          headers: authHeaders(),
+          body: form,
+        });
+        if (upRes.status === 401) {
+          setError("Session expired. Please log in again.");
+          return;
+        }
+        // Non-401 failures are tolerated — backend marks the slot as "error",
+        // polling surfaces it in the queue UI, remaining files still upload
+        setUploadProgress({ done: idx + 1, total: files.length });
+      }
+
+      setFiles([]); // clear selection — all files are now queued on the server
+      setUploadProgress(null);
     } catch {
       setError("Could not reach the server. Is the backend running?");
     } finally {
       setUploading(false);
+      setUploadingFileIdx(null); // upload phase always ends here
     }
   }, [files, startPolling, stopPolling]);
 
@@ -420,6 +516,7 @@ export default function BatchPage() {
     setExpandedIdx(null);
     setCombineState("idle");
     setCombinedFileId(null);
+    setUploadingFileIdx(null);
   }, [stopPolling]);
 
   // ── Derived state ─────────────────────────────────────────────────────────────
@@ -607,7 +704,9 @@ export default function BatchPage() {
                   {uploading ? (
                     <>
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      Uploading…
+                      {uploadProgress
+                        ? `Uploading ${uploadProgress.done + 1} of ${uploadProgress.total}…`
+                        : "Preparing…"}
                     </>
                   ) : (
                     <>
@@ -774,14 +873,18 @@ export default function BatchPage() {
               </div>
 
               <ul className="divide-y divide-slate-100 dark:divide-slate-700">
-                {jobStatus.results.map((r, i) => (
+                {jobStatus.results.map((r, i) => {
+                  const displayStatus = getBadgeStatus(r, i, uploadingFileIdx);
+                  return (
                   <li key={`${r.filename}-${i}`}>
                     {/* Main row */}
                     <div
                       className={cn(
                         "flex items-start gap-4 px-5 py-4 transition-colors",
                         r.status === "running" &&
-                          "bg-blue-50/40 dark:bg-blue-950/10"
+                          "bg-blue-50/40 dark:bg-blue-950/10",
+                        displayStatus === "uploading" &&
+                          "bg-violet-50/30 dark:bg-violet-950/10"
                       )}
                     >
                       {/* Status-coloured file icon */}
@@ -794,6 +897,8 @@ export default function BatchPage() {
                             ? "bg-red-50 dark:bg-red-950/50"
                             : r.status === "running"
                             ? "bg-blue-50 dark:bg-blue-950/50"
+                            : displayStatus === "uploading"
+                            ? "bg-violet-50 dark:bg-violet-950/50"
                             : "bg-slate-100 dark:bg-slate-700"
                         )}
                       >
@@ -806,6 +911,8 @@ export default function BatchPage() {
                               ? "text-red-500 dark:text-red-400"
                               : r.status === "running"
                               ? "text-blue-600 dark:text-blue-400"
+                              : displayStatus === "uploading"
+                              ? "text-violet-600 dark:text-violet-400"
                               : "text-slate-400 dark:text-slate-500"
                           )}
                         />
@@ -836,11 +943,21 @@ export default function BatchPage() {
                             Extracting data…
                           </p>
                         )}
-                        {r.status === "pending" && (
+                        {r.status === "pending" && displayStatus === "uploading" && (
+                          <p className="mt-0.5 text-xs text-violet-500 dark:text-violet-400">
+                            Sending file to server…
+                          </p>
+                        )}
+                        {r.status === "pending" && displayStatus === "waiting" && (
+                          <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
+                            Waiting for upload
+                          </p>
+                        )}
+                        {r.status === "pending" && displayStatus === "pending" && (
                           <p className="mt-0.5 text-xs text-slate-400 dark:text-slate-500">
                             {r.queue_position
                               ? `Position ${r.queue_position} in queue`
-                              : "Waiting to start"}
+                              : "Queued — waiting for worker"}
                           </p>
                         )}
                       </div>
@@ -848,7 +965,7 @@ export default function BatchPage() {
                       {/* Right side: badge + actions */}
                       <div className="flex shrink-0 flex-wrap items-center gap-2">
                         <FileStatusBadge
-                          status={r.status}
+                          status={displayStatus}
                           queuePosition={r.queue_position}
                         />
 
@@ -921,7 +1038,8 @@ export default function BatchPage() {
                       </div>
                     )}
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             </div>
 

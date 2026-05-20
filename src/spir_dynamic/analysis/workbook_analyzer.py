@@ -188,10 +188,17 @@ def _exclude_foreign_spir_sheets(profiles: list[SheetProfile], filename: str) ->
         if not sheet_spir:
             continue  # No explicit SPIR number — do not exclude
 
-        if _spir_differs(str(sheet_spir).strip(), file_spir):
+        # Strip leading non-alphanumeric characters that metadata extraction can
+        # introduce (e.g. "_VEN-MEWTP-..." when a cell value is prefixed with an
+        # underscore or other formatting artifact from some Excel templates).
+        sheet_spir_clean = re.sub(r'^[^A-Za-z0-9]+', '', str(sheet_spir).strip())
+        if not sheet_spir_clean:
+            continue
+
+        if _spir_differs(sheet_spir_clean, file_spir):
             log.info(
                 "Sheet '%s' excluded: embedded SPIR '%s' differs from file SPIR '%s'",
-                p.name, sheet_spir, file_spir,
+                p.name, sheet_spir_clean, file_spir,
             )
             p.role = SheetRole.UTILITY
             p.confidence = 0.9

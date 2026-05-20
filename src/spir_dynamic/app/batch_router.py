@@ -23,7 +23,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Annotated, Any, List
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -103,6 +103,96 @@ async def batch_extract(
     return {"job_id": job_id, "total": len(files), "status": "processing"}
 
 
+@batch_router.post("/register")
+async def batch_register(
+    body: RegisterRequest,
+    td: TokenData = Depends(get_current_user),
+) -> dict[str, Any]:
+    """
+    Phase 1 of the sequential upload flow.
+    Accepts filenames only (no file data), creates the job, returns job_id.
+    File uploads follow via POST /api/batch/{job_id}/upload — one per file.
+    """
+    cfg = get_settings()
+    if not body.filenames:
+        raise HTTPException(status_code=400, detail="filenames must not be empty")
+    if len(body.filenames) > cfg.batch_max_files:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Max {cfg.batch_max_files} files per batch request",
+        )
+
+    job_id = str(uuid.uuid4())
+    user_id = td.user_id or ""
+    get_job_store().create(job_id, body.filenames, user_id=user_id)
+
+    asyncio.create_task(
+        _persist_job_to_db(job_id, user_id, body.filenames, cfg.batch_ttl_seconds)
+    )
+
+    return {"job_id": job_id, "total": len(body.filenames), "status": "ready"}
+
+
+@batch_router.post("/{job_id}/upload")
+async def batch_upload_file(
+    job_id: str,
+    file: UploadFile = File(...),
+    file_idx: int = Form(...),
+    td: TokenData = Depends(get_current_user),
+) -> dict[str, Any]:
+    """
+    Phase 2 of the sequential upload flow (one call per file).
+    Streams the file to disk and dispatches one Celery task.
+    Returns immediately — frontend polls GET /api/batch/{job_id} for status.
+    """
+    cfg = get_settings()
+    job_store = get_job_store()
+
+    job = job_store.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found or expired")
+    _assert_job_access(job.user_id, td)
+
+    if file_idx < 0 or file_idx >= job.total:
+        raise HTTPException(
+            status_code=400,
+            detail=f"file_idx must be 0–{job.total - 1}",
+        )
+
+    filename = job.results[file_idx].filename  # use registered name — avoids client mismatch
+    upload_dir = Path(cfg.batch_upload_dir)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    user_id = td.user_id or ""
+
+    try:
+        disk_path, size_bytes = await _stream_batch_upload(
+            file, filename, upload_dir, job_id, file_idx, cfg.max_file_size_mb
+        )
+    except HTTPException as exc:
+        # Mark slot as error so polling never stalls on "pending"
+        job_store.update_result(
+            job_id, file_idx,
+            FileResult(filename=filename, status="error", error=exc.detail),
+        )
+        raise
+
+    log.info(
+        "Sequential upload saved | job=%s idx=%d file=%s size_mb=%.1f",
+        job_id, file_idx, filename, size_bytes / (1024 * 1024),
+    )
+
+    if cfg.celery_enabled:
+        _dispatch_celery(job_id, [(disk_path, filename, size_bytes)], cfg, user_id,
+                         idx_offset=file_idx)
+    else:
+        asyncio.create_task(
+            _process_batch_from_disk(job_id, [(disk_path, filename, size_bytes)],
+                                     idx_offset=file_idx)
+        )
+
+    return {"status": "queued", "file_idx": file_idx, "filename": filename}
+
+
 @batch_router.get("/{job_id}")
 async def batch_status(
     job_id: str,
@@ -152,6 +242,10 @@ async def batch_download(
 
 class CombineRequest(BaseModel):
     file_ids: list[str]
+
+
+class RegisterRequest(BaseModel):
+    filenames: list[str]
 
 
 # ── Single-file async result (frontend polling UX) ──────────────────────────────
@@ -386,6 +480,7 @@ def _dispatch_celery(
     file_data: list[tuple[Path, str, int]],
     cfg,
     user_id: str = "",
+    idx_offset: int = 0,
 ) -> None:
     """
     Enqueue one Celery task per file.
@@ -400,7 +495,7 @@ def _dispatch_celery(
 
     threshold_bytes = cfg.large_file_threshold_mb * 1024 * 1024
 
-    for idx, (disk_path, filename, size_bytes) in enumerate(file_data):
+    for idx, (disk_path, filename, size_bytes) in enumerate(file_data, start=idx_offset):
         is_heavy = size_bytes > threshold_bytes
         queue = "heavy" if is_heavy else "normal"
         size_mb = size_bytes / (1024 * 1024)
@@ -509,6 +604,7 @@ async def _persist_job_to_db(
 async def _process_batch_from_disk(
     job_id: str,
     file_data: list[tuple[Path, str, int]],
+    idx_offset: int = 0,
 ) -> None:
     """
     Fallback coroutine used when celery_enabled=False (dev/test mode).
@@ -519,7 +615,7 @@ async def _process_batch_from_disk(
     loop = asyncio.get_event_loop()
     store = get_job_store()
 
-    for idx, (disk_path, filename, _) in enumerate(file_data):
+    for idx, (disk_path, filename, _) in enumerate(file_data, start=idx_offset):
         try:
             result = await loop.run_in_executor(None, run_pipeline, disk_path, filename)
             store.update_result(job_id, idx, FileResult(
