@@ -110,6 +110,12 @@ def _split_separated_value(val: str, expected_count: int) -> list[str]:
         parts = [p.strip() for p in re.split(r"\s+to\s+", s, flags=re.IGNORECASE)]
         if len(parts) == expected_count:
             return parts
+    # Numeric hyphen range: "240430-240431" → ["240430", "240431"]
+    # Only triggers when all parts are pure digits and count matches expected tags.
+    if "-" in s and expected_count > 1:
+        parts = [p.strip() for p in s.split("-") if p.strip()]
+        if len(parts) == expected_count and all(p.isdigit() for p in parts):
+            return parts
     # Not separable — same value for all
     return [s] * expected_count
 
