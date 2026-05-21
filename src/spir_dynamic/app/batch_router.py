@@ -16,13 +16,13 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import logging
 import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Annotated, Any, List
 
+import structlog
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -35,7 +35,7 @@ from spir_dynamic.services.job_store import FileResult, get_job_store
 from spir_dynamic.services.storage import get_storage
 from spir_dynamic.services.zip_builder import build_zip
 
-log = logging.getLogger(__name__)
+log = structlog.stdlib.get_logger(__name__)
 
 batch_router = APIRouter()
 
@@ -69,6 +69,9 @@ async def batch_extract(
     user_id = td.user_id or ""
     get_job_store().create(job_id, filenames, user_id=user_id)
 
+    # Enrich all subsequent log lines for this request with batch context.
+    structlog.contextvars.bind_contextvars(job_id=job_id, user_id=user_id, file_count=len(files))
+
     # Stream all uploads to disk before enqueuing tasks.
     # This is done sequentially — one file at a time — so RAM usage stays flat
     # regardless of how many files are in the batch.
@@ -82,10 +85,13 @@ async def batch_extract(
                 f, name, upload_dir, job_id, idx, cfg.max_file_size_mb
             )
             file_data.append((disk_path, name, size_bytes))
-            print(f"Saved upload: {disk_path}")
             log.info(
-                "Batch upload saved | job=%s idx=%d file=%s size_mb=%.1f path=%s",
-                job_id, idx, name, size_bytes / (1024 * 1024), disk_path,
+                "batch.upload_saved",
+                job_id=job_id,
+                file_idx=idx,
+                filename=name,
+                size_mb=round(size_bytes / (1024 * 1024), 1),
+                path=str(disk_path),
             )
     except HTTPException:
         # Clean up any files already saved if one upload fails
@@ -164,6 +170,8 @@ async def batch_upload_file(
     upload_dir.mkdir(parents=True, exist_ok=True)
     user_id = td.user_id or ""
 
+    structlog.contextvars.bind_contextvars(job_id=job_id, file_idx=file_idx, filename=filename, user_id=user_id)
+
     try:
         disk_path, size_bytes = await _stream_batch_upload(
             file, filename, upload_dir, job_id, file_idx, cfg.max_file_size_mb
@@ -177,8 +185,11 @@ async def batch_upload_file(
         raise
 
     log.info(
-        "Sequential upload saved | job=%s idx=%d file=%s size_mb=%.1f",
-        job_id, file_idx, filename, size_bytes / (1024 * 1024),
+        "batch.upload_saved",
+        job_id=job_id,
+        file_idx=file_idx,
+        filename=filename,
+        size_mb=round(size_bytes / (1024 * 1024), 1),
     )
 
     if cfg.celery_enabled:
@@ -421,7 +432,7 @@ async def batch_combine(
             None, _do_combine, body.file_ids
         )
     except Exception as exc:
-        log.error("Combine failed | job=%s: %s", job_id, exc, exc_info=True)
+        log.exception("batch.combine_failed", job_id=job_id, exc_message=str(exc))
         raise HTTPException(status_code=500, detail=f"Combine failed: {exc}")
 
     return {
@@ -512,8 +523,12 @@ def _dispatch_celery(
             **kwargs,
         )
         log.info(
-            "Celery task enqueued | job=%s idx=%d file=%s size_mb=%.1f queue=%s",
-            job_id, idx, filename, size_mb, queue,
+            "celery.task_enqueued",
+            job_id=job_id,
+            file_idx=idx,
+            filename=filename,
+            size_mb=round(size_mb, 1),
+            queue=queue,
         )
 
 
@@ -553,8 +568,10 @@ def _do_combine(file_ids: list[str]) -> tuple[str, str, int]:
     storage.put(combined_id, xlsx_bytes, out_filename, ttl=cfg.batch_ttl_seconds)
 
     log.info(
-        "Combine complete | file_count=%d total_rows=%d file_id=%s",
-        len(file_ids), len(all_rows), combined_id,
+        "batch.combine_complete",
+        file_count=len(file_ids),
+        total_rows=len(all_rows),
+        file_id=combined_id,
     )
     return combined_id, out_filename, len(all_rows)
 
@@ -598,7 +615,7 @@ async def _persist_job_to_db(
             db.add(job)
             await db.commit()
     except Exception as exc:
-        log.warning("Batch job DB persist failed (non-fatal): %s", exc)
+        log.warning("batch.db_persist_failed", exc_message=str(exc))
 
 
 async def _process_batch_from_disk(
@@ -627,7 +644,7 @@ async def _process_batch_from_disk(
                 file_id=result.get("file_id", ""),
             ))
         except Exception as exc:
-            log.error("Batch extraction failed [%s]: %s", filename, exc, exc_info=True)
+            log.exception("batch.extraction_failed", filename=filename, exc_message=str(exc))
             store.update_result(job_id, idx, FileResult(
                 filename=filename,
                 status="error",

@@ -12,13 +12,14 @@ Usage from route handlers (via BackgroundTasks):
 from __future__ import annotations
 
 import asyncio
-import logging
 from zoneinfo import ZoneInfo
+
+import structlog
 from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Any, Optional
 
-log = logging.getLogger(__name__)
+log = structlog.stdlib.get_logger(__name__)
 
 
 def _now() -> datetime:
@@ -59,7 +60,7 @@ async def _write_activity(
             db.add(entry)
             await db.commit()
     except Exception as exc:
-        log.warning("Audit log write failed [%s]: %s", action, exc)
+        log.warning("audit.write_failed", action=action, exc_message=str(exc))
 
 
 def schedule(coro) -> None:
@@ -71,7 +72,7 @@ def schedule(coro) -> None:
         else:
             loop.run_until_complete(coro)
     except Exception as exc:
-        log.warning("Audit schedule error: %s", exc)
+        log.warning("audit.schedule_error", exc_message=str(exc))
 
 
 # ── Public helpers ─────────────────────────────────────────────────────────────
@@ -151,7 +152,7 @@ async def log_extraction(
     if not original_filename:
         raise ValueError("log_extraction: original_filename missing/empty")
 
-    print("Saving history:", output_filename, total_tags, spare_items)
+    log.debug("history.saving", filename=output_filename, tags=total_tags, spares=spare_items)
 
     try:
         factory = get_session_factory()
@@ -208,10 +209,9 @@ async def log_extraction(
                 await db.commit()
             except Exception as e:
                 await db.rollback()
-                print("History save failed:", e)
+                log.error("history.save_failed", exc_message=str(e))
     except Exception as exc:
-        # Keep extraction pipeline unaffected.
-        log.error("Extraction history write failed: %s", exc, exc_info=True)
+        log.exception("history.write_failed", exc_message=str(exc))
 
 
 def log_extraction_sync(
@@ -276,19 +276,16 @@ def log_extraction_worker(
         return
 
     if not user_id:
-        log.error(
-            "log_extraction_worker: user_id missing — extraction_history NOT written. file=%s",
-            result.get("filename", "unknown"),
-        )
+        log.error("history.missing_field", field="user_id", filename=result.get("filename", "unknown"))
         return
 
     if not original_filename:
-        log.error("log_extraction_worker: original_filename missing — history NOT written")
+        log.error("history.missing_field", field="original_filename")
         return
 
     output_filename = result.get("filename") or ""
     if not output_filename:
-        log.error("log_extraction_worker: result['filename'] missing — history NOT written")
+        log.error("history.missing_field", field="result.filename")
         return
 
     # Convert asyncpg URL → psycopg2 URL for synchronous access.
@@ -351,17 +348,11 @@ def log_extraction_worker(
         ))
 
         session.commit()
-        log.info(
-            "Extraction history written (worker) | user=%s file=%s rows=%d tags=%d",
-            user_id, original_filename, total_rows, total_tags,
-        )
+        log.info("history.written", user_id=user_id, filename=original_filename, rows=total_rows, tags=total_tags)
 
     except Exception as exc:
         session.rollback()
-        log.error(
-            "Extraction history write failed (worker) | user=%s file=%s: %s",
-            user_id, original_filename, exc, exc_info=True,
-        )
+        log.exception("history.write_failed", user_id=user_id, filename=original_filename, exc_message=str(exc))
         raise
 
     finally:
@@ -402,7 +393,7 @@ async def update_session_activity(session_id: str) -> None:
             )
             await db.commit()
     except Exception as exc:
-        log.debug("Session activity update failed: %s", exc)
+        log.debug("session.activity_update_failed", exc_message=str(exc))
 
 
 async def end_session(jti: str) -> None:
@@ -423,4 +414,4 @@ async def end_session(jti: str) -> None:
             )
             await db.commit()
     except Exception as exc:
-        log.warning("Session end failed: %s", exc)
+        log.warning("session.end_failed", exc_message=str(exc))

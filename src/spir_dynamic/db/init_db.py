@@ -7,14 +7,13 @@ Called once from the FastAPI lifespan event.
 """
 from __future__ import annotations
 
-import logging
-
+import structlog
 from sqlalchemy import select, text
 
 from spir_dynamic.db.database import Base, get_engine, get_session_factory
 from spir_dynamic.db.models import User, Job, PasswordResetRequest  # noqa: F401 — all models must be imported for create_all
 
-log = logging.getLogger(__name__)
+log = structlog.stdlib.get_logger(__name__)
 
 
 async def create_tables() -> None:
@@ -49,7 +48,7 @@ async def ensure_schema() -> None:
             try:
                 await conn.execute(text(stmt))
             except Exception as exc:
-                log.warning("Schema sync statement skipped: %s — %s", stmt[:60], exc)
+                log.warning("db.schema_sync_skipped", stmt=stmt[:60], exc_message=str(exc))
     log.info("extraction_history schema verified/synced")
 
 
@@ -64,7 +63,7 @@ async def ensure_user_schema() -> None:
             try:
                 await conn.execute(text(stmt))
             except Exception as exc:
-                log.warning("User schema sync skipped: %s — %s", stmt[:60], exc)
+                log.warning("db.user_schema_sync_skipped", stmt=stmt[:60], exc_message=str(exc))
     log.info("users schema verified/synced")
 
 
@@ -96,9 +95,9 @@ async def seed_admin(username: str, plain_password: str) -> None:
                 # APP_PASS changed — update hash so login works after redeploy
                 existing.password_hash = _hash(plain_password)
                 await session.commit()
-                log.info("Admin user '%s' password hash updated", username)
+                log.info("db.admin_password_updated", username=username)
             else:
-                log.info("Admin user '%s' already exists — no change", username)
+                log.info("db.admin_exists", username=username)
             return
 
         admin = User(
@@ -109,7 +108,7 @@ async def seed_admin(username: str, plain_password: str) -> None:
         )
         session.add(admin)
         await session.commit()
-        log.info("Admin user '%s' seeded into database", username)
+        log.info("db.admin_seeded", username=username)
 
 
 async def initialize(database_url: str, app_user: str, app_pass: str) -> bool:
@@ -127,7 +126,5 @@ async def initialize(database_url: str, app_user: str, app_pass: str) -> bool:
         await seed_admin(app_user, app_pass)
         return True
     except Exception as exc:
-        log.error(
-            "Database initialization failed — running in no-DB mode: %s", exc
-        )
+        log.error("db.init_failed", exc_message=str(exc))
         return False

@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     debug: bool = False
     log_level: str = "INFO"
+    log_format: str = "text"   # "json" in production (set LOG_FORMAT=json)
 
     # Server
     host: str = "0.0.0.0"

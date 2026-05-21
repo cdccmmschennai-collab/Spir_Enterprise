@@ -4,12 +4,13 @@ Simplified from enterprise version — memory backend only.
 """
 from __future__ import annotations
 
-import logging
 import threading
 import time
 from typing import Optional
 
-log = logging.getLogger(__name__)
+import structlog
+
+log = structlog.stdlib.get_logger(__name__)
 
 DEFAULT_TTL = 3600  # 1 hour
 
@@ -64,10 +65,10 @@ def get_storage():
             if settings.celery_enabled:
                 from spir_dynamic.services.redis_store import RedisStorage
                 _storage = RedisStorage(settings.redis_url)
-                log.info("File storage: Redis (%s)", settings.redis_url)
+                log.info("storage.backend", backend="redis")
             else:
                 _storage = InMemoryStorage()
-                log.info("File storage: in-memory")
+                log.info("storage.backend", backend="memory")
         except Exception:
             _storage = InMemoryStorage()
     return _storage

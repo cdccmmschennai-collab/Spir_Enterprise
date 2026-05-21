@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import logging
 import tempfile
 import time
 import zipfile
@@ -16,6 +15,7 @@ from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
+import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from openpyxl.utils.exceptions import InvalidFileException
@@ -30,7 +30,7 @@ from spir_dynamic.db.models import ExtractionHistory
 from spir_dynamic.extraction.file_validator import ValidationError
 from spir_dynamic.services.currency_service import conversion_summary
 
-log = logging.getLogger(__name__)
+log = structlog.stdlib.get_logger(__name__)
 
 router = APIRouter()
 
@@ -126,7 +126,7 @@ async def _stream_to_temp(
                         detail=f"File exceeds {max_mb} MB limit",
                     )
                 tmp.write(chunk)
-        log.debug("Upload streamed to temp | path=%s bytes=%d", tmp_path, total)
+        log.debug("upload.streamed", path=str(tmp_path), bytes=total)
         return tmp_path, total
     except Exception:
         tmp_path.unlink(missing_ok=True)
@@ -150,33 +150,34 @@ async def extract(
     size_mb: float = 0.0     # populated after upload completes
     extract_dur: float = 0.0 # populated after extraction completes
 
+    # Enrich every log line for this request with filename and the authenticated user.
+    # request_id is already set by RequestIDMiddleware via structlog contextvars.
+    structlog.contextvars.bind_contextvars(
+        filename=filename,
+        user_id=td.user_id or "",
+    )
+
     try:
         # ── Phase A: Stream upload to disk (no full bytes in RAM) ────────────
         tmp_path, file_size = await _stream_to_temp(
             file, cfg.max_file_size_mb, cfg.upload_chunk_size
         )
         size_mb = file_size / (1024 * 1024)
-        log.info("Upload received | file=%s size_mb=%.1f", filename, size_mb)
+        log.info("upload.received", size_mb=round(size_mb, 1))
 
         # ── Phase B: Wait for a concurrency slot ─────────────────────────────
         sem = _get_semaphore()
         executor = _get_executor()
 
-        log.info(
-            "Extraction queued | file=%s size_mb=%.1f waiting_for_slot=True",
-            filename, size_mb,
-        )
+        log.info("extraction.queued", size_mb=round(size_mb, 1))
         queue_wait_start = time.perf_counter()
 
         async with sem:
             queue_wait = time.perf_counter() - queue_wait_start
             if queue_wait > 1.0:
-                log.info(
-                    "Semaphore acquired | file=%s queue_wait=%.1fs",
-                    filename, queue_wait,
-                )
+                log.info("semaphore.acquired", queue_wait_s=round(queue_wait, 1))
 
-            log.info("Extraction start | file=%s size_mb=%.1f", filename, size_mb)
+            log.info("extraction.start", size_mb=round(size_mb, 1))
             extract_start = time.perf_counter()
 
             loop = asyncio.get_event_loop()
@@ -187,15 +188,13 @@ async def extract(
                     timeout=cfg.extraction_timeout_seconds,
                 )
             except asyncio.TimeoutError:
-                _elapsed = time.perf_counter() - extract_start
                 log.error(
-                    "Extraction timeout | file=%s size_mb=%.1f timeout_s=%d",
-                    filename, size_mb, cfg.extraction_timeout_seconds,
-                )
-                log.error(
-                    "EXTRACTION_EVENT | file=%s size_mb=%.1f extract_dur=%.1fs"
-                    " queue_wait=%.1fs status=timeout",
-                    filename, size_mb, _elapsed, queue_wait,
+                    "extraction.event",
+                    status="timeout",
+                    size_mb=round(size_mb, 1),
+                    timeout_s=cfg.extraction_timeout_seconds,
+                    extract_dur_s=round(time.perf_counter() - extract_start, 1),
+                    queue_wait_s=round(queue_wait, 1),
                 )
                 raise HTTPException(
                     status_code=504,
@@ -205,23 +204,21 @@ async def extract(
                     ),
                 )
             except ValidationError as exc:
-                log.warning("Validation failed | file=%s reason=%s", filename, exc)
                 log.warning(
-                    "EXTRACTION_EVENT | file=%s size_mb=%.1f queue_wait=%.1fs"
-                    " status=validation_error reason=%s",
-                    filename, size_mb, queue_wait, exc,
+                    "extraction.event",
+                    status="validation_error",
+                    size_mb=round(size_mb, 1),
+                    queue_wait_s=round(queue_wait, 1),
+                    reason=str(exc),
                 )
                 raise HTTPException(status_code=422, detail=str(exc))
             except MemoryError:
-                _elapsed = time.perf_counter() - extract_start
                 log.error(
-                    "Out-of-memory during extraction | file=%s size_mb=%.1f",
-                    filename, size_mb,
-                )
-                log.error(
-                    "EXTRACTION_EVENT | file=%s size_mb=%.1f extract_dur=%.1fs"
-                    " queue_wait=%.1fs status=oom",
-                    filename, size_mb, _elapsed, queue_wait,
+                    "extraction.event",
+                    status="oom",
+                    size_mb=round(size_mb, 1),
+                    extract_dur_s=round(time.perf_counter() - extract_start, 1),
+                    queue_wait_s=round(queue_wait, 1),
                 )
                 raise HTTPException(
                     status_code=507,
@@ -231,27 +228,26 @@ async def extract(
                     ),
                 )
             except (zipfile.BadZipFile, InvalidFileException) as exc:
-                log.warning("Corrupted/unreadable file | file=%s error=%s", filename, exc)
                 log.warning(
-                    "EXTRACTION_EVENT | file=%s size_mb=%.1f queue_wait=%.1fs"
-                    " status=corrupt_file",
-                    filename, size_mb, queue_wait,
+                    "extraction.event",
+                    status="corrupt_file",
+                    size_mb=round(size_mb, 1),
+                    queue_wait_s=round(queue_wait, 1),
+                    exc_message=str(exc),
                 )
                 raise HTTPException(
                     status_code=422,
                     detail=f"File appears corrupted or unreadable: {exc}",
                 )
             except Exception as exc:
-                _elapsed = time.perf_counter() - extract_start
-                log.error(
-                    "Extraction failed | file=%s size_mb=%.1f error=%s",
-                    filename, size_mb, exc,
-                    exc_info=True,
-                )
-                log.error(
-                    "EXTRACTION_EVENT | file=%s size_mb=%.1f extract_dur=%.1fs"
-                    " queue_wait=%.1fs status=error",
-                    filename, size_mb, _elapsed, queue_wait,
+                log.exception(
+                    "extraction.event",
+                    status="error",
+                    size_mb=round(size_mb, 1),
+                    extract_dur_s=round(time.perf_counter() - extract_start, 1),
+                    queue_wait_s=round(queue_wait, 1),
+                    exc_type=type(exc).__name__,
+                    exc_message=str(exc),
                 )
                 raise HTTPException(
                     status_code=500,
@@ -260,14 +256,8 @@ async def extract(
 
             extract_dur = time.perf_counter() - extract_start
             if extract_dur > 120:
-                log.warning(
-                    "Slow extraction | file=%s size_mb=%.1f duration=%.1fs",
-                    filename, size_mb, extract_dur,
-                )
-            log.info(
-                "Extraction done | file=%s rows=%d size_mb=%.1f duration=%.1fs",
-                filename, result.get("total_rows", 0), size_mb, extract_dur,
-            )
+                log.warning("extraction.slow", size_mb=round(size_mb, 1), duration_s=round(extract_dur, 1))
+            log.info("extraction.done", rows=result.get("total_rows", 0), size_mb=round(size_mb, 1), duration_s=round(extract_dur, 1))
 
         # ── Phase C: Persist rows + audit log (unchanged) ────────────────────
         json_path = _save_rows_to_disk(result, cfg)
@@ -280,18 +270,17 @@ async def extract(
                 original_filename=filename, json_path=json_path,
             )
         except Exception as e:
-            log.error("History logging failed (extraction still succeeded): %s", e)
+            log.error("history.log_failed", exc_message=str(e))
 
         log.info(
-            "EXTRACTION_EVENT | file=%s spir_no=%s rows=%d tags=%d"
-            " size_mb=%.1f extract_dur=%.1fs queue_wait=%.1fs status=success",
-            filename,
-            result.get("spir_no", ""),
-            result.get("total_rows", 0),
-            result.get("total_tags", 0),
-            size_mb,
-            extract_dur,
-            queue_wait,
+            "extraction.event",
+            status="success",
+            spir_no=result.get("spir_no", ""),
+            rows=result.get("total_rows", 0),
+            tags=result.get("total_tags", 0),
+            size_mb=round(size_mb, 1),
+            extract_dur_s=round(extract_dur, 1),
+            queue_wait_s=round(queue_wait, 1),
         )
 
         return result
@@ -302,9 +291,9 @@ async def extract(
         if tmp_path is not None:
             try:
                 tmp_path.unlink(missing_ok=True)
-                log.debug("Temp file cleaned | path=%s", tmp_path)
+                log.debug("tempfile.cleaned", path=str(tmp_path))
             except Exception as e:
-                log.warning("Temp cleanup failed | path=%s error=%s", tmp_path, e)
+                log.warning("tempfile.cleanup_failed", path=str(tmp_path), exc_message=str(e))
 
 
 # ── Download endpoint ───────────────────────────────────────────────────────────
@@ -464,7 +453,7 @@ async def upload_avatar(
             user.avatar_url = versioned_url
             await db.commit()
 
-    log.info("Avatar uploaded | user_id=%s size=%d", td.user_id, len(content))
+    log.info("avatar.uploaded", user_id=td.user_id, size=len(content))
     return {"avatar_url": versioned_url}
 
 
@@ -487,7 +476,7 @@ async def delete_avatar(
             user.avatar_url = None
             await db.commit()
 
-    log.info("Avatar removed | user_id=%s", td.user_id)
+    log.info("avatar.removed", user_id=td.user_id)
     return {"avatar_url": None}
 
 
@@ -532,10 +521,10 @@ def _save_rows_to_disk(result: dict, cfg) -> Optional[str]:
         }, ensure_ascii=False)
         path = rows_dir / f"{file_id}.json"
         path.write_text(payload, encoding="utf-8")
-        log.debug("Rows persisted to disk: %s (%d rows)", path, len(result.get("preview_rows", [])))
+        log.debug("disk.rows_written", path=str(path), rows=len(result.get("preview_rows", [])))
         return str(path)
     except Exception as exc:
-        log.warning("Row JSON save failed (non-fatal): %s", exc)
+        log.warning("disk.row_save_failed", exc_message=str(exc))
         return None
 
 
@@ -566,7 +555,7 @@ async def _run_async(coro) -> None:
     try:
         await coro
     except Exception as exc:
-        log.debug("Background audit task error: %s", exc)
+        log.debug("audit.background_error", exc_message=str(exc))
 
 
 # ── History endpoints ────────────────────────────────────────────────────────────
@@ -654,16 +643,16 @@ async def delete_history(
             try:
                 p.relative_to(storage_root)
             except ValueError:
-                log.warning("Refusing to delete file outside storage root: %s", p)
+                log.warning("history.delete_path_rejected", path=str(p))
             else:
                 try:
                     if p.exists():
                         p.unlink()
-                        log.info("Deleted JSON file: %s", p)
+                        log.info("history.json_deleted", path=str(p))
                     else:
-                        log.warning("JSON file missing during delete: %s", p)
+                        log.warning("history.json_missing", path=str(p))
                 except Exception as exc:
-                    log.warning("Failed to delete JSON file %s: %s", p, exc)
+                    log.warning("history.json_delete_failed", path=str(p), exc_message=str(exc))
 
         if rec.file_id:
             try:
@@ -671,12 +660,12 @@ async def delete_history(
                 rs = RedisStorage(cfg.redis_url)
                 rs.delete(rec.file_id)           # final XLSX
                 rs.delete(f"rows:{rec.file_id}") # row JSON payload
-                log.info("Redis keys deleted for file_id: %s", rec.file_id)
+                log.info("redis.keys_deleted", file_id=rec.file_id)
             except Exception as exc:
-                log.warning("Redis cleanup failed for file_id %s: %s", rec.file_id, exc)
+                log.warning("redis.cleanup_failed", file_id=rec.file_id, exc_message=str(exc))
 
         await db.delete(rec)
-        log.info("Deleted history record: %s", rec.id)
+        log.info("history.record_deleted", record_id=rec.id)
 
     await db.commit()
     return {"deleted": len(records)}

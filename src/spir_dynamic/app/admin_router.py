@@ -7,9 +7,10 @@ returned in any form — only hashes are stored).
 """
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timezone
 from typing import Optional
+
+import structlog
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -19,7 +20,7 @@ from spir_dynamic.app.auth import get_current_user, TokenData
 from spir_dynamic.db.database import get_db, is_db_enabled
 from spir_dynamic.db.models import User, Session, UserActivityLog, ExtractionHistory
 
-log = logging.getLogger(__name__)
+log = structlog.stdlib.get_logger(__name__)
 
 admin_router = APIRouter()
 
@@ -182,7 +183,7 @@ async def create_user(
     except HTTPException:
         raise
     except Exception as e:
-        log.error("User creation failed: %s", e, exc_info=True)
+        log.exception("user.create_failed", exc_message=str(e))
         raise HTTPException(status_code=500, detail="User creation failed")
 
 
@@ -206,11 +207,11 @@ async def reset_password(
     try:
         safe_password = body.new_password[:72]
         user.password_hash = _hash_password(safe_password)
-        log.info("Password reset for user '%s' by admin", user.username)
+        log.info("user.password_reset", username=user.username)
     except HTTPException:
         raise
     except Exception as e:
-        log.error("Password reset failed for user_id=%s: %s", user_id, e, exc_info=True)
+        log.exception("user.password_reset_failed", user_id=user_id, exc_message=str(e))
         raise HTTPException(status_code=500, detail="Password reset failed")
 
 
@@ -227,7 +228,7 @@ async def delete_user(
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
     await db.delete(user)
-    log.info("User '%s' permanently deleted by admin", user.username)
+    log.info("user.deleted", username=user.username)
 
 
 @admin_router.put("/users/{user_id}/status", status_code=204)
@@ -246,7 +247,7 @@ async def set_user_status(
     if user.role == "admin":
         raise HTTPException(status_code=400, detail="Admin accounts cannot be disabled")
     user.is_active = is_active
-    log.info("User '%s' is_active set to %s", user.username, is_active)
+    log.info("user.status_changed", username=user.username, is_active=is_active)
 
 
 # ── Password reset request endpoints ──────────────────────────────────────────

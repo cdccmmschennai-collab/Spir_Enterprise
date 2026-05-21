@@ -7,7 +7,6 @@ from __future__ import annotations
 import cProfile
 import gc
 import io
-import logging
 import pstats
 import re
 import time
@@ -16,6 +15,7 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 import openpyxl
+import structlog
 
 from spir_dynamic.extraction.file_validator import validate_file
 from spir_dynamic.extraction.unified_extractor import extract_workbook
@@ -33,7 +33,7 @@ from spir_dynamic.services.storage import get_storage
 from spir_dynamic.app.config import get_settings
 from spir_dynamic.utils.logging import timed
 
-log = logging.getLogger(__name__)
+log = structlog.stdlib.get_logger(__name__)
 
 _SLOW_EXTRACTION_WARN_SECONDS = 120
 
@@ -66,12 +66,9 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
         else:
             size_mb = len(file_input) / (1024 * 1024)
 
-        log.info("Pipeline start: %s (%.1f MB)", original_filename, size_mb)
+        log.info("pipeline.start", filename=original_filename, size_mb=round(size_mb, 1))
         if size_mb > 500:
-            log.warning(
-                "Large file — extraction may be slow or memory-intensive: %.1f MB | file=%s",
-                size_mb, original_filename,
-            )
+            log.warning("pipeline.large_file", filename=original_filename, size_mb=round(size_mb, 1))
 
         cfg = get_settings()
 
@@ -95,7 +92,7 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
             wb._spir_raw_bytes = file_input
             wb._spir_raw_path = None
 
-        log.debug("Workbook loaded in %.2fs | file=%s", time.perf_counter() - _wb_start, original_filename)
+        log.debug("workbook.loaded", duration_s=round(time.perf_counter() - _wb_start, 2), filename=original_filename)
 
         _extract_start = time.perf_counter()
         try:
@@ -111,10 +108,7 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
 
         _extract_dur = time.perf_counter() - _extract_start
         if _extract_dur > _SLOW_EXTRACTION_WARN_SECONDS:
-            log.warning(
-                "Slow extraction — took %.1fs | file=%s size_mb=%.1f",
-                _extract_dur, original_filename, size_mb,
-            )
+            log.warning("pipeline.slow", duration_s=round(_extract_dur, 1), filename=original_filename, size_mb=round(size_mb, 1))
 
         raw_rows = result.get("rows", [])
         spir_no = result.get("spir_no", "")
@@ -201,9 +195,11 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
             _mem_mb = "N/A"
 
         log.info(
-            "Pipeline done: %d rows, %d tags, format=%s | mem_rss_mb=%s",
-            len(output_rows), result.get("total_tags", 0), result.get("format"),
-            _mem_mb,
+            "pipeline.done",
+            rows=len(output_rows),
+            tags=result.get("total_tags", 0),
+            format=result.get("format"),
+            mem_rss_mb=_mem_mb,
         )
 
         return response
@@ -214,7 +210,7 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
             _profiler.disable()
             _s = io.StringIO()
             pstats.Stats(_profiler, stream=_s).sort_stats("cumulative").print_stats(30)
-            log.info("[PROFILE] top 30 by cumulative time:\n%s", _s.getvalue())
+            log.info("pipeline.profile", stats=_s.getvalue())
         # ────────────────────────────────────────────────────────────────────────
 
 

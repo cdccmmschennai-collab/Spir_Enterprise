@@ -3,12 +3,14 @@ FastAPI application factory.
 """
 from __future__ import annotations
 import os
-
-import logging
+import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+import structlog
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 
 from spir_dynamic.app.auth import auth_router
 from spir_dynamic.app.batch_router import batch_router
@@ -16,7 +18,29 @@ from spir_dynamic.app.config import get_settings
 from spir_dynamic.app.routes import router
 from spir_dynamic.utils.logging import setup_logging
 
-log = logging.getLogger(__name__)
+log = structlog.stdlib.get_logger(__name__)
+
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    """Attach a unique request ID to every request.
+
+    - Reads X-Request-ID from the incoming request if present (allows tracing
+      across services when a gateway sets the header upstream).
+    - Generates a UUID4 otherwise.
+    - Binds the ID to structlog contextvars so EVERY log line emitted during
+      the request automatically carries request_id — no manual passing needed.
+    - Echoes the ID back in the X-Request-ID response header so clients can
+      correlate their requests with server-side log entries.
+    """
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        # Clear any context left by a previous request (connection reuse / keep-alive).
+        structlog.contextvars.clear_contextvars()
+        structlog.contextvars.bind_contextvars(request_id=request_id)
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
 
 
 @asynccontextmanager
@@ -39,25 +63,21 @@ async def lifespan(app: FastAPI):
     rows_dir = _Path(cfg.rows_storage_path)
     try:
         rows_dir.mkdir(parents=True, exist_ok=True)
-        log.info("Row storage ready: %s", rows_dir)
+        log.info("storage.ready", path=str(rows_dir))
     except OSError as exc:
-        log.error(
-            "Row storage directory unavailable — /combine will fail: %s | path=%s",
-            exc,
-            rows_dir,
-        )
+        log.error("storage.unavailable", path=str(rows_dir), exc_message=str(exc))
 
     # Ensure batch upload staging directory exists.
     from spir_dynamic.services.cleanup import cleanup_stale_uploads as _sweep
     upload_dir = _Path(cfg.batch_upload_dir)
     try:
         upload_dir.mkdir(parents=True, exist_ok=True)
-        log.info("Batch upload dir ready: %s", upload_dir)
+        log.info("upload_dir.ready", path=str(upload_dir))
         stale = _sweep(upload_dir, max_age_seconds=86400)
         if stale:
-            log.info("Startup cleanup: removed %d orphaned batch upload(s)", stale)
+            log.info("startup.cleanup", removed=stale)
     except OSError as exc:
-        log.error("Batch upload dir unavailable — batch extract may fail: %s | path=%s", exc, upload_dir)
+        log.error("upload_dir.unavailable", path=str(upload_dir), exc_message=str(exc))
 
     # Sweep stale single-file temp uploads left by crashed extractions.
     import tempfile as _tf
@@ -68,7 +88,7 @@ async def lifespan(app: FastAPI):
         try:
             if _p.stat().st_mtime < _stale_cutoff:
                 _p.unlink(missing_ok=True)
-                log.info("Cleaned stale upload temp: %s", _p)
+                log.info("tempfile.cleaned", path=str(_p))
         except Exception:
             pass
 
@@ -81,7 +101,7 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     cfg = get_settings()
-    setup_logging(cfg.log_level)
+    setup_logging(cfg.log_level, cfg.log_format)
 
     app = FastAPI(
         title=cfg.app_name,
@@ -91,6 +111,10 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Middleware stack (outermost first in request order):
+    # RequestIDMiddleware → CORSMiddleware → routes
+    # Both are registered here; Starlette applies them in reverse-add order,
+    # making the last-added the outermost.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -99,6 +123,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
         expose_headers=["Content-Disposition"],
     )
+    app.add_middleware(RequestIDMiddleware)
 
     app.include_router(auth_router, prefix="/auth")
     app.include_router(router, prefix="/api")          # register first so /api/me wins

@@ -7,13 +7,14 @@ Falls back to hard-coded rates if all APIs are unreachable.
 from __future__ import annotations
 
 import json
-import logging
 import time
 import urllib.request
 import urllib.error
 from typing import Optional
 
-log = logging.getLogger(__name__)
+import structlog
+
+log = structlog.stdlib.get_logger(__name__)
 
 CACHE_TTL_SECONDS = 3600
 BASE_CURRENCY = "USD"
@@ -53,7 +54,7 @@ def _fetch_rates(base: str) -> Optional[dict[str, float]]:
             if rates:
                 return {k.upper(): float(v) for k, v in rates.items()}
         except Exception as exc:
-            log.debug("API %s failed: %s", url.split("/")[2], exc)
+            log.debug("currency.api_failed", host=url.split("/")[2], exc_message=str(exc))
     return None
 
 

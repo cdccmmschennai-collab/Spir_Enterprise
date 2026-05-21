@@ -13,15 +13,16 @@ Orphaned upload files (from crashed workers) are swept on startup.
 """
 from __future__ import annotations
 
-import logging
+import time
 from pathlib import Path
 
+import structlog
 from celery.exceptions import MaxRetriesExceededError, SoftTimeLimitExceeded
 
 from spir_dynamic.celery_app import celery_app
 from spir_dynamic.tasks.base import BaseTask
 
-log = logging.getLogger(__name__)
+log = structlog.stdlib.get_logger(__name__)
 
 
 @celery_app.task(
@@ -56,8 +57,21 @@ def process_file_task(
     from spir_dynamic.services.cleanup import safe_delete
     from spir_dynamic.services.job_store import FileResult, get_job_store
 
+    # Bind task context to structlog so every log line in this task carries
+    # job_id, file_idx, filename, and task_id without manual repetition.
+    # clear_contextvars() prevents context leak from a previously reused worker process.
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(
+        job_id=job_id,
+        file_idx=file_idx,
+        filename=filename,
+        task_id=self.request.id,
+        user_id=user_id or "",
+    )
+
     _upload_path = Path(upload_path)
     _log_ctx = f"batch job={job_id} idx={file_idx}"
+    _t0 = time.perf_counter()
 
     store = get_job_store()
 
@@ -76,7 +90,7 @@ def process_file_task(
 
         # Extraction done — the upload file is no longer needed.
         safe_delete(_upload_path, log_context=_log_ctx)
-        print(f"Deleted upload: {_upload_path}")
+        log.debug("upload.deleted", path=str(_upload_path))
 
         store.update_result(job_id, file_idx, FileResult(
             filename=filename,
@@ -120,7 +134,7 @@ def process_file_task(
                 ttl=_gs().batch_ttl_seconds,
             )
         except Exception as _row_exc:
-            log.warning("Row data storage failed (combine unavailable for this file): %s", _row_exc)
+            log.warning("redis.row_store_failed", exc_message=str(_row_exc))
 
         # ── Persist rows to disk for history-based combine ────────────────────────
         json_path: str | None = None
@@ -142,9 +156,9 @@ def process_file_task(
                 _disk_path = _rows_dir / f"{_file_id}.json"
                 _disk_path.write_text(_disk_payload, encoding="utf-8")
                 json_path = str(_disk_path)
-                log.debug("Rows written to disk: %s (%d rows)", _disk_path, result.get("total_rows", 0))
+                log.debug("disk.rows_written", path=str(_disk_path), rows=result.get("total_rows", 0))
         except Exception as _disk_exc:
-            log.warning("Disk row storage failed (non-fatal): %s", _disk_exc)
+            log.warning("disk.row_store_failed", exc_message=str(_disk_exc))
 
         # ── Write extraction_history so frontend history is populated ─────────────
         try:
@@ -156,11 +170,15 @@ def process_file_task(
                 json_path=json_path,
             )
         except Exception as _hist_exc:
-            log.warning("History logging failed in Celery task (non-fatal): %s", _hist_exc)
+            log.warning("history.log_failed", exc_message=str(_hist_exc))
 
         log.info(
-            "process_file_task done | job=%s idx=%d file=%s rows=%d",
-            job_id, file_idx, filename, result.get("total_rows", 0),
+            "extraction.complete",
+            status="ok",
+            rows=result.get("total_rows", 0),
+            tags=result.get("total_tags", 0),
+            spir_no=result.get("spir_no", ""),
+            duration_s=round(time.perf_counter() - _t0, 2),
         )
         return {
             "status": "ok",
@@ -174,8 +192,9 @@ def process_file_task(
         # Soft time limit fired — not retryable; clean up the upload file.
         safe_delete(_upload_path, log_context=f"timeout {_log_ctx}")
         log.error(
-            "process_file_task timed out (soft limit) | job=%s idx=%d file=%s",
-            job_id, file_idx, filename,
+            "extraction.timeout",
+            status="timeout",
+            duration_s=round(time.perf_counter() - _t0, 2),
         )
         store.update_result(job_id, file_idx, FileResult(
             filename=filename,
@@ -193,9 +212,12 @@ def process_file_task(
         # Exponential backoff: 10s → 30s → 90s
         backoff = 10 * (3 ** self.request.retries)
         log.warning(
-            "process_file_task failed (attempt %d/%d) | job=%s idx=%d file=%s: %s",
-            self.request.retries + 1, self.max_retries + 1,
-            job_id, file_idx, filename, exc,
+            "extraction.attempt_failed",
+            attempt=self.request.retries + 1,
+            max_attempts=self.max_retries + 1,
+            exc_type=type(exc).__name__,
+            exc_message=str(exc),
+            countdown_s=backoff,
         )
         try:
             # Upload file stays on disk — next retry needs it.
@@ -203,9 +225,13 @@ def process_file_task(
         except MaxRetriesExceededError:
             # Final failure — no more retries; clean up the upload file.
             safe_delete(_upload_path, log_context=f"max-retries {_log_ctx}")
-            log.error(
-                "process_file_task exhausted retries | job=%s idx=%d file=%s: %s",
-                job_id, file_idx, filename, exc, exc_info=True,
+            log.exception(
+                "extraction.failed",
+                status="error",
+                exc_type=type(exc).__name__,
+                exc_message=str(exc),
+                duration_s=round(time.perf_counter() - _t0, 2),
+                exc_info=(type(exc), exc, exc.__traceback__),
             )
             store.update_result(job_id, file_idx, FileResult(
                 filename=filename,

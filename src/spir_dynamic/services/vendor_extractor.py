@@ -9,13 +9,13 @@ Safe under Celery parallel workers.
 """
 from __future__ import annotations
 
-import logging
 import re
 from typing import Optional
 
+import structlog
 from sqlalchemy import text
 
-log = logging.getLogger(__name__)
+log = structlog.stdlib.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Compiled constants (immutable after module load — safe for concurrent use)
@@ -163,7 +163,7 @@ def find_focal_point_cell(ws) -> Optional[str]:
     Returns the full cell text (may be multi-line via embedded \\n) or None.
     """
     if getattr(ws, "sheet_state", "visible") in ("hidden", "veryHidden"):
-        log.debug("vendor_extractor: skipping hidden sheet '%s'", getattr(ws, "title", "?"))
+        log.debug("sheet.hidden_skipped", sheet=getattr(ws, "title", "?"))
         return None
 
     max_row: int = ws.max_row or 0
@@ -241,7 +241,7 @@ def extract_vendor_details(text: str, supplier_name: str = "") -> dict:
         country_lines = lines + ([result["contact"]] if result.get("contact") else [])
         result["country"] = _extract_country(country_lines)
     except Exception as exc:  # noqa: BLE001
-        log.debug("vendor_extractor: parsing failed: %s", exc)
+        log.debug("vendor.parse_failed", exc_message=str(exc))
 
     return result
 

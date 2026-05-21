@@ -17,17 +17,24 @@ Docker CMD:
 
 The `celery -A worker` flag resolves the Celery app by looking for an `app`
 attribute in this module — provided by `app = celery_app` below.
+
+Environment
+-----------
+LOG_LEVEL  : logging level passed to setup_logging (default INFO)
+LOG_FORMAT : "text" (default, human-readable) or "json" (production/JSON)
 """
 from __future__ import annotations
 
-import logging
+import os
 
-# Configure logging before importing Celery app.
-# The worker process never runs main.py, so setup_logging() from main.py
-# is never called here — basicConfig provides a readable fallback.
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+# Configure structured logging before importing any spir_dynamic modules.
+# The worker process is separate from the API — main.py never runs here —
+# so we initialise logging explicitly using the same setup_logging() call.
+from spir_dynamic.utils.logging import setup_logging
+
+setup_logging(
+    log_level=os.getenv("LOG_LEVEL", "INFO"),
+    log_format=os.getenv("LOG_FORMAT", "text"),
 )
 
 from spir_dynamic.celery_app import celery_app  # noqa: E402

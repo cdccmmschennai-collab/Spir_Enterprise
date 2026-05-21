@@ -26,12 +26,13 @@ STRICT RULES
 """
 from __future__ import annotations
 
-import logging
 import re
 import time
 from typing import Any
 
-log = logging.getLogger(__name__)
+import structlog
+
+log = structlog.stdlib.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Regex constants — duplicated from annexure_resolver for self-containment
@@ -68,7 +69,7 @@ def preprocess_rows(
         return output_rows
 
     groups = _group_rows(output_rows, item_col, tag_col)
-    log.info("[preprocessing] %d input rows → %d groups", len(output_rows), len(groups))
+    log.info("preprocessing.grouped", input_rows=len(output_rows), groups=len(groups))
 
     result: list[list] = []
     any_split = False

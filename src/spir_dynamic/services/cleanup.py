@@ -7,11 +7,12 @@ crashed extraction workers that left orphaned upload files.
 """
 from __future__ import annotations
 
-import logging
 import time
 from pathlib import Path
 
-log = logging.getLogger(__name__)
+import structlog
+
+log = structlog.stdlib.get_logger(__name__)
 
 
 def safe_delete(path: "str | Path", *, log_context: str = "") -> bool:
@@ -20,16 +21,15 @@ def safe_delete(path: "str | Path", *, log_context: str = "") -> bool:
     Never raises — logs a warning on permission or IO errors.
     """
     p = Path(path)
-    ctx = f" [{log_context}]" if log_context else ""
     try:
         if p.exists():
             p.unlink()
-            log.info("File deleted%s: %s", ctx, p)
+            log.info("file.deleted", path=str(p), context=log_context)
             return True
-        log.debug("File already absent%s: %s", ctx, p)
+        log.debug("file.absent", path=str(p), context=log_context)
         return False
     except Exception as exc:
-        log.warning("Delete failed%s: %s — %s", ctx, p, exc)
+        log.warning("file.delete_failed", path=str(p), context=log_context, exc_message=str(exc))
         return False
 
 
@@ -50,10 +50,10 @@ def cleanup_stale_uploads(upload_dir: "str | Path", max_age_seconds: int = 86400
         try:
             if p.stat().st_mtime < cutoff:
                 p.unlink(missing_ok=True)
-                log.info("Stale batch upload removed: %s", p)
+                log.info("upload.stale_removed", path=str(p))
                 deleted += 1
         except Exception as exc:
-            log.warning("Stale upload cleanup error for %s: %s", p, exc)
+            log.warning("upload.stale_cleanup_error", path=str(p), exc_message=str(exc))
     if deleted:
-        log.info("Startup cleanup: removed %d stale batch upload(s) from %s", deleted, d)
+        log.info("upload.startup_cleanup", removed=deleted, dir=str(d))
     return deleted

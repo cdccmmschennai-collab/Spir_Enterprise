@@ -8,14 +8,14 @@ worker tasks can update their own slot without locking each other.
 from __future__ import annotations
 
 import json
-import logging
 from datetime import datetime, timezone, timedelta
 
 import redis
+import structlog
 
 from spir_dynamic.services.job_store import BatchJob, FileResult
 
-log = logging.getLogger(__name__)
+log = structlog.stdlib.get_logger(__name__)
 
 _KEY_META = "batch:meta:{}"       # hash: total, created_at, expires_at
 _KEY_RESULT = "batch:result:{}:{}"  # string: JSON-serialised FileResult
@@ -102,7 +102,7 @@ class RedisJobStore:
     def update_result(self, job_id: str, idx: int, result: FileResult) -> None:
         meta_key = _KEY_META.format(job_id)
         if not self._r.exists(meta_key):
-            log.warning("update_result: job %s not found in Redis", job_id)
+            log.warning("job.not_found", job_id=job_id)
             return
         result_key = _KEY_RESULT.format(job_id, idx)
         self._r.set(result_key, json.dumps(result.to_dict()), ex=self._ttl + 300)

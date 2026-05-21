@@ -12,9 +12,9 @@ TO ADD/REMOVE/REORDER COLUMNS:
 from __future__ import annotations
 
 import io
-import logging
 import re
 
+import structlog
 import openpyxl
 from openpyxl.styles import NamedStyle, PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -22,7 +22,7 @@ from openpyxl.utils import get_column_letter
 from spir_dynamic.extraction.output_schema import OUTPUT_COLS, COL_WIDTHS
 from spir_dynamic.utils.logging import timed
 
-log = logging.getLogger(__name__)
+log = structlog.stdlib.get_logger(__name__)
 
 _HDR_BG        = "375623"
 _HDR_FONT_CLR  = "FFFFFF"
@@ -117,5 +117,5 @@ def build_xlsx(rows: list[list], spir_no: str = "") -> bytes:
     buf.seek(0)
     result = buf.read()
 
-    log.info("Excel built: %d rows x %d cols -> %d bytes", len(rows), n_cols, len(result))
+    log.info("excel.built", rows=len(rows), cols=n_cols, bytes=len(result))
     return result
