@@ -32,6 +32,10 @@ from spir_dynamic.services.currency_service import get_rates_to_qar, _extract_co
 from spir_dynamic.services.storage import get_storage
 from spir_dynamic.app.config import get_settings
 from spir_dynamic.utils.logging import timed
+from spir_dynamic.monitoring.metrics import (
+    PROCESSING_DURATION,
+    EXTRACTION_ROWS,
+)
 
 log = structlog.stdlib.get_logger(__name__)
 
@@ -58,6 +62,7 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
         _profiler.enable()
     # ────────────────────────────────────────────────────────────────────────
 
+    _pipeline_start = time.time()
     is_path = isinstance(file_input, Path)
 
     try:
@@ -202,6 +207,7 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
             mem_rss_mb=_mem_mb,
         )
 
+        EXTRACTION_ROWS.inc(len(output_rows))
         return response
 
     finally:
@@ -212,6 +218,7 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
             pstats.Stats(_profiler, stream=_s).sort_stats("cumulative").print_stats(30)
             log.info("pipeline.profile", stats=_s.getvalue())
         # ────────────────────────────────────────────────────────────────────────
+        PROCESSING_DURATION.observe(time.time() - _pipeline_start)
 
 
 def retrieve_result(file_id: str) -> Optional[tuple[bytes, str]]:

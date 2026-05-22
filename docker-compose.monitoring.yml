@@ -1,0 +1,68 @@
+version: "3.9"
+
+# Standalone monitoring stack — start with:
+#   docker compose -f docker-compose.monitoring.yml up -d
+# This file is completely independent of docker-compose.yml.
+# It scrapes the FastAPI app running on the host (systemd/uvicorn on port 8000).
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Persist TSDB across restarts so history survives upgrades
+      - prometheus_data:/prometheus
+    ports:
+      # Bound to localhost only — NOT reachable from the internet
+      - "127.0.0.1:9090:9090"
+    extra_hosts:
+      # Resolves host.docker.internal to the Docker bridge on Linux servers.
+      # Required so Prometheus can reach the systemd-managed FastAPI process.
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      # Keep 30 days of metrics — safe for a VPS with standard disk
+      - "--storage.tsdb.retention.time=30d"
+
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+    ports:
+      # localhost only — exposes host OS metrics for Prometheus to scrape
+      - "127.0.0.1:9100:9100"
+    pid: host
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    volumes:
+      - grafana_data:/var/lib/grafana
+      # Auto-provision datasource and dashboard on first start
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      # localhost:3001 — avoids clash with frontend on 3000; NOT public
+      - "127.0.0.1:3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=spir_admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      # Root URL must match however you access Grafana (SSH tunnel or direct)
+      - GF_SERVER_ROOT_URL=http://localhost:3001
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus_data:
+  grafana_data:

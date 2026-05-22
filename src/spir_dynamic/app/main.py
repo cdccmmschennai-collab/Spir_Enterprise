@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
+from prometheus_client import make_asgi_app
 from spir_dynamic.app.auth import auth_router
 from spir_dynamic.app.batch_router import batch_router
 from spir_dynamic.app.config import get_settings
@@ -111,6 +112,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+
     # Middleware stack (outermost first in request order):
     # RequestIDMiddleware → CORSMiddleware → routes
     # Both are registered here; Starlette applies them in reverse-add order,
@@ -139,6 +141,8 @@ def create_app() -> FastAPI:
 
 app = create_app()
 
+metrics_app = make_asgi_app()
+app.mount("/metrics", metrics_app)
 
 if __name__ == "__main__":
     import uvicorn

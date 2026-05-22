@@ -1,0 +1,25 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # FastAPI application — exposes /metrics via prometheus_client.make_asgi_app()
+  # RAM spikes visible here: process_resident_memory_bytes
+  # Long-running files visible here: processing_duration_seconds histogram
+  - job_name: "spir_api"
+    static_configs:
+      - targets: ["host.docker.internal:8000"]
+    metrics_path: /metrics
+    scheme: http
+
+  # Host OS metrics — RAM, CPU, disk, load, network via node_exporter
+  - job_name: "node"
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  # Placeholder: uncomment when prometheus-celery-exporter is deployed.
+  # Queue buildup visible here: celery_queue_length
+  # Stuck workers visible here: celery_worker_tasks_active flatlines
+  # - job_name: "spir_celery"
+  #   static_configs:
+  #     - targets: ["host.docker.internal:9808"]
