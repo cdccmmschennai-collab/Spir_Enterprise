@@ -7,10 +7,8 @@ import uuid
 from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
 
 from prometheus_client import make_asgi_app
 from spir_dynamic.app.auth import auth_router
@@ -22,26 +20,41 @@ from spir_dynamic.utils.logging import setup_logging
 log = structlog.stdlib.get_logger(__name__)
 
 
-class RequestIDMiddleware(BaseHTTPMiddleware):
+class RequestIDMiddleware:
     """Attach a unique request ID to every request.
 
-    - Reads X-Request-ID from the incoming request if present (allows tracing
-      across services when a gateway sets the header upstream).
+    Pure ASGI middleware — avoids BaseHTTPMiddleware's response-buffering behaviour
+    which breaks mounted ASGI sub-apps (e.g. prometheus_client.make_asgi_app()).
+
+    - Reads X-Request-ID from the incoming request if present.
     - Generates a UUID4 otherwise.
-    - Binds the ID to structlog contextvars so EVERY log line emitted during
-      the request automatically carries request_id — no manual passing needed.
-    - Echoes the ID back in the X-Request-ID response header so clients can
-      correlate their requests with server-side log entries.
+    - Binds the ID to structlog contextvars so every log line carries request_id.
+    - Echoes the ID back in the X-Request-ID response header.
     """
 
-    async def dispatch(self, request: Request, call_next) -> Response:
-        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        # Clear any context left by a previous request (connection reuse / keep-alive).
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+
+        headers = {k.lower(): v for k, v in scope.get("headers", [])}
+        raw_id = headers.get(b"x-request-id", b"")
+        request_id = raw_id.decode() if raw_id else str(uuid.uuid4())
+
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(request_id=request_id)
-        response = await call_next(request)
-        response.headers["X-Request-ID"] = request_id
-        return response
+
+        async def send_with_request_id(message):
+            if message["type"] == "http.response.start":
+                new_headers = list(message.get("headers", []))
+                new_headers.append((b"x-request-id", request_id.encode()))
+                message = dict(message, headers=new_headers)
+            await send(message)
+
+        await self.app(scope, receive, send_with_request_id)
 
 
 @asynccontextmanager
