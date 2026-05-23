@@ -89,9 +89,20 @@ class Settings(BaseSettings):
             p = _PROJECT_ROOT / v
         return str(p.resolve())
 
+    # Hard upload ceiling — reject any file above this size before streaming
+    # begins.  Protects the VPS from zip bombs and accidentally uploaded
+    # multi-gigabyte archives that would exhaust disk and RAM.
+    absolute_max_file_size_mb: int = 1500   # env: ABSOLUTE_MAX_FILE_SIZE_MB
+
     # Files above this size (MB) are routed to the 'heavy' Celery queue so
-    # normal-sized files never wait behind a 500 MB job.
+    # normal-sized files never wait behind a large job.
     large_file_threshold_mb: int = 100
+
+    # Files above this size (MB) are routed to the 'giant' Celery queue — a
+    # dedicated single-concurrency worker with extended time limits.
+    # The giant worker processes one file at a time and is recycled after every
+    # task so openpyxl memory does not accumulate between giant extractions.
+    giant_file_threshold_mb: int = 500     # env: GIANT_FILE_THRESHOLD_MB
 
     # Sanitizer — strips embedded bulk assets from large XLSX files before
     # openpyxl extraction (images, OLE objects, embedded PDFs, printer blobs).

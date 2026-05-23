@@ -60,6 +60,7 @@ def process_file_task(
         Dict with status + result metadata (mirrors run_pipeline output keys).
     """
     from spir_dynamic.app.pipeline import run_pipeline
+    from spir_dynamic.app.config import get_settings as _get_settings
     from spir_dynamic.services.cleanup import safe_delete
     from spir_dynamic.services.job_store import FileResult, get_job_store
 
@@ -78,8 +79,56 @@ def process_file_task(
     _upload_path = Path(upload_path)
     _log_ctx = f"batch job={job_id} idx={file_idx}"
     _t0 = time.perf_counter()
+    _cfg = _get_settings()
 
     store = get_job_store()
+
+    # ── Broker delivery cap — guard against infinite OOM re-delivery loop ────
+    # self.retry() increments self.request.retries (capped at max_retries=3).
+    # reject_on_worker_lost re-delivers at broker level and does NOT increment
+    # self.request.retries, so a worker OOM-killed by openpyxl memory usage
+    # can loop forever.  A Redis counter keyed to the upload filename caps the
+    # total number of times this file is ever attempted across all delivery paths.
+    _DELIVERY_CAP = 5  # 3 explicit retries + 2 broker-level OOM re-deliveries
+    try:
+        import redis as _redis
+        _r = _redis.from_url(_cfg.redis_url, socket_timeout=2, socket_connect_timeout=2)
+        _dlv_key = f"spir:dlv:{_upload_path.name}"
+        _dlv_count = int(_r.incr(_dlv_key) or 1)
+        _r.expire(_dlv_key, 86400)  # auto-expire after 24h regardless of outcome
+    except Exception as _dlv_exc:
+        # Redis unavailable — skip the cap rather than failing all extractions.
+        log.warning("delivery_cap.redis_unavailable", exc_message=str(_dlv_exc))
+        _dlv_count = 1
+
+    if _dlv_count > _DELIVERY_CAP:
+        from spir_dynamic.monitoring.metrics import DELIVERY_CAP_HITS
+        DELIVERY_CAP_HITS.inc()
+        _error_msg = (
+            f"File could not be processed after {_dlv_count} attempts "
+            f"(delivery cap={_DELIVERY_CAP}). It may be too large for available "
+            "server memory even after sanitization. Try splitting the file or "
+            "contact your administrator."
+        )
+        log.error(
+            "extraction.delivery_cap",
+            path=upload_path,
+            deliveries=_dlv_count,
+            cap=_DELIVERY_CAP,
+        )
+        safe_delete(_upload_path, log_context=f"delivery-cap {_log_ctx}")
+        store.update_result(
+            job_id, file_idx,
+            FileResult(filename=filename, status="error", error=_error_msg),
+        )
+        return {
+            "status": "error",
+            "job_id": job_id,
+            "file_idx": file_idx,
+            "error": "delivery_cap_exceeded",
+        }
+
+    structlog.contextvars.bind_contextvars(delivery=_dlv_count)
 
     # Mark this slot as running so the status endpoint shows progress
     store.update_result(job_id, file_idx, FileResult(filename=filename, status="running"))

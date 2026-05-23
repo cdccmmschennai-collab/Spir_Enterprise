@@ -421,7 +421,8 @@ export default function ExtractionPage() {
           stopPolling();
           const extracted = normalizeResult(data as Partial<ExtractResult>);
           setResult(extracted);
-          saveSession({ status: "complete", filename: extracted.filename, savedAt: Date.now(), result: extracted });
+          saveSession({ status: "complete", filename: extracted.filename, savedAt: Date.now(),
+            result: { ...extracted, preview_rows: extracted.preview_rows.slice(0, 200) } });
           window.dispatchEvent(new CustomEvent("profile-refresh"));
           setLoading(false);
         } else if (data.status === "error") {
@@ -521,7 +522,11 @@ export default function ExtractionPage() {
         }
         const data = normalizeResult(await res.json() as Partial<ExtractResult>);
         setResult(data);
-        saveSession({ status: "complete", filename: data.filename, savedAt: Date.now(), result: data });
+        // Cap preview_rows before saving to localStorage — full rows can be
+        // 2–10 MB for large SPIRs, exceeding the 5–10 MB quota. The download
+        // still contains all rows; 200 preview rows = 20 paginated pages.
+        saveSession({ status: "complete", filename: data.filename, savedAt: Date.now(),
+          result: { ...data, preview_rows: data.preview_rows.slice(0, 200) } });
         window.dispatchEvent(new CustomEvent("profile-refresh"));
       } catch {
         clearSession();
@@ -650,6 +655,19 @@ export default function ExtractionPage() {
           {/* Upload zone — hidden while restoring loading state */}
           {!(loading && !file && savedFilename) && (
             <UploadZone file={file} onFile={setFile} disabled={loading} />
+          )}
+
+          {/* Large-file advisory — shown before extraction starts */}
+          {file && !loading && file.size > 500 * 1024 * 1024 && (
+            <div className="flex items-start gap-3 rounded-xl border border-amber-200 dark:border-amber-800/60 bg-amber-50 dark:bg-amber-950/30 px-4 py-3.5 text-sm text-amber-700 dark:text-amber-400">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>
+                <span className="font-semibold">Large file detected ({formatBytes(file.size)}).</span>{" "}
+                Processing may take 10–30 minutes. The file will be sanitized to remove embedded
+                objects before extraction. You can navigate away — batch processing continues in
+                the background.
+              </span>
+            </div>
           )}
 
           {/* Extract button */}

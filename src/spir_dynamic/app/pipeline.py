@@ -35,6 +35,7 @@ from spir_dynamic.utils.logging import timed
 from spir_dynamic.monitoring.metrics import (
     PROCESSING_DURATION,
     EXTRACTION_ROWS,
+    WORKBOOK_OPEN_DURATION,
 )
 
 log = structlog.stdlib.get_logger(__name__)
@@ -97,7 +98,9 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
             wb._spir_raw_bytes = file_input
             wb._spir_raw_path = None
 
-        log.debug("workbook.loaded", duration_s=round(time.perf_counter() - _wb_start, 2), filename=original_filename)
+        _wb_dur = time.perf_counter() - _wb_start
+        WORKBOOK_OPEN_DURATION.observe(_wb_dur)
+        log.debug("workbook.loaded", duration_s=round(_wb_dur, 2), filename=original_filename)
 
         _extract_start = time.perf_counter()
         try:

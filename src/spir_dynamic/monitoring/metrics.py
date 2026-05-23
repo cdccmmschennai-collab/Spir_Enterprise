@@ -40,6 +40,24 @@ MEMORY_USAGE = Gauge(
     "Memory usage in MB"
 )
 
+# ── Large-file / queue metrics ────────────────────────────────────────────────
+
+WORKBOOK_OPEN_DURATION = Histogram(
+    "workbook_open_duration_seconds",
+    "Wall-clock time for openpyxl.load_workbook() to return",
+    buckets=[0.5, 1, 2, 5, 10, 30, 60, 120],
+)
+
+DELIVERY_CAP_HITS = Counter(
+    "delivery_cap_hits_total",
+    "Tasks terminated by the broker delivery cap (OOM re-delivery loop guard)",
+)
+
+GIANT_FILES_ROUTED = Counter(
+    "giant_files_routed_total",
+    "Files routed to the giant queue (> GIANT_FILE_THRESHOLD_MB)",
+)
+
 # ── Storage / disk metrics ────────────────────────────────────────────────────
 
 STORAGE_JSON_COUNT = Gauge(
