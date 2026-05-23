@@ -93,6 +93,23 @@ class Settings(BaseSettings):
     # normal-sized files never wait behind a 500 MB job.
     large_file_threshold_mb: int = 100
 
+    # Sanitizer — strips embedded bulk assets from large XLSX files before
+    # openpyxl extraction (images, OLE objects, embedded PDFs, printer blobs).
+    # Set SANITIZER_ENABLED=false to bypass entirely (e.g. for debugging).
+    sanitizer_enabled: bool = True
+    # Only sanitize files larger than this threshold (MB). Files below the
+    # threshold are passed directly to the extractor — no overhead.
+    sanitizer_threshold_mb: int = 25
+
+    # Storage lifecycle — daily cleanup task (Celery Beat, 02:00 UTC).
+    # JSON files in extracted_rows/ older than this many days are deleted.
+    cleanup_json_retention_days: int = 14
+    # Batch upload files older than this many hours are treated as stale orphans.
+    cleanup_upload_stale_hours: int = 24
+    # When true, cleanup task logs what would be deleted but skips actual deletion.
+    # Useful for a manual dry-run verification before the first production run.
+    cleanup_dry_run: bool = False
+
     # Celery / Redis
     redis_url: str = "redis://localhost:6379/0"
     # Set CELERY_ENABLED=true to route batch processing through Celery workers.

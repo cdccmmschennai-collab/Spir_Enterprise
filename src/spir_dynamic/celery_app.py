@@ -62,5 +62,19 @@ celery_app.conf.update(
     include=[
         "spir_dynamic.tasks.base",
         "spir_dynamic.tasks.extraction_tasks",
+        "spir_dynamic.tasks.cleanup_tasks",
     ],
 )
+
+# ── Celery Beat schedule ──────────────────────────────────────────────────────
+# Beat runs as a separate process: celery -A spir_dynamic.celery_app beat
+# The worker must also be running to execute the triggered tasks.
+from celery.schedules import crontab  # noqa: E402
+
+celery_app.conf.beat_schedule = {
+    "lifecycle-cleanup-daily": {
+        "task": "spir_dynamic.tasks.lifecycle_cleanup",
+        "schedule": crontab(hour=2, minute=0),  # 02:00 UTC every day
+        "kwargs": {"dry_run": False},
+    },
+}

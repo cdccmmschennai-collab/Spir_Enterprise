@@ -21,6 +21,12 @@ from celery.exceptions import MaxRetriesExceededError, SoftTimeLimitExceeded
 
 from spir_dynamic.celery_app import celery_app
 from spir_dynamic.tasks.base import BaseTask
+from spir_dynamic.monitoring.metrics import (
+    SANITIZER_RUNS,
+    SANITIZER_SAVINGS_MB,
+    SANITIZER_REDUCTION_PCT,
+    SANITIZER_DURATION,
+)
 
 log = structlog.stdlib.get_logger(__name__)
 
@@ -85,8 +91,42 @@ def process_file_task(
                 "it may have been removed by a prior attempt or a system restart"
             )
 
+        # ── Sanitize: strip embedded bulk assets before openpyxl opens file ──
+        # Runs only for XLSX/XLSM files above SANITIZER_THRESHOLD_MB.
+        # On any failure the sanitizer returns a fallback result and extraction
+        # continues from the original upload — never raises.
+        from spir_dynamic.extraction.sanitizer import sanitize_workbook
+        _san = sanitize_workbook(_upload_path, filename)
+
+        # Record sanitizer outcome metrics.
+        if _san.skip_reason and not _san.used_fallback:
+            SANITIZER_RUNS.labels(outcome="skipped").inc()
+        elif _san.used_fallback:
+            SANITIZER_RUNS.labels(outcome="fallback").inc()
+        else:
+            SANITIZER_RUNS.labels(outcome="success").inc()
+            savings_mb = _san.original_size_mb - _san.sanitized_size_mb
+            if savings_mb > 0:
+                SANITIZER_SAVINGS_MB.observe(savings_mb)
+            if _san.reduction_pct > 0:
+                SANITIZER_REDUCTION_PCT.observe(_san.reduction_pct)
+        if _san.duration_s > 0:
+            SANITIZER_DURATION.observe(_san.duration_s)
+
+        # Use the sanitized copy when available, otherwise the original.
+        # The sanitized copy is on the same filesystem partition as the upload.
+        _effective_path = _san.sanitized_path if _san.sanitized_path is not None else _upload_path
+
         # run_pipeline opens the workbook directly from the Path — no bytes copy.
-        result = run_pipeline(_upload_path, filename)
+        # The inner try/finally guarantees the sanitized temp file is deleted
+        # after extraction regardless of success or failure, while the outer
+        # except block preserves the original upload for retry attempts.
+        try:
+            result = run_pipeline(_effective_path, filename)
+        finally:
+            # Always clean up the sanitized copy; original upload is untouched.
+            if _san.sanitized_path is not None:
+                safe_delete(_san.sanitized_path, log_context=f"san-cleanup {_log_ctx}")
 
         # Extraction done — the upload file is no longer needed.
         safe_delete(_upload_path, log_context=_log_ctx)
