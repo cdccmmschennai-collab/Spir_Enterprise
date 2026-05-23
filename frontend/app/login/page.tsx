@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Eye, EyeOff, AlertCircle, User, Lock, Mail, ArrowLeft, CheckCircle2 } from "lucide-react";
-import { saveToken, saveRole } from "@/lib/auth";
+import { saveToken, saveRole, saveBranchId } from "@/lib/auth";
 import { clearSession } from "@/lib/extraction-session";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL!;
@@ -30,11 +30,13 @@ function ForgotPasswordForm({ onBack }: { onBack: () => void }) {
           reason: form.get("reason") || null,
         }),
       });
-      // Always show success regardless of status to avoid leaking account info
-      if (res.ok || res.status === 201) {
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 201) {
         setSubmitted(true);
+      } else if (res.status === 404) {
+        setError(data.detail ?? "No matching account found.");
       } else {
-        setError("Could not submit request. Please try again or contact your administrator.");
+        setError(data.detail ?? "Could not submit request. Please try again or contact your administrator.");
       }
     } catch {
       setError("Could not connect to the server.");
@@ -203,8 +205,10 @@ export default function LoginPage() {
         if (meRes.ok) {
           const meData = await meRes.json();
           saveRole(meData.role ?? "user");
+          saveBranchId(meData.branch_id ?? null);
         } else {
           saveRole("user");
+          saveBranchId(null);
         }
       } catch {
         saveRole("user");
@@ -279,7 +283,7 @@ export default function LoginPage() {
                 {/* Username */}
                 <div className="space-y-1.5">
                   <label htmlFor="username" className="text-sm font-medium text-slate-700">
-                    Username
+                    Username or Email
                   </label>
                   <div className="relative">
                     <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -289,7 +293,7 @@ export default function LoginPage() {
                       type="text"
                       autoComplete="username"
                       required
-                      placeholder="Enter your username"
+                      placeholder="Enter username or email"
                       className="h-10 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20 transition-colors"
                     />
                   </div>

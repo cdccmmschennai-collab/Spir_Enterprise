@@ -28,8 +28,9 @@ export function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL("/extraction", request.url));
   }
 
-  // Admin route guard — non-admins are redirected to /extraction
-  if (token && pathname.startsWith("/admin") && role !== "admin") {
+  // Admin route guard — only super_admin and branch_admin may access /admin
+  const ADMIN_ROLES = ["admin", "super_admin", "branch_admin"]; // "admin" kept for tokens issued before migration
+  if (token && pathname.startsWith("/admin") && !ADMIN_ROLES.includes(role ?? "")) {
     return NextResponse.redirect(new URL("/extraction", request.url));
   }
 

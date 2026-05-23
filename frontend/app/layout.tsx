@@ -26,7 +26,7 @@ export default function RootLayout({
             Admin nav tab without waiting for React. Eliminates the insertion flash. */}
         <script
           dangerouslySetInnerHTML={{
-            __html: `try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.classList.add('dark');var r=localStorage.getItem('role'),n=localStorage.getItem('profile_username')||'',i=n.slice(0,2).toUpperCase();if(r==='admin')document.documentElement.setAttribute('data-admin','1');if(i)document.documentElement.style.setProperty('--user-initials','"'+i+'"')}catch(e){}`,
+            __html: `try{var t=localStorage.getItem('theme');if(t==='dark')document.documentElement.classList.add('dark');var r=localStorage.getItem('role'),n=localStorage.getItem('profile_username')||'',i=n.slice(0,2).toUpperCase();if(['admin','super_admin','branch_admin'].indexOf(r)!==-1)document.documentElement.setAttribute('data-admin','1');if(i)document.documentElement.style.setProperty('--user-initials','"'+i+'"')}catch(e){}`,
           }}
         />
       </head>

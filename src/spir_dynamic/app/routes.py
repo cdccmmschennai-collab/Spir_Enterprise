@@ -22,7 +22,7 @@ from openpyxl.utils.exceptions import InvalidFileException
 from pydantic import BaseModel
 from sqlalchemy import select, desc
 
-from spir_dynamic.app.auth import get_current_user, TokenData
+from spir_dynamic.app.auth import get_current_user, TokenData, SUPER_ADMIN
 from spir_dynamic.app.pipeline import run_pipeline, retrieve_result
 from spir_dynamic.app.config import get_settings
 from spir_dynamic.db.database import get_db, is_db_enabled
@@ -388,11 +388,13 @@ async def me(
         )
         total_files = int(result.scalar() or 0)
         if user:
+            role = user.role if user.role != "admin" else SUPER_ADMIN
             return {
                 "id": user.id,
                 "username": user.username,
                 "email": user.email,
-                "role": user.role,
+                "role": role,
+                "branch_id": user.branch_id,
                 "created_at": user.created_at,
                 "last_login_at": user.last_login_at,
                 "total_files_extracted": total_files,
@@ -625,7 +627,7 @@ async def delete_history(
 
     ownership_filter = (
         (ExtractionHistory.user_id == td.user_id)
-        if td.role != "admin"
+        if td.role != SUPER_ADMIN
         else True
     )
     q = select(ExtractionHistory).where(
@@ -694,7 +696,7 @@ async def combine(
 
     ownership_filter = (
         (ExtractionHistory.user_id == td.user_id)
-        if td.role != "admin"
+        if td.role != SUPER_ADMIN
         else True
     )
     q = (

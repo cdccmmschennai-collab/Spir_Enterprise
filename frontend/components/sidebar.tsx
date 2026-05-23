@@ -355,11 +355,13 @@ const TopNavbar = memo(function TopNavbar({
                     {role && (
                       <span className={cn(
                         "shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide",
-                        role === "admin"
-                          ? "bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300"
+                        role === "super_admin" || role === "admin"
+                          ? "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300"
+                          : role === "branch_admin"
+                          ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
                           : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"
                       )}>
-                        {role}
+                        {role === "super_admin" ? "Super Admin" : role === "branch_admin" ? "Branch Admin" : role}
                       </span>
                     )}
                   </div>
@@ -431,7 +433,8 @@ export function SidebarLayout({ children }: SidebarProps) {
     const cachedAvatar = localStorage.getItem("profile_avatar_url") ?? "";
     if (cachedAvatar) setAvatarUrl(cachedAvatar);
 
-    const admin = getRole() === "admin";
+    const ADMIN_ROLES = ["admin", "super_admin", "branch_admin"];
+    const admin = ADMIN_ROLES.includes(getRole() ?? "");
     setIsAdmin(admin);
     if (admin) {
       document.documentElement.setAttribute("data-admin", "1");

@@ -42,9 +42,18 @@ interface User {
   username: string;
   email: string | null;
   role: string;
+  branch_id: string | null;
   is_active: boolean;
   created_at: string;
   last_login_at: string | null;
+  created_by: string | null;
+}
+
+interface Branch {
+  id: string;
+  name: string;
+  country: string | null;
+  is_active: boolean;
 }
 
 interface Stats {
@@ -153,28 +162,35 @@ function ConfirmModal({ title, message, confirmLabel, loading, onConfirm, onCanc
 interface CreateModalProps {
   onClose: () => void;
   onCreated: () => void;
+  callerRole: string;
+  branches: Branch[];
 }
 
-function CreateUserModal({ onClose, onCreated }: CreateModalProps) {
+function CreateUserModal({ onClose, onCreated, callerRole, branches }: CreateModalProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPass, setShowPass] = useState(false);
+  const isSuperAdmin = callerRole === "super_admin" || callerRole === "admin";
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
     setLoading(true);
     const form = new FormData(e.currentTarget);
+    const payload: Record<string, unknown> = {
+      username: form.get("username"),
+      password: form.get("password"),
+      email: form.get("email") || null,
+      role: form.get("role"),
+    };
+    if (isSuperAdmin) {
+      payload.branch_id = form.get("branch_id") || null;
+    }
     try {
       const res = await fetch(`${API_URL}/api/admin/users`, {
         method: "POST",
         headers: { ...authHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({
-          username: form.get("username"),
-          password: form.get("password"),
-          email: form.get("email") || null,
-          role: form.get("role"),
-        }),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -246,9 +262,25 @@ function CreateUserModal({ onClose, onCreated }: CreateModalProps) {
               className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-sm text-slate-900 dark:text-slate-100 focus:border-violet-500 focus:outline-none"
             >
               <option value="user">User</option>
-              <option value="admin">Admin</option>
+              {isSuperAdmin && <option value="branch_admin">Branch Admin</option>}
+              {isSuperAdmin && <option value="super_admin">Super Admin</option>}
             </select>
           </div>
+
+          {isSuperAdmin && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">Branch</label>
+              <select
+                name="branch_id"
+                className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-sm text-slate-900 dark:text-slate-100 focus:border-violet-500 focus:outline-none"
+              >
+                <option value="">— No branch (super_admin) —</option>
+                {branches.filter((b) => b.is_active).map((b) => (
+                  <option key={b.id} value={b.id}>{b.name}{b.country ? ` (${b.country})` : ""}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {error && (
             <div className="flex items-start gap-2 rounded-lg bg-red-50 dark:bg-red-950/30 p-3 text-xs text-red-600 dark:text-red-400">
@@ -479,6 +511,112 @@ function ResolveRequestModal({ request, onClose, onSuccess }: ResolveRequestModa
 }
 
 
+// ─── Permanent Delete Modal ───────────────────────────────────────────────────
+
+interface PermanentDeleteModalProps {
+  user: User;
+  onClose: () => void;
+  onDeleted: () => void;
+}
+
+function PermanentDeleteModal({ user, onClose, onDeleted }: PermanentDeleteModalProps) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmText, setConfirmText] = useState("");
+
+  const isConfirmed = confirmText === "DELETE";
+
+  async function handleDelete() {
+    if (!isConfirmed) return;
+    setError(null);
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/api/admin/users/${user.id}/permanent`, {
+        method: "DELETE",
+        headers: { ...authHeaders() },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.detail ?? `Failed (${res.status})`);
+        return;
+      }
+      onDeleted();
+      onClose();
+    } catch {
+      setError("Network error.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-2xl border border-red-200 bg-white dark:border-red-900 dark:bg-slate-900 p-6 shadow-2xl">
+        <div className="mb-4 flex items-center gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-100 dark:bg-red-950">
+            <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400" />
+          </div>
+          <div>
+            <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">Permanently Delete User</h2>
+            <p className="text-xs text-red-600 dark:text-red-400 font-medium">This action CANNOT be undone</p>
+          </div>
+        </div>
+
+        <div className="mb-4 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 p-3 space-y-1 text-xs text-red-700 dark:text-red-400">
+          <p className="font-semibold">The following will be permanently deleted:</p>
+          <ul className="mt-1 ml-3 space-y-0.5 list-disc">
+            <li>User account: <span className="font-bold">{user.username}</span></li>
+            <li>All extraction history</li>
+            <li>All extracted output files</li>
+            <li>All activity audit logs</li>
+            <li>All batch jobs</li>
+          </ul>
+        </div>
+
+        <div className="mb-4 space-y-1.5">
+          <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+            Type <span className="font-mono text-red-600 bg-red-50 dark:bg-red-950/50 px-1 py-0.5 rounded">DELETE</span> to confirm
+          </label>
+          <input
+            type="text"
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.target.value)}
+            placeholder="Type DELETE here"
+            className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-sm text-slate-900 dark:text-slate-100 focus:border-red-500 focus:outline-none focus:ring-2 focus:ring-red-500/20 font-mono"
+          />
+        </div>
+
+        {error && (
+          <div className="mb-3 flex items-start gap-2 rounded-lg bg-red-50 dark:bg-red-950/30 p-3 text-xs text-red-600 dark:text-red-400">
+            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            {error}
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={loading}
+            className="flex-1 h-9 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleDelete}
+            disabled={loading || !isConfirmed}
+            className="flex-1 h-9 rounded-xl bg-red-600 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {loading ? <Loader2 className="mx-auto h-4 w-4 animate-spin" /> : "Permanently Delete"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 // ─── Page ──────────────────────────────────────────────────────────────────────
 
 export default function AdminPage() {
@@ -493,12 +631,18 @@ export default function AdminPage() {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [currentRole, setCurrentRole] = useState<string>("user");
   const [resetRequests, setResetRequests] = useState<ResetRequest[]>([]);
   const [resolveTarget, setResolveTarget] = useState<ResetRequest | null>(null);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [permanentDeleteTarget, setPermanentDeleteTarget] = useState<User | null>(null);
+
+  const ADMIN_ROLES = ["admin", "super_admin", "branch_admin"];
 
   // Client-side admin guard
   useEffect(() => {
-    if (getRole() !== "admin") {
+    const role = getRole();
+    if (!role || !ADMIN_ROLES.includes(role)) {
       router.replace("/extraction");
     }
   }, [router]);
@@ -517,11 +661,12 @@ export default function AdminPage() {
     setLoading(true);
     setError(null);
     try {
-      const [usersRes, statsRes, meRes, resetRes] = await Promise.all([
+      const [usersRes, statsRes, meRes, resetRes, branchesRes] = await Promise.all([
         fetch(`${API_URL}/api/admin/users`, { headers: { ...authHeaders() } }),
         fetch(`${API_URL}/api/admin/stats`, { headers: { ...authHeaders() } }),
         fetch(`${API_URL}/api/me`, { headers: { ...authHeaders() } }),
         fetch(`${API_URL}/api/admin/reset-requests`, { headers: { ...authHeaders() } }),
+        fetch(`${API_URL}/api/admin/branches`, { headers: { ...authHeaders() } }),
       ]);
 
       if (usersRes.status === 401 || usersRes.status === 403) {
@@ -542,10 +687,15 @@ export default function AdminPage() {
       if (meRes.ok) {
         const me = await meRes.json();
         setCurrentUserId(me.id ?? null);
+        setCurrentRole(me.role ?? "user");
       }
 
       if (resetRes.ok) {
         setResetRequests(await resetRes.json());
+      }
+
+      if (branchesRes.ok) {
+        setBranches(await branchesRes.json());
       }
     } catch {
       setError("Network error. Is the backend running?");
@@ -587,7 +737,7 @@ export default function AdminPage() {
         headers: { ...authHeaders() },
       });
       if (res.ok) {
-        addToast("success", `User "${user.username}" deleted`);
+        addToast("success", `User "${user.username}" deactivated`);
         await loadData();
       } else {
         const data = await res.json().catch(() => ({}));
@@ -717,12 +867,19 @@ export default function AdminPage() {
                       <td className="px-4 py-3">
                         <span className={cn(
                           "inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide",
-                          user.role === "admin"
-                            ? "bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300"
+                          user.role === "super_admin" || user.role === "admin"
+                            ? "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300"
+                            : user.role === "branch_admin"
+                            ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
                             : "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300"
                         )}>
-                          {user.role}
+                          {user.role === "super_admin" ? "Super Admin" : user.role === "branch_admin" ? "Branch Admin" : user.role}
                         </span>
+                        {user.branch_id && (
+                          <p className="mt-0.5 text-[10px] text-slate-400 dark:text-slate-500">
+                            {branches.find((b) => b.id === user.branch_id)?.name ?? user.branch_id}
+                          </p>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <span className={cn(
@@ -752,10 +909,10 @@ export default function AdminPage() {
                             <Key className="h-3.5 w-3.5" />
                           </button>
 
-                          {/* Toggle Active — admin accounts are immutable */}
-                          {user.role === "admin" ? (
+                          {/* Toggle Active — super_admin accounts are immutable */}
+                          {user.role === "super_admin" || user.role === "admin" ? (
                             <span
-                              title="Admin accounts cannot be disabled"
+                              title="Super-admin accounts cannot be disabled"
                               className="rounded-lg p-1.5 text-slate-300 dark:text-slate-600 cursor-not-allowed"
                             >
                               <Lock className="h-3.5 w-3.5" />
@@ -776,11 +933,22 @@ export default function AdminPage() {
                             </button>
                           )}
 
-                          {/* Delete — cannot delete self */}
+                          {/* Soft deactivate — cannot deactivate self or super_admin */}
                           <button
                             onClick={() => setConfirmTarget({ user, action: "delete" })}
-                            title={user.id === currentUserId ? "Cannot delete your own account" : "Delete user"}
-                            disabled={actionLoading === user.id + "-delete" || user.id === currentUserId}
+                            title={
+                              user.id === currentUserId
+                                ? "Cannot delete your own account"
+                                : user.role === "super_admin" || user.role === "admin"
+                                ? "Super-admin accounts cannot be disabled"
+                                : "Deactivate user"
+                            }
+                            disabled={
+                              actionLoading === user.id + "-delete" ||
+                              user.id === currentUserId ||
+                              user.role === "super_admin" ||
+                              user.role === "admin"
+                            }
                             className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/30 dark:hover:text-red-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             {actionLoading === user.id + "-delete"
@@ -788,6 +956,28 @@ export default function AdminPage() {
                               : <Trash2 className="h-3.5 w-3.5" />
                             }
                           </button>
+
+                          {/* Permanent delete — super_admin only, never on self or other super_admins */}
+                          {(currentRole === "super_admin" || currentRole === "admin") && (
+                            <button
+                              onClick={() => setPermanentDeleteTarget(user)}
+                              title={
+                                user.id === currentUserId
+                                  ? "Cannot permanently delete your own account"
+                                  : user.role === "super_admin" || user.role === "admin"
+                                  ? "Super-admin accounts cannot be permanently deleted"
+                                  : "Permanently delete all data"
+                              }
+                              disabled={
+                                user.id === currentUserId ||
+                                user.role === "super_admin" ||
+                                user.role === "admin"
+                              }
+                              className="rounded-lg p-1.5 text-slate-300 hover:bg-red-100 hover:text-red-700 dark:text-slate-600 dark:hover:bg-red-950/50 dark:hover:text-red-400 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -901,6 +1091,8 @@ export default function AdminPage() {
         <CreateUserModal
           onClose={() => setShowCreate(false)}
           onCreated={loadData}
+          callerRole={currentRole}
+          branches={branches}
         />
       )}
       {resetTarget && (
@@ -912,12 +1104,22 @@ export default function AdminPage() {
       )}
       {confirmTarget?.action === "delete" && (
         <ConfirmModal
-          title="Delete User"
-          message={`Permanently delete "${confirmTarget.user.username}"? This cannot be undone.`}
-          confirmLabel="Delete"
+          title="Deactivate User"
+          message={`Deactivate "${confirmTarget.user.username}"? They will no longer be able to log in. This can be reversed by re-activating the account.`}
+          confirmLabel="Deactivate"
           loading={actionLoading === confirmTarget.user.id + "-delete"}
           onConfirm={confirmDelete}
           onCancel={() => setConfirmTarget(null)}
+        />
+      )}
+      {permanentDeleteTarget && (
+        <PermanentDeleteModal
+          user={permanentDeleteTarget}
+          onClose={() => setPermanentDeleteTarget(null)}
+          onDeleted={() => {
+            addToast("success", `User "${permanentDeleteTarget.username}" permanently deleted`);
+            loadData();
+          }}
         />
       )}
 

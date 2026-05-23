@@ -360,6 +360,23 @@ def log_extraction_worker(
         engine.dispose()
 
 
+async def log_activity(
+    user_id: str,
+    action: str,
+    details: Optional[dict] = None,
+    ip_address: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> None:
+    """Generic admin activity audit log (user_created, user_deleted, role_changed, branch_assigned, etc.)."""
+    await _write_activity(
+        user_id=user_id,
+        session_id=session_id,
+        action=action,
+        details=details,
+        ip_address=ip_address,
+    )
+
+
 async def log_download(
     user_id: str,
     session_id: Optional[str],

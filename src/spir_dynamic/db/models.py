@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
 from sqlalchemy import (
     Boolean,
@@ -29,6 +30,22 @@ def _uuid() -> str:
     return str(uuid.uuid4())
 
 
+# ── Branches ───────────────────────────────────────────────────────────────────
+
+class Branch(Base):
+    __tablename__ = "branches"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    country: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now
+    )
+
+    users: Mapped[list["User"]] = relationship("User", back_populates="branch", lazy="noload")
+
+
 # ── Users ──────────────────────────────────────────────────────────────────────
 
 class User(Base):
@@ -43,8 +60,11 @@ class User(Base):
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="user"
-    )  # 'admin' | 'user'
+        String(50), nullable=False, default="user"
+    )  # 'super_admin' | 'branch_admin' | 'user'
+    branch_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("branches.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
@@ -53,7 +73,9 @@ class User(Base):
         DateTime(timezone=True), nullable=True
     )
     avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(100), nullable=True)  # username of creator
 
+    branch: Mapped[Optional["Branch"]] = relationship("Branch", back_populates="users", lazy="noload")
     sessions: Mapped[list[Session]] = relationship(
         "Session", back_populates="user", lazy="noload"
     )
@@ -171,6 +193,8 @@ class PasswordResetRequest(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     username: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    branch_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(

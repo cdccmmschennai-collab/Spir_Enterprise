@@ -30,6 +30,16 @@ from spir_dynamic.app.config import get_settings
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login")
 _optional_oauth2 = OAuth2PasswordBearer(tokenUrl="/api/login", auto_error=False)
 
+# ---------------------------------------------------------------------------
+# Role constants
+# ---------------------------------------------------------------------------
+
+SUPER_ADMIN = "super_admin"
+BRANCH_ADMIN = "branch_admin"
+USER = "user"
+# Legacy role kept for backward compatibility during transition
+_LEGACY_ADMIN = "admin"
+
 
 def _hash_password(plain: str) -> str:
     """Hash a plain-text password with bcrypt."""
@@ -53,6 +63,7 @@ def create_access_token(
     user_id: Optional[str] = None,
     jti: Optional[str] = None,
     role: str = "user",
+    branch_id: Optional[str] = None,
     expires_delta: Optional[timedelta] = None,
 ) -> str:
     cfg = get_settings()
@@ -64,12 +75,14 @@ def create_access_token(
         payload["uid"] = user_id
     if jti:
         payload["jti"] = jti
+    if branch_id:
+        payload["bid"] = branch_id
     return jwt.encode(payload, cfg.secret_key, algorithm="HS256")
 
 
 class TokenData:
     """Parsed token payload used by route dependencies."""
-    __slots__ = ("username", "user_id", "jti", "role")
+    __slots__ = ("username", "user_id", "jti", "role", "branch_id")
 
     def __init__(
         self,
@@ -77,11 +90,13 @@ class TokenData:
         user_id: Optional[str],
         jti: Optional[str],
         role: str = "user",
+        branch_id: Optional[str] = None,
     ):
         self.username = username
         self.user_id = user_id
         self.jti = jti
         self.role = role
+        self.branch_id = branch_id
 
 
 def _decode_token(token: str) -> TokenData:
@@ -97,11 +112,16 @@ def _decode_token(token: str) -> TokenData:
         username: str | None = payload.get("sub")
         if not username:
             raise exc
+        raw_role = payload.get("role", "user")
+        # Transparently upgrade legacy "admin" tokens issued before role migration
+        if raw_role == _LEGACY_ADMIN:
+            raw_role = SUPER_ADMIN
         return TokenData(
             username=username,
             user_id=payload.get("uid"),
             jti=payload.get("jti"),
-            role=payload.get("role", "user"),
+            role=raw_role,
+            branch_id=payload.get("bid"),
         )
     except JWTError:
         raise exc
@@ -118,7 +138,7 @@ def verify_token(token: str = Depends(oauth2_scheme)) -> str:
 async def get_optional_user(token: Optional[str] = Depends(_optional_oauth2)) -> TokenData:
     """Returns anonymous TokenData if no token — never raises 401."""
     if not token:
-        return TokenData(username="anonymous", user_id=None, jti=None)
+        return TokenData(username="anonymous", user_id=None, jti=None, branch_id=None)
     td = _decode_token(token)
     if td.jti:
         from spir_dynamic.services.audit_service import update_session_activity
@@ -196,11 +216,15 @@ async def auth_me(td: TokenData = Depends(get_current_user)) -> dict:
             )
             total_files = int(result.scalar() or 0)
             if user:
+                role = user.role
+                if role == _LEGACY_ADMIN:
+                    role = SUPER_ADMIN
                 return {
                     "id": user.id,
                     "username": user.username,
                     "email": user.email,
-                    "role": user.role,
+                    "role": role,
+                    "branch_id": user.branch_id,
                     "created_at": user.created_at,
                     "last_login_at": user.last_login_at,
                     "total_files_extracted": total_files,
@@ -210,6 +234,7 @@ async def auth_me(td: TokenData = Depends(get_current_user)) -> dict:
         "username": td.username,
         "email": None,
         "role": td.role,
+        "branch_id": td.branch_id,
         "created_at": None,
         "last_login_at": None,
         "total_files_extracted": 0,
@@ -249,6 +274,77 @@ async def logout(
     return {"detail": "Logged out"}
 
 
+class ChangePasswordIn(BaseModel):
+    current_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8, max_length=72)
+
+
+@auth_router.put("/change-password", status_code=204)
+async def change_password(
+    body: ChangePasswordIn,
+    td: TokenData = Depends(get_current_user),
+) -> None:
+    """
+    Change the current user's password.
+    Requires the current password to be supplied and correct.
+    Invalidates all other active sessions after a successful change.
+    """
+    from spir_dynamic.db.database import is_db_enabled, get_session_factory
+    from spir_dynamic.db.models import User, Session
+    from sqlalchemy import select, update
+    from spir_dynamic.services.audit_service import log_activity
+
+    if not is_db_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Password change requires database mode",
+        )
+    if not td.user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+
+    # Validate password policy
+    import re as _re
+    pw = body.new_password
+    if not _re.search(r"[A-Z]", pw):
+        raise HTTPException(status_code=400, detail="Password must contain at least one uppercase letter")
+    if not _re.search(r"[a-z]", pw):
+        raise HTTPException(status_code=400, detail="Password must contain at least one lowercase letter")
+    if not _re.search(r"\d", pw):
+        raise HTTPException(status_code=400, detail="Password must contain at least one digit")
+
+    factory = get_session_factory()
+    async with factory() as db:
+        user: User | None = await db.get(User, td.user_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        if not _verify_password(body.current_password, user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Current password is incorrect",
+            )
+
+        # Update password
+        user.password_hash = _hash_password(body.new_password[:72])
+
+        # Invalidate all sessions except the current one
+        revoke_stmt = (
+            update(Session)
+            .where(Session.user_id == td.user_id)
+            .where(Session.jti != td.jti if td.jti else Session.user_id == td.user_id)
+            .values(is_active=False)
+        )
+        await db.execute(revoke_stmt)
+        await db.commit()
+
+    import asyncio
+    asyncio.ensure_future(log_activity(
+        user_id=td.user_id,
+        action="password_changed",
+        session_id=td.jti,
+    ))
+
+
 class PasswordResetRequestIn(BaseModel):
     username: str = Field(..., min_length=1, max_length=100)
     email: Optional[str] = None
@@ -259,31 +355,84 @@ class PasswordResetRequestIn(BaseModel):
 async def create_reset_request(body: PasswordResetRequestIn) -> dict:
     """
     Submit a password reset request for admin approval. No auth required.
-    Always returns the same success message regardless of whether the username exists
-    — avoids leaking account information.
+    Accepts username or email as the identifier field.
+    Returns 404 if no active account matches, 201 on success.
+    No DB row is created for unknown/inactive accounts.
     """
     from spir_dynamic.db.database import is_db_enabled, get_session_factory
-    from spir_dynamic.db.models import PasswordResetRequest
+    from spir_dynamic.db.models import PasswordResetRequest, User
+    from sqlalchemy import select
 
     if not is_db_enabled():
-        # In legacy mode there's no admin user management — direct reply
         return {"message": "Request received. Contact your system administrator directly."}
 
+    identifier = body.username.strip()
+    user_found = False
     try:
         factory = get_session_factory()
         async with factory() as db:
-            req = PasswordResetRequest(
-                username=body.username.strip(),
-                email=body.email.strip() if body.email else None,
-                reason=body.reason.strip() if body.reason else None,
-                status="pending",
+            # Support lookup by username OR email so users can use either identifier
+            user: User | None = await db.scalar(
+                select(User).where(
+                    (User.username == identifier) | (User.email == identifier),
+                    User.is_active == True,
+                )
             )
-            db.add(req)
-            await db.commit()
+            if user is not None:
+                user_found = True
+                req = PasswordResetRequest(
+                    username=user.username,
+                    user_id=user.id,
+                    branch_id=user.branch_id,
+                    email=body.email.strip() if body.email else None,
+                    reason=body.reason.strip() if body.reason else None,
+                    status="pending",
+                )
+                db.add(req)
+                await db.commit()
     except Exception:
-        pass  # silently swallow — never reveal internal errors to unauthenticated callers
+        pass  # swallow genuine DB/network errors; the found flag decides the response
 
-    return {"message": "Your request has been sent to admin for approval. You will be notified once your access is restored."}
+    if not user_found:
+        raise HTTPException(status_code=404, detail="No matching account found.")
+
+    return {"message": "Password reset request submitted."}
+
+
+# ---------------------------------------------------------------------------
+# Role-based dependency guards
+# ---------------------------------------------------------------------------
+
+async def require_super_admin(td: TokenData = Depends(get_current_user)) -> TokenData:
+    """Dependency: raises 403 unless caller is SUPER_ADMIN."""
+    if td.role != SUPER_ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super-admin access required",
+        )
+    from spir_dynamic.db.database import is_db_enabled
+    if not is_db_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Admin endpoints require DATABASE_URL to be configured",
+        )
+    return td
+
+
+async def require_branch_admin_or_above(td: TokenData = Depends(get_current_user)) -> TokenData:
+    """Dependency: raises 403 unless caller is BRANCH_ADMIN or SUPER_ADMIN."""
+    if td.role not in (SUPER_ADMIN, BRANCH_ADMIN):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+    from spir_dynamic.db.database import is_db_enabled
+    if not is_db_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Admin endpoints require DATABASE_URL to be configured",
+        )
+    return td
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +456,10 @@ async def _login_db(
 
     async with factory() as db:
         user: User | None = await db.scalar(
-            select(User).where(User.username == username, User.is_active == True)
+            select(User).where(
+                (User.username == username) | (User.email == username),
+                User.is_active == True,
+            )
         )
         # Capture all needed fields INSIDE the session — never access a detached
         # SQLAlchemy object outside an async session (causes MissingGreenlet).
@@ -315,6 +467,10 @@ async def _login_db(
         user_name: str | None = user.username if user is not None else None
         password_hash: str | None = user.password_hash if user is not None else None
         user_role: str = user.role if user is not None else "user"
+        user_branch_id: str | None = user.branch_id if user is not None else None
+        # Upgrade legacy tokens at login time
+        if user_role == _LEGACY_ADMIN:
+            user_role = SUPER_ADMIN
 
     if password_hash is None or not _verify_password(plain_password, password_hash):
         raise HTTPException(
@@ -361,6 +517,7 @@ async def _login_db(
         user_id=user_id,
         jti=jti,
         role=user_role,
+        branch_id=user_branch_id,
         expires_delta=timedelta(hours=cfg.token_expire_hours),
     )
     return token, jti

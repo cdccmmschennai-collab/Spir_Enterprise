@@ -27,7 +27,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from spir_dynamic.app.auth import get_current_user, TokenData
+from spir_dynamic.app.auth import get_current_user, TokenData, SUPER_ADMIN
 from spir_dynamic.app.config import get_settings
 from spir_dynamic.app.pipeline import run_pipeline
 from spir_dynamic.services.cleanup import safe_delete
@@ -577,8 +577,8 @@ def _do_combine(file_ids: list[str]) -> tuple[str, str, int]:
 
 
 def _assert_job_access(job_user_id: str, td: TokenData) -> None:
-    """Raise 403 if a non-admin caller tries to access another user's job."""
-    if td.role == "admin":
+    """Raise 403 if a non-super-admin caller tries to access another user's job."""
+    if td.role == SUPER_ADMIN:
         return
     caller_id = td.user_id or ""
     if job_user_id and caller_id and job_user_id != caller_id:
