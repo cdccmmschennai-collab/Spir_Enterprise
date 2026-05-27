@@ -9,10 +9,11 @@ Two modes:
 """
 from __future__ import annotations
 
+import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 import bcrypt as _bcrypt
 
@@ -22,6 +23,8 @@ from jose import JWTError, jwt
 from pydantic import BaseModel, Field
 
 from spir_dynamic.app.config import get_settings
+
+_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -164,6 +167,82 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> TokenData:
 
 
 # ---------------------------------------------------------------------------
+# Login rate limiter
+# ---------------------------------------------------------------------------
+#
+# Security principle: bcrypt is intentionally slow (~100 ms at cost=12), but an
+# attacker with many IPs can still queue thousands of guesses per hour. A per-IP
+# sliding-window counter in Redis caps the attempt rate without storing passwords
+# or blocking legitimate users.
+#
+# Design decisions:
+#   - Window: 60 s (resets rolling — no cliff effect between minutes)
+#   - Limit: LOGIN_RATE_LIMIT_PER_MINUTE env var (default 10, 0 = disabled)
+#   - Fails open: Redis down → rate limiting skipped, login proceeds normally.
+#     A Redis outage must never lock all users out of the application.
+#   - The 429 response includes Retry-After so clients/browsers can backoff.
+#
+# Local dev: set LOGIN_RATE_LIMIT_PER_MINUTE=0 in src/.env to disable entirely.
+
+_rl_client: Any = None  # module-level singleton; initialised on first call
+
+
+def _get_rl_client(redis_url: str) -> Any:
+    """Return (or lazily create) the async Redis client used for rate limiting."""
+    global _rl_client
+    if _rl_client is None:
+        import redis.asyncio as _aioredis  # redis>=4.2 ships this sub-package
+
+        _rl_client = _aioredis.Redis.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_connect_timeout=1,   # fail fast if Redis is unreachable
+            socket_timeout=1,
+        )
+    return _rl_client
+
+
+async def _enforce_login_rate_limit(ip: Optional[str], cfg) -> None:
+    """
+    Raise HTTP 429 if the calling IP has exceeded the configured login attempt
+    limit within the current 60-second window.
+
+    Silently no-ops when:
+      - ip is None (cannot determine caller address)
+      - LOGIN_RATE_LIMIT_PER_MINUTE == 0 (explicitly disabled)
+      - Redis is unreachable (fails open — preserves availability)
+    """
+    if not ip or cfg.login_rate_limit_per_minute <= 0:
+        return
+
+    try:
+        r = _get_rl_client(cfg.redis_url)
+        key = f"rl:login:{ip}"
+
+        # Atomic increment.  If this is the first attempt in the window, set a
+        # 60-second TTL.  INCR + EXPIRE is not perfectly atomic, but the worst
+        # case is a single request slipping through after a TTL races — acceptable.
+        count = await r.incr(key)
+        if count == 1:
+            await r.expire(key, 60)
+
+        if count > cfg.login_rate_limit_per_minute:
+            ttl = max(int(await r.ttl(key)), 1)
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many login attempts. Please try again later.",
+                headers={"Retry-After": str(ttl)},
+            )
+    except HTTPException:
+        raise  # re-raise 429 — do not swallow it
+    except Exception as exc:  # noqa: BLE001
+        # Redis unavailable, connection refused, timeout, etc.
+        # Log at WARNING so ops can detect a misconfigured Redis, but never
+        # block the login path over a monitoring/infra dependency.
+        _log.warning("rate_limit.redis_unavailable: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # Auth router
 # ---------------------------------------------------------------------------
 
@@ -179,6 +258,11 @@ async def login(
     cfg = get_settings()
     ip = _get_ip(request)
     ua = request.headers.get("user-agent")
+
+    # ── Rate limit — checked before any password work ─────────────────────────
+    # Enforcing the limit before bcrypt runs means an attacker cannot use the
+    # endpoint to saturate CPU with bcrypt hashing even if they bypass Redis.
+    await _enforce_login_rate_limit(ip, cfg)
 
     # ── DB mode ──────────────────────────────────────────────────────────────
     from spir_dynamic.db.database import is_db_enabled

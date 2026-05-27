@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     secret_key: str
     token_expire_hours: int = 8
 
+    # Login rate limiting — per-IP, backed by Redis.
+    # Set LOGIN_RATE_LIMIT_PER_MINUTE=0 to disable entirely (useful in dev/test).
+    # Fails open: if Redis is unreachable the limit is silently skipped so a
+    # Redis outage can never lock all users out.
+    login_rate_limit_per_minute: int = 10  # env: LOGIN_RATE_LIMIT_PER_MINUTE
+
     # Keywords config
     keywords_config_path: str = "config/keywords.yaml"
     omn_target_length: int = 18

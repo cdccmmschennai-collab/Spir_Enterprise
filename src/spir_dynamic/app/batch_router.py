@@ -596,11 +596,21 @@ def _do_combine(file_ids: list[str]) -> tuple[str, str, int]:
 
 
 def _assert_job_access(job_user_id: str, td: TokenData) -> None:
-    """Raise 403 if a non-super-admin caller tries to access another user's job."""
+    """Raise 403 if a non-super-admin caller tries to access another user's job.
+
+    Bug fixed: the original condition `if job_user_id and caller_id and ...`
+    short-circuited to False when caller_id was empty (legacy/anonymous token),
+    silently granting access to any owned job.  The corrected logic:
+      - Unowned jobs (job_user_id == "") are accessible to any authenticated user.
+      - Owned jobs require an exact user_id match; an empty caller_id never matches.
+    """
     if td.role == SUPER_ADMIN:
         return
     caller_id = td.user_id or ""
-    if job_user_id and caller_id and job_user_id != caller_id:
+    # Only enforce when the job has a stored owner.
+    # Removing `and caller_id` means an empty caller_id (legacy-mode token) can
+    # no longer accidentally bypass the check on owned jobs.
+    if job_user_id and caller_id != job_user_id:
         raise HTTPException(status_code=403, detail="Access denied")
 
 

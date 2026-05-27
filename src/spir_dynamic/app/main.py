@@ -143,9 +143,25 @@ def create_app() -> FastAPI:
     # RequestIDMiddleware → CORSMiddleware → routes
     # Both are registered here; Starlette applies them in reverse-add order,
     # making the last-added the outermost.
+    #
+    # CORS origins come from ALLOWED_ORIGINS env var (config.py).
+    # In production set: ALLOWED_ORIGINS=["https://your-frontend-domain.com"]
+    # The browser CORS spec forbids allow_credentials=True with allow_origins=["*"],
+    # so using a wildcard in production produces spec-invalid headers that most
+    # browsers will reject for credentialed requests. We warn on startup.
+    origins = cfg.allowed_origins
+    if not cfg.debug and "*" in origins:
+        log.warning(
+            "cors.wildcard_in_production",
+            detail=(
+                'ALLOWED_ORIGINS contains "*" while allow_credentials=True. '
+                "This is spec-invalid — browsers will block credentialed cross-origin "
+                "requests. Set ALLOWED_ORIGINS to your exact frontend URL."
+            ),
+        )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
