@@ -181,10 +181,46 @@ def create_app() -> FastAPI:
     return app
 
 
+def _make_metrics_app(raw_metrics_app, token: str):
+    """
+    Return the Prometheus ASGI app, optionally wrapped with Bearer token auth.
+
+    Security principle: Prometheus metrics expose operational details (request
+    rates, extraction durations, memory usage) that are useful to an attacker
+    profiling the system. Restricting access costs nothing for legitimate
+    scrapers and eliminates that information leak.
+
+    token == "" (default)  → endpoint is public, identical to today.
+                              Safe for local dev or firewalled deployments.
+    token set              → requires Authorization: Bearer <token>.
+                              Set METRICS_TOKEN in production env and add
+                              the matching bearer_token to Prometheus scrape_config.
+
+    The wrapper is pure ASGI — no FastAPI overhead, compatible with the
+    prometheus_client ASGI app returned by make_asgi_app().
+    """
+    if not token:
+        return raw_metrics_app  # local dev: no change in behaviour
+
+    async def _guarded(scope, receive, send):
+        if scope["type"] == "http":
+            # Headers arrive as a list of (bytes, bytes) pairs.
+            headers = {k.lower(): v for k, v in scope.get("headers", [])}
+            auth = headers.get(b"authorization", b"").decode()
+            if auth != f"Bearer {token}":
+                from starlette.responses import Response as _R
+                await _R("Unauthorized", status_code=401)(scope, receive, send)
+                return
+        await raw_metrics_app(scope, receive, send)
+
+    return _guarded
+
+
 app = create_app()
 
+_cfg = get_settings()
 metrics_app = make_asgi_app()
-app.mount("/metrics", metrics_app)
+app.mount("/metrics", _make_metrics_app(metrics_app, _cfg.metrics_token))
 
 if __name__ == "__main__":
     import uvicorn

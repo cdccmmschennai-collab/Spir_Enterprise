@@ -259,9 +259,14 @@ async def extract(
                     exc_type=type(exc).__name__,
                     exc_message=str(exc),
                 )
+                # Do not echo the raw exception to the caller — it may contain
+                # internal file paths or library internals. The full traceback is
+                # already captured by log.exception above and can be correlated
+                # via the X-Request-ID header that RequestIDMiddleware adds to
+                # every response.
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Extraction failed: {exc}",
+                    detail="Extraction failed. Check the X-Request-ID header and contact support if the issue persists.",
                 )
 
             extract_dur = time.perf_counter() - extract_start
@@ -744,9 +749,11 @@ async def combine(
             payload = json.loads(p.read_text(encoding="utf-8"))
             combined_rows.extend(payload.get("rows", []))
         except Exception as exc:
+            # Log the internal detail (filename + exception) server-side only.
+            log.exception("combine.row_read_failed", filename=rec.filename, exc_message=str(exc))
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to read row data for '{rec.filename}': {exc}",
+                detail="Failed to read stored row data. Re-extract the affected file and try again.",
             )
 
     if no_json:

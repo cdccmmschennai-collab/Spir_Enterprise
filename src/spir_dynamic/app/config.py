@@ -133,6 +133,13 @@ class Settings(BaseSettings):
     # When false the existing asyncio/thread-pool fallback is used instead.
     celery_enabled: bool = False
 
+    # Prometheus /metrics endpoint protection.
+    # Empty string (default) leaves /metrics public — appropriate for local dev
+    # or deployments where port 8000 is not directly reachable from the internet.
+    # In production set METRICS_TOKEN to a strong random value (e.g. openssl rand -hex 32)
+    # and add a matching bearer_token to your Prometheus scrape_config.
+    metrics_token: str = ""  # env: METRICS_TOKEN
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 

@@ -57,6 +57,44 @@ def _verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
+def validate_password_policy(password: str) -> None:
+    """
+    Single source of truth for password complexity requirements.
+
+    Raises HTTP 400 if the password does not meet the policy. Called from every
+    path that sets or changes a password: self-service change, admin create,
+    admin reset, and admin resolve-reset-request.
+
+    Why centralise: the same rules were previously only applied in
+    change_password(). Admin endpoints (create_user, reset_password,
+    resolve_reset_request) only checked min_length=8, allowing admins to set
+    passwords that users themselves could not set — an inconsistency that
+    weakens the overall password posture.
+
+    Policy: the Pydantic model for each caller enforces min_length=8.
+    This function adds the complexity tier on top:
+      - at least one uppercase letter
+      - at least one lowercase letter
+      - at least one digit
+    """
+    import re as _re
+    if not _re.search(r"[A-Z]", password):
+        raise HTTPException(
+            status_code=400,
+            detail="Password must contain at least one uppercase letter",
+        )
+    if not _re.search(r"[a-z]", password):
+        raise HTTPException(
+            status_code=400,
+            detail="Password must contain at least one lowercase letter",
+        )
+    if not _re.search(r"\d", password):
+        raise HTTPException(
+            status_code=400,
+            detail="Password must contain at least one digit",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Token helpers
 # ---------------------------------------------------------------------------
@@ -386,15 +424,7 @@ async def change_password(
     if not td.user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
 
-    # Validate password policy
-    import re as _re
-    pw = body.new_password
-    if not _re.search(r"[A-Z]", pw):
-        raise HTTPException(status_code=400, detail="Password must contain at least one uppercase letter")
-    if not _re.search(r"[a-z]", pw):
-        raise HTTPException(status_code=400, detail="Password must contain at least one lowercase letter")
-    if not _re.search(r"\d", pw):
-        raise HTTPException(status_code=400, detail="Password must contain at least one digit")
+    validate_password_policy(body.new_password)
 
     factory = get_session_factory()
     async with factory() as db:
@@ -440,18 +470,19 @@ async def create_reset_request(body: PasswordResetRequestIn) -> dict:
     """
     Submit a password reset request for admin approval. No auth required.
     Accepts username or email as the identifier field.
-    Returns 404 if no active account matches, 201 on success.
-    No DB row is created for unknown/inactive accounts.
+    Always returns HTTP 201 with the same generic message regardless of whether
+    the account exists — different status codes would let callers enumerate
+    valid usernames. A DB row is only created when a matching active account
+    is found; unknown/inactive accounts produce no side effects.
     """
     from spir_dynamic.db.database import is_db_enabled, get_session_factory
     from spir_dynamic.db.models import PasswordResetRequest, User
     from sqlalchemy import select
 
     if not is_db_enabled():
-        return {"message": "Request received. Contact your system administrator directly."}
+        return {"message": "If a matching account exists, a reset request has been submitted."}
 
     identifier = body.username.strip()
-    user_found = False
     try:
         factory = get_session_factory()
         async with factory() as db:
@@ -463,7 +494,6 @@ async def create_reset_request(body: PasswordResetRequestIn) -> dict:
                 )
             )
             if user is not None:
-                user_found = True
                 req = PasswordResetRequest(
                     username=user.username,
                     user_id=user.id,
@@ -475,12 +505,11 @@ async def create_reset_request(body: PasswordResetRequestIn) -> dict:
                 db.add(req)
                 await db.commit()
     except Exception:
-        pass  # swallow genuine DB/network errors; the found flag decides the response
+        pass  # swallow genuine DB/network errors; response is always the same
 
-    if not user_found:
-        raise HTTPException(status_code=404, detail="No matching account found.")
-
-    return {"message": "Password reset request submitted."}
+    # Security: identical response whether the account was found or not.
+    # This prevents username enumeration via differing HTTP status codes.
+    return {"message": "If a matching account exists, a reset request has been submitted."}
 
 
 # ---------------------------------------------------------------------------

@@ -321,7 +321,8 @@ async def batch_single_result(
     try:
         payload = json.loads(raw_bytes.decode("utf-8"))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Result data corrupted: {exc}")
+        log.exception("batch_result.payload_decode_failed", job_id=job_id, exc_message=str(exc))
+        raise HTTPException(status_code=500, detail="Result data could not be read. The extraction may need to be re-run.")
 
     return {
         "status": "done",
@@ -435,7 +436,7 @@ async def batch_combine(
         )
     except Exception as exc:
         log.exception("batch.combine_failed", job_id=job_id, exc_message=str(exc))
-        raise HTTPException(status_code=500, detail=f"Combine failed: {exc}")
+        raise HTTPException(status_code=500, detail="Combine failed. Check the X-Request-ID header and contact support if the issue persists.")
 
     return {
         "file_id": combined_file_id,

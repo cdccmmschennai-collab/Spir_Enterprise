@@ -25,6 +25,7 @@ from spir_dynamic.app.auth import (
     USER,
     require_super_admin,
     require_branch_admin_or_above,
+    validate_password_policy,
 )
 from spir_dynamic.db.database import get_db, is_db_enabled
 from spir_dynamic.db.models import Branch, User, Session, UserActivityLog, ExtractionHistory
@@ -256,6 +257,7 @@ async def create_user(
 
     if len(body.password.encode("utf-8")) > 72:
         raise HTTPException(status_code=400, detail="Password too long (max 72 characters)")
+    validate_password_policy(body.password)
 
     existing = await db.scalar(select(User).where(User.username == body.username))
     if existing:
@@ -305,6 +307,7 @@ async def reset_password(
 
     if len(body.new_password.encode("utf-8")) > 72:
         raise HTTPException(status_code=400, detail="Password too long (max 72 characters)")
+    validate_password_policy(body.new_password)
 
     user: User | None = await db.get(User, user_id)
     if user is None:
@@ -613,6 +616,7 @@ async def resolve_reset_request(
 
     if len(body.new_password.encode("utf-8")) > 72:
         raise HTTPException(status_code=400, detail="Password too long (max 72 characters)")
+    validate_password_policy(body.new_password)
 
     user.password_hash = _hash_password(body.new_password[:72])
     req.status = "resolved"
