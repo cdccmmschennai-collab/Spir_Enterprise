@@ -57,6 +57,10 @@ _LABEL_SKIP_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Matches DD-MM-YYYY, DD/MM/YYYY, DD.MM.YYYY etc. — used to detect cells where
+# a label (e.g. "PRICE VALIDITY - 08-12-2025") and the company name share one line.
+_DATE_RE = re.compile(r"\b\d{1,2}[-/\.]\d{1,2}[-/\.]\d{2,4}\b")
+
 # Known country names (uppercase, dot-stripped for normalization)
 _KNOWN_COUNTRIES: frozenset[str] = frozenset({
     "INDIA", "CHINA", "USA", "UNITED STATES", "UNITED STATES OF AMERICA",
@@ -452,6 +456,23 @@ def _extract_company_name(text: str) -> str:
         # Skip phone/address lines starting with + or digit patterns
         if re.match(r"^[\+\d\(]", line) and re.search(r"\d{5,}", line.replace(" ", "")):
             continue
+        # Skip website URL lines
+        if re.match(r"^www\.", line, re.IGNORECASE):
+            continue
+        # If the line contains a date the cell may be "LABEL  DATE   COMPANY NAME"
+        # all on one row separated by long runs of whitespace (common in Excel focal
+        # point cells). Split by 3+ spaces and scan each segment independently.
+        if _DATE_RE.search(line):
+            segments = re.split(r"\s{3,}", line)
+            for seg in segments:
+                seg = seg.strip()
+                if not seg or _DATE_RE.search(seg):
+                    continue
+                if _LABEL_SKIP_RE.search(seg) and len(seg) < 80:
+                    continue
+                if len(re.findall(r"[A-Za-z]", seg)) >= 3:
+                    return seg
+            continue  # no usable segment found in this date-bearing line
         # Must have at least 3 alphabetic characters to qualify as a name
         if len(re.findall(r"[A-Za-z]", line)) >= 3:
             return line.strip()

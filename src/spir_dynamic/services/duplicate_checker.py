@@ -281,7 +281,7 @@ def analyse_duplicates(rows: list[list]) -> dict:
     tag_col = CI.get("TAG NO", 0)
     desc_col = CI.get("DESCRIPTION OF PARTS", 1)
 
-    dup1_count = 0
+    spare_dup_labels: set[str] = set()
     sap_count = 0
     dup_items: list[dict] = []
 
@@ -303,10 +303,10 @@ def analyse_duplicates(rows: list[list]) -> dict:
             if lower_label.startswith("sap number mismatch") or lower_label.startswith("sap number duplicate"):
                 sap_count += 1
             if lower_label.startswith("spare duplicate"):
-                dup1_count += 1
+                spare_dup_labels.add(label)
 
     return {
-        "dup1_count": dup1_count,
+        "dup1_count": len(spare_dup_labels),
         "sap_count": sap_count,
         "dup_items": dup_items,
     }
