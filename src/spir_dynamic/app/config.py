@@ -41,10 +41,10 @@ class Settings(BaseSettings):
     # Railway / Heroku provide DATABASE_URL in the form postgres://... (auto-converted)
     database_url: str = ""
 
-    # Auth
+    # Auth — no defaults; startup fails fast if env vars are absent
     app_user: str = "admin"
-    app_pass: str = "cdc@2026"
-    secret_key: str = "insecure-dev-secret-replace-in-production"
+    app_pass: str
+    secret_key: str
     token_expire_hours: int = 8
 
     # Keywords config

@@ -34,6 +34,16 @@ log = structlog.stdlib.get_logger(__name__)
 
 router = APIRouter()
 
+
+@router.post("/login", include_in_schema=False)
+async def legacy_login_disabled() -> None:
+    """Legacy /api/login alias — permanently disabled."""
+    raise HTTPException(
+        status_code=410,
+        detail="Legacy login disabled. Use /auth/login",
+    )
+
+
 # ── Concurrency control ────────────────────────────────────────────────────────
 # Lazily created after the asyncio event loop is running (first request).
 _extraction_semaphore: asyncio.Semaphore | None = None

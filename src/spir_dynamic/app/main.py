@@ -57,10 +57,23 @@ class RequestIDMiddleware:
         await self.app(scope, receive, send_with_request_id)
 
 
+_INSECURE_SECRET_KEYS = frozenset({
+    "CHANGE_THIS_TO_LONG_RANDOM_SECRET",
+    "insecure-dev-secret-replace-in-production",
+})
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize the database on startup (if DATABASE_URL is configured)."""
     cfg = get_settings()
+
+    if not cfg.debug and cfg.secret_key in _INSECURE_SECRET_KEYS:
+        raise RuntimeError(
+            "Refusing to start: SECRET_KEY is set to an insecure placeholder. "
+            "Set a strong random value in .env before running in production."
+        )
+
     if cfg.database_url:
         from spir_dynamic.db.init_db import initialize
         ok = await initialize(cfg.database_url, cfg.app_user, cfg.app_pass)
