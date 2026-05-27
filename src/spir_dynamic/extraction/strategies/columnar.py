@@ -173,7 +173,7 @@ class ColumnarStrategy:
                 return rows
 
         # Step 2: Read per-tag metadata (model, serial, qty from rows 2-7)
-        tag_metadata, discovered_field_rows = self._read_tag_metadata(ws, profile, tag_info, field_rows=metadata_field_rows)
+        tag_metadata, discovered_field_rows, eqpt_qty_by_col = self._read_tag_metadata(ws, profile, tag_info, field_rows=metadata_field_rows)
 
         # Step 3: Determine if we need to read items from this sheet
         is_item_source = items_dict is None
@@ -247,9 +247,10 @@ class ColumnarStrategy:
                     "supplier": global_supplier,
                     "model": tmeta.get("model"),
                     "serial": tmeta.get("serial"),
-                    "eqpt_qty": tmeta.get("eqpt_qty"),
+                    "eqpt_qty": eqpt_qty_by_col.get(col, tmeta.get("eqpt_qty")),
                     "desc": eqpt_desc,
                     "spir_type": global_meta.get("spir_type"),
+                    "_annex_col": col,
                 }
                 rows.append(header_row)
 
@@ -285,6 +286,7 @@ class ColumnarStrategy:
                         "sap_no": item.get("sap_no"),
                         "classification": item.get("classification"),
                         "spir_type": global_meta.get("spir_type"),
+                        "_annex_col": col,
                     }
 
                     # Build NEW DESCRIPTION = desc + part_no + supplier
@@ -571,7 +573,7 @@ class ColumnarStrategy:
         profile: SheetProfile,
         tag_info: dict[int, list[str]],
         field_rows: dict[str, int] | None = None,
-    ) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, int], dict[int, Any]]:
         """
         Read per-tag metadata from rows between row 1 and the header row.
         Looks for model, serial, eqpt_qty by scanning label cells in cols 1-3.
@@ -580,6 +582,12 @@ class ColumnarStrategy:
             field_rows: When provided (continuation sheets), maps field name →
                         row number discovered from the main sheet. Skips label
                         scanning and reads values from known row positions.
+
+        Returns:
+            (metadata, discovered_field_rows, eqpt_qty_by_col) where
+            eqpt_qty_by_col maps physical column index → eqpt_qty value so that
+            two tag columns sharing the same tag name do not overwrite each
+            other's unit count.
         """
         metadata: dict[str, dict[str, Any]] = {}
         header_row = profile.header_row or 8
@@ -592,6 +600,30 @@ class ColumnarStrategy:
         }
 
         discovered_field_rows: dict[str, int] = {}
+        eqpt_qty_by_col: dict[int, Any] = {}
+
+        # Fix 2b: When called for a continuation sheet (field_rows is set), re-scan
+        # the continuation sheet's own label column for the eqpt_qty row.  The
+        # inherited row number from the main sheet may land in the data area on the
+        # continuation sheet and accidentally read item quantities instead of the
+        # true unit count.
+        if field_rows and tag_info:
+            _first_tag_col = min(tag_info.keys())
+            _label_end = min(_first_tag_col, (ws.max_column or 3) + 1)
+            _scan_end = min(header_row + 4, 15)
+            _cs_found = False
+            for _r in range(1, _scan_end):
+                for _c in range(1, _label_end):
+                    _v = ws.cell(_r, _c).value
+                    if _v is None:
+                        continue
+                    if any(_kw in str(_v).lower().strip() for _kw in meta_keywords["eqpt_qty"]):
+                        if field_rows.get("eqpt_qty") != _r:
+                            field_rows = {**field_rows, "eqpt_qty": _r}
+                        _cs_found = True
+                        break
+                if _cs_found:
+                    break
 
         for r in range(1, min(header_row + 4, 15)):
             row_field = None
@@ -640,6 +672,18 @@ class ColumnarStrategy:
                 if val is None:
                     continue
 
+                # Track eqpt_qty per physical column so two tag columns that share
+                # the same tag name (e.g. "Annexure-12" in col5 AND col6) do not
+                # overwrite each other's unit count in the metadata dict.
+                if row_field == "eqpt_qty":
+                    eqpt_qty_by_col[col] = val
+
+                # Reject single/double digit values for serial — these are
+                # interchangeability flags (0/1) that can bleed into serial rows
+                # when the data area overlaps the metadata scan range.
+                if row_field == "serial" and val and re.fullmatch(r"\d{1,2}", str(val)):
+                    continue
+
                 # Serial number separation matching:
                 # If tag column has multiple tags and serial contains separators,
                 # split and assign 1:1 (tag count == serial count)
@@ -664,6 +708,8 @@ class ColumnarStrategy:
         # different position than expected.
         for col, tags in tag_info.items():
             tag_count = len(tags) if tags else 1
+            if col not in eqpt_qty_by_col:
+                eqpt_qty_by_col[col] = tag_count
             for tag in tags if tags else [None]:
                 if tag is None:
                     continue
@@ -673,7 +719,7 @@ class ColumnarStrategy:
                 else:
                     metadata.setdefault(tag, {})["eqpt_qty"] = tag_count
 
-        return metadata, discovered_field_rows
+        return metadata, discovered_field_rows, eqpt_qty_by_col
 
     def _read_items(
         self, ws, profile: SheetProfile
@@ -814,6 +860,25 @@ class ColumnarStrategy:
                         continue
                 if item_col:
                     break
+
+            # Walk backward from the detected start row to find the true first
+            # item row. The two-consecutive-check above may have locked onto
+            # row N when the sequence actually starts at row N-k (e.g. item 5
+            # at row 7 is missed if the search started at row 8 and found 6,7).
+            if item_col is not None:
+                try:
+                    _first_val = int(float(ws.cell(start_row, item_col).value))
+                    _walk = start_row - 1
+                    while _walk >= 1:
+                        _prev = ws.cell(_walk, item_col).value
+                        if _prev is not None and int(float(_prev)) == _first_val - 1:
+                            start_row = _walk
+                            _first_val -= 1
+                            _walk -= 1
+                        else:
+                            break
+                except (ValueError, TypeError):
+                    pass
 
         for r in range(start_row, end_row + 1):
             # Get item number for this row
