@@ -179,6 +179,14 @@ class ColumnarStrategy:
         is_item_source = items_dict is None
         if is_item_source:
             items_dict = self._read_items(ws, profile)
+        else:
+            # Continuation sheet — also read any items it defines directly
+            # (rows with description but no item_number get synthetic negative-row keys).
+            # Merge without overwriting existing main-sheet items.
+            conti_items = self._read_items(ws, profile)
+            for k, v in conti_items.items():
+                if k not in items_dict:
+                    items_dict[k] = v
 
         # Step 4: Read tag-to-item mapping (which tags use which items)
         tag_items_map = self._read_tag_item_mapping(ws, profile, tag_info, item_col=item_col, items_dict=items_dict)
@@ -755,12 +763,16 @@ class ColumnarStrategy:
             # Need at least item_number to be valid
             item_num_raw = shared.get("item_number")
             if item_num_raw is None:
-                continue
-
-            try:
-                item_num = int(float(item_num_raw))
-            except (ValueError, TypeError):
-                continue
+                # Rows with description but no item_number (continuation sheets
+                # that omit the item_number column) get a synthetic negative-row key.
+                if not (shared.get("description") or "").strip():
+                    continue
+                item_num = -r
+            else:
+                try:
+                    item_num = int(float(item_num_raw))
+                except (ValueError, TypeError):
+                    continue
 
             # Check for footer
             desc = shared.get("description") or ""
@@ -939,7 +951,11 @@ class ColumnarStrategy:
                     except (ValueError, TypeError):
                         continue
             if item_num is None:
-                continue
+                # No item_col or no value — use negative row as synthetic key only
+                # when at least one tag column has a non-empty quantity on this row.
+                if not any(ws.cell(r, col).value not in (None, "") for col in tag_info):
+                    continue
+                item_num = -r
 
             # Whitelist: skip items not present in items_dict (avoids mapping
             # phantom item numbers beyond the last real item row)

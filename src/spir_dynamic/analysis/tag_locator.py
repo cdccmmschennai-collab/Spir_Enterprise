@@ -316,7 +316,7 @@ def _check_column_headers(
                     looks_like_packed_tags = (
                         len(s) > 50
                         and re.search(r"[A-Z0-9]{2,}[-/][A-Z0-9]", s, re.IGNORECASE)
-                        and re.search(r"[,;/|]", s)
+                        and re.search(r"[,;/|\n]", s)
                     )
                     # Stop at long text (SPIR title, notes) or section breaks
                     # but allow packed tag columns
