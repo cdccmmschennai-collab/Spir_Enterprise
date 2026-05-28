@@ -98,6 +98,8 @@ METADATA_KEYWORDS: dict[str, list[str]] = {
     "supplier": ["supplier"],
     "project": ["project", "contract"],
     "model": ["model no", "model number", "eqpt model", "model"],
+    "serial":   ["mfr ser", "mfr ser'l", "serial number", "serial no"],
+    "eqpt_qty": ["no. of units", "no of units"],
 }
 
 # Footers that indicate end of data section
@@ -347,7 +349,7 @@ def find_metadata(ws, header_row: int | None) -> dict[str, Any]:
     metadata: dict[str, Any] = {}
     scan_to = header_row if header_row else 10
     scan_to = min(scan_to, 15)
-    max_col = min(ws.max_column or 30, 50)
+    max_col = min(ws.max_column or 30, 120)
 
     for r in range(1, scan_to + 1):
         for c in range(1, max_col + 1):
@@ -387,6 +389,56 @@ def find_metadata(ws, header_row: int | None) -> dict[str, Any]:
                         if val:
                             metadata[field] = val
                         break
+
+    # Also scan up to 3 rows AFTER header_row in left columns only (cols 1-7).
+    # Catches "No. OF UNITS" / "MFR SER'L NO." labels that appear in the row
+    # immediately below the data header row (common in some SPIR formats).
+    _LEFT_MAX_COL = 7
+    for r in range(scan_to + 1, scan_to + 4):
+        if not ws.max_row or r > ws.max_row:
+            break
+        for c in range(1, min(_LEFT_MAX_COL + 1, max_col + 1)):
+            v = ws.cell(r, c).value
+            if v is None:
+                continue
+            cell = str(v).lower().strip()
+            if len(cell) > 80 or any(pat in cell for pat in _HEADER_PATTERNS):
+                continue
+            for field, keywords in METADATA_KEYWORDS.items():
+                if field in metadata:
+                    continue
+                for kw in keywords:
+                    if kw in cell:
+                        for dc in range(1, 6):
+                            adj = ws.cell(r, c + dc).value
+                            if adj is not None:
+                                s = str(adj).strip()
+                                if s and s.lower() not in ("", "-", "n/a"):
+                                    metadata[field] = _sanitize_metadata(s)
+                                break
+                        break
+
+    # Detect standalone equipment title cells (e.g. "SPIR FOR ANALYZER - EMERSON...")
+    # that appear as isolated text in the first few header rows with no adjacent label.
+    # These carry the equipment description but don't follow the label+value pattern.
+    if "equipment" not in metadata:
+        _TITLE_PATTERNS = (
+            "spir for ", "spir of ", "commissioning spare", "operating spare",
+            "initial spare", "life cycle spare", "lifecycle spare",
+        )
+        for r in range(1, min(scan_to + 1, 6)):
+            for c in range(1, max_col + 1):
+                v = ws.cell(r, c).value
+                if v is None:
+                    continue
+                cell_str = str(v).strip()
+                if len(cell_str) < 10 or len(cell_str) > 300:
+                    continue
+                if any(pat in cell_str.lower() for pat in _TITLE_PATTERNS):
+                    metadata["equipment"] = _sanitize_metadata(cell_str)
+                    break
+            if "equipment" in metadata:
+                break
 
     # Also try to detect SPIR number from cell patterns
     if "spir_no" not in metadata:

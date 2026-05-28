@@ -106,6 +106,19 @@ class TabularStrategy:
                 else:
                     item[field] = clean_str(raw)
 
+            # Discard serial values with no digits — authority-block text
+            # fragments ("IT", "UN", "No. OF UNITS") are not real serials.
+            sv = item.get("serial") or ""
+            if sv and not any(c.isdigit() for c in sv):
+                item["serial"] = None
+
+            # Skip column-number stub rows: appear between header and data,
+            # contain field-reference numbers ("8", "10A") as description.
+            desc_s = item.get("description") or ""
+            if (not item.get("item_number") and desc_s and
+                    len(desc_s) <= 4 and re.match(r'^[0-9A-Za-z]+$', desc_s)):
+                continue
+
             # Check for footer
             desc = item.get("description") or ""
             if desc and is_footer_row(desc):
@@ -187,6 +200,38 @@ class TabularStrategy:
                     row["model"] = global_model
                 if global_serial and not row.get("serial"):
                     row["serial"] = global_serial
+
+        # Apply eqpt_qty from metadata to spare rows that lack it — but NOT
+        # for GLOBAL_TAG sheets. There, eqpt_qty belongs only on the
+        # synthesized equipment row (added below), not on each spare row.
+        global_eqpt_qty = clean_num(profile.metadata.get("eqpt_qty"))
+        if global_eqpt_qty is not None and profile.tag_layout != TagLayout.GLOBAL_TAG:
+            for row in rows:
+                if row.get("eqpt_qty") is None:
+                    row["eqpt_qty"] = global_eqpt_qty
+
+        # For GLOBAL_TAG sheets, prepend one equipment row per tag synthesized
+        # from sheet metadata. Equipment rows have no item_num and represent
+        # the equipment itself, not a spare part.
+        if profile.tag_layout == TagLayout.GLOBAL_TAG and profile.global_tag:
+            equip_rows: list[dict[str, Any]] = []
+            for tag in split_tags(profile.global_tag):
+                eq: dict[str, Any] = {
+                    "sheet": profile.name,
+                    "tag": tag,
+                    "tag_no": tag,
+                    "spir_no": spir_no or profile.metadata.get("spir_no"),
+                    "manufacturer": profile.metadata.get("manufacturer"),
+                    "model": profile.metadata.get("model"),
+                    "serial": profile.metadata.get("serial"),
+                    "eqpt_qty": clean_num(profile.metadata.get("eqpt_qty")),
+                    "desc": profile.metadata.get("equipment"),
+                    "supplier_name": profile.metadata.get("supplier"),
+                }
+                if "spir_type" in profile.metadata:
+                    eq["spir_type"] = profile.metadata["spir_type"]
+                equip_rows.append(eq)
+            rows = equip_rows + rows
 
         # Debug: log unique tag values seen in output
         unique_tags = {r.get("tag_no") for r in rows if r.get("tag_no")}

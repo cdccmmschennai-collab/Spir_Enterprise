@@ -374,12 +374,19 @@ def _check_column_headers(
                                 confidence=0.80,
                             )
 
-    # Fallback: scan rows for tag-like column headers using TAG_PATTERN
+    # Fallback: scan rows for tag-like column headers using TAG_PATTERN.
+    # Only scan rows ABOVE the data header row — data rows contain DWG NO,
+    # PART NO, CLASSIFICATION etc. that satisfy looks_like_tag() and would
+    # falsely trigger COLUMN_HEADERS detection.
     best_row = None
     best_cols: list[int] = []
     best_count = 0
 
-    for r in range(1, scan_rows + 1):
+    fallback_limit = scan_rows
+    if header_row and header_row > 1:
+        fallback_limit = min(scan_rows, header_row - 1)
+
+    for r in range(1, fallback_limit + 1):
         if r == header_row:
             continue
 
@@ -389,6 +396,10 @@ def _check_column_headers(
             if v is None:
                 continue
             sv = str(v).strip()
+            # Skip long or multi-line cells — real tag column headers are always
+            # short single-line values like "30-MOV-001", not paragraphs of text.
+            if len(sv) > 50 or "\n" in sv or "\r" in sv:
+                continue
             if looks_like_tag(sv) or re.match(
                 r"(?i)(?:refer\s+)?annexure[\s\-_]*(?:\([^)]*\)[\s\-_]*)?\d+", sv
             ):
@@ -424,7 +435,7 @@ def _filter_tag_cluster(cols: list[int], max_gap: int = 4) -> list[int]:
     Isolated columns far from the cluster (like SPIR numbers in col 25)
     are filtered out.
     """
-    if len(cols) <= 2:
+    if len(cols) <= 1:
         return cols
 
     sorted_cols = sorted(cols)
@@ -493,6 +504,40 @@ def _check_global_tag(
     scan_to = (header_row - 1) if header_row else 8
     scan_to = min(scan_to, 10)
     max_col = min(ws.max_column or 20, 30)
+
+    # Priority: find a cell explicitly labeled "EQUIPMENT TAG No" (or similar)
+    # and accept whatever adjacent value it holds — even a product description —
+    # so that sheets with no proper tag number still extract as GLOBAL_TAG.
+    _EQUIP_TAG_KWS = ("tag no", "tag number", "equip")
+    _TAG_PREFIX_RE = re.compile(r"(?i)^(?:tag\s*[:#]?\s*)+")
+    for r in range(1, min(3, scan_to + 1)):
+        for c in range(1, min(5, max_col + 1)):
+            v = ws.cell(r, c).value
+            if v is None:
+                continue
+            vl = str(v).lower().strip()
+            if any(kw in vl for kw in _EQUIP_TAG_KWS):
+                adj = ws.cell(r, c + 1).value
+                if adj and not is_placeholder(adj):
+                    adj_s = str(adj).strip()
+                    # For multi-line cells, prefer the line that looks most like
+                    # a real tag (e.g. "PowerLogic...\nTAG : 100-30-CB-0001")
+                    if "\n" in adj_s or "\r" in adj_s:
+                        lines = [ln.strip() for ln in re.split(r"[\n\r]+", adj_s) if ln.strip()]
+                        tag_lines = [ln for ln in lines if re.search(r"[A-Z0-9]{1,}[-/][A-Z0-9]", ln, re.IGNORECASE)]
+                        adj_s = tag_lines[-1] if tag_lines else lines[0]
+                    # Strip "TAG : ", "TAG:", "TAG# " vendor prefixes
+                    adj_s = _TAG_PREFIX_RE.sub("", adj_s).strip()
+                    if 0 < len(adj_s) <= 80:
+                        log.debug(
+                            "GLOBAL_TAG detected via label '%s' in '%s': %s",
+                            str(v).strip(), ws.title, adj_s[:40],
+                        )
+                        return TagLocationResult(
+                            layout=TagLayout.GLOBAL_TAG,
+                            global_tag=adj_s,
+                            confidence=0.55,
+                        )
 
     found_tags: list[str] = []
     for r in range(1, scan_to + 1):

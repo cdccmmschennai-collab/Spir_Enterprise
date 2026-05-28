@@ -153,13 +153,13 @@ class ColumnarStrategy:
 
         if not profile.tag_columns:
             log.warning("ColumnarStrategy: no tag_columns for '%s'", profile.name)
-            return rows
+            return rows, {}
 
         # Step 1: Read tag values from tag columns (row 1)
         tag_info = self._read_tag_headers(ws, profile)
         if not tag_info:
             log.warning("ColumnarStrategy: no tags found in '%s'", profile.name)
-            return rows
+            return rows, {}
 
         # Filter out false tags that match the SPIR number
         if spir_no:
@@ -170,7 +170,7 @@ class ColumnarStrategy:
             }
             if not tag_info:
                 log.warning("ColumnarStrategy: all tags were SPIR number in '%s'", profile.name)
-                return rows
+                return rows, {}
 
         # Step 2: Read per-tag metadata (model, serial, qty from rows 2-7)
         tag_metadata, discovered_field_rows, eqpt_qty_by_col = self._read_tag_metadata(ws, profile, tag_info, field_rows=metadata_field_rows)
@@ -191,6 +191,14 @@ class ColumnarStrategy:
         # EQPT MAKE from global metadata (top-right of SPIR sheet)
         global_mfr = global_meta.get("manufacturer")
         global_supplier = global_meta.get("supplier")
+
+        # Fallback: if no manufacturer in sheet metadata, derive from the most
+        # common supplier_name across items (valid for OEM parts where the
+        # equipment maker and spare parts supplier are the same company).
+        if not global_mfr and items_dict:
+            _supp_names = [v["supplier_name"] for v in items_dict.values() if v.get("supplier_name")]
+            if _supp_names:
+                global_mfr = max(set(_supp_names), key=_supp_names.count)
 
         # PHASE 4 FIX: Extract currency from unit price column header if not
         # in a separate column. E.g., "UNIT PRICE (USD)" → currency="USD"
@@ -377,11 +385,16 @@ class ColumnarStrategy:
         # FIX: Changed {2,} to {1,} to accept single-letter prefix tags like "V-8943", "E-8925"
         _TAG_LIKE_PAT = re.compile(r"[A-Z0-9]{1,}[-/][A-Z0-9]", re.IGNORECASE)
 
+        # Strips leading "TAG : ", "TAG:", "TAG# " prefixes written by some vendors
+        # in the EQUIPMENT TAG No cell (e.g. "TAG : 100-30-CB-0001" → "100-30-CB-0001")
+        _TAG_PREFIX_PAT = re.compile(r"(?i)^(?:tag\s*[:#]?\s*)+")
+
         def _normalize_tag_candidate(raw_value: Any) -> str:
             """Normalise packed multi-tag cells to separators preprocessing can expand."""
             raw_text = str(raw_value).strip()
             if not raw_text:
                 return ""
+            raw_text = _TAG_PREFIX_PAT.sub("", raw_text).strip()
 
             if "\n" in raw_text or "\r" in raw_text:
                 nl_parts = [p.strip() for p in re.split(r"[\n\r]+", raw_text) if p.strip()]
@@ -769,6 +782,41 @@ class ColumnarStrategy:
                 "sap_no": shared.get("sap_number"),
                 "classification": shared.get("classification"),
             }
+
+        # Fill-forward group-level fields within sub-assembly groups.
+        # Group header rows carry reference values; sub-items have empty cells
+        # because the Excel template expects readers to inherit the value.
+        _last_dwg: str | None = None
+        _last_supplier: str | None = None
+        _last_currency: str | None = None
+        _last_unit_price = None
+        _last_delivery: str | None = None
+        _last_uom: str | None = None
+        for item in items.values():
+            if item.get("dwg_no"):
+                _last_dwg = item["dwg_no"]
+            elif _last_dwg is not None:
+                item["dwg_no"] = _last_dwg
+            if item.get("supplier_name"):
+                _last_supplier = item["supplier_name"]
+            elif _last_supplier is not None:
+                item["supplier_name"] = _last_supplier
+            if item.get("currency"):
+                _last_currency = item["currency"]
+            elif _last_currency is not None:
+                item["currency"] = _last_currency
+            if item.get("unit_price") is not None:
+                _last_unit_price = item["unit_price"]
+            elif _last_unit_price is not None:
+                item["unit_price"] = _last_unit_price
+            if item.get("delivery"):
+                _last_delivery = item["delivery"]
+            elif _last_delivery is not None:
+                item["delivery"] = _last_delivery
+            if item.get("uom"):
+                _last_uom = item["uom"]
+            elif _last_uom is not None:
+                item["uom"] = _last_uom
 
         log.debug("Read %d items from '%s'", len(items), profile.name)
         return items
