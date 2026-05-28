@@ -185,7 +185,9 @@ class ColumnarStrategy:
             # Merge without overwriting existing main-sheet items.
             conti_items = self._read_items(ws, profile)
             for k, v in conti_items.items():
-                if k not in items_dict:
+                # Skip synthetic negative-row keys (created for rows with no item_number).
+                # Promoting them into items_dict causes extra rows per tag in the output.
+                if k > 0 and k not in items_dict:
                     items_dict[k] = v
 
         # Step 4: Read tag-to-item mapping (which tags use which items)
