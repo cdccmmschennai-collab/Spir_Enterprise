@@ -469,6 +469,12 @@ def _get_strategy(profile: SheetProfile):
     return cls() if cls else None
 
 
+# Matches a REV marker already present in the EXTRACTED token (e.g. "-REV", "-REV2", "-REVA").
+# Only checks the token (not the raw cell) so that parenthetical "(REV.2)" in the SPIR cell
+# is NOT treated as "already has revision" — it needs to be appended from the clean form.
+_REV_IN_TOKEN_RE = re.compile(r"(?i)-rev\b")
+
+
 def _resolve_spir_no(profiles: list[SheetProfile], filename: str) -> str:
     """Resolve the SPIR number: sheet content is the authoritative source.
 
@@ -476,32 +482,69 @@ def _resolve_spir_no(profiles: list[SheetProfile], filename: str) -> str:
     true document identifier.  Filename is used only as a fallback when no
     SPIR number is found in the sheet (e.g. the file was renamed or the
     header area couldn't be parsed).
+
+    If an ISSUE LETTER / revision is found in profile metadata (from
+    find_revision_in_sheet), it is appended as '-REV.X' unless the number
+    already contains a revision marker (dedup guard).
     """
-    # Primary: SPIR number extracted from the sheet header
+    spir_clean = ""
+    spir_raw_original = ""   # original cell value kept for dedup check
+    revision = ""
+
+    # Primary: SPIR number extracted from the sheet header.
+    # Supports both letter-start (VEN-...) and digit-start (4400-VP-...) numbers.
     for p in profiles:
         spir = p.metadata.get("spir_no")
         if spir:
-            spir_raw = str(spir).strip()
-            # Cell values often contain trailing noise (revision notes, status text).
-            # Extract only the leading hyphenated alphanumeric SPIR token.
-            _m = re.search(r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+){2,}", spir_raw, re.IGNORECASE)
-            spir_clean = _m.group(0) if _m else spir_raw
-            if len(spir_clean) >= 5 and re.search(r'[A-Z0-9]', spir_clean, re.I):
-                return spir_clean
+            spir_raw_original = str(spir).strip()
+            _m = re.search(r"[A-Z0-9][A-Z0-9]*(?:-[A-Z0-9]+){2,}", spir_raw_original, re.IGNORECASE)
+            candidate = _m.group(0) if _m else spir_raw_original
+            if len(candidate) >= 5 and re.search(r'[A-Z0-9]', candidate, re.I):
+                spir_clean = candidate
+                revision = str(p.metadata.get("revision") or "").strip()
+                break
 
-    # Fallback: derive from filename
-    if filename:
-        patterns = [
-            r"([A-Z0-9]{2,}-[A-Z0-9]{2,}-[A-Z0-9][A-Z0-9\-]*)",
-            r"(\d{4,}[\-_]\w+[\-_]\w+)",
-        ]
-        name = filename.rsplit(".", 1)[0]
-        for pat in patterns:
-            m = re.search(pat, name, re.IGNORECASE)
-            if m:
-                return m.group(1)
+    # If the matching profile had no revision, check all other profiles
+    if spir_clean and not revision:
+        for p in profiles:
+            rev = str(p.metadata.get("revision") or "").strip()
+            if rev:
+                revision = rev
+                break
 
-    return ""
+    # Secondary: SPIR cell itself may contain parenthetical revision — e.g.
+    # "4400-VP-30-00-10-053 (REV.2)".  The token regex stops at the space so
+    # the revision falls off; recover it from the raw cell value.
+    if spir_clean and not revision and spir_raw_original:
+        _pm = re.search(r"\(REV[\s.\-]*([A-Z0-9]+)\)", spir_raw_original, re.IGNORECASE)
+        if _pm:
+            revision = f"REV.{_pm.group(1).upper()}"
+
+    if not spir_clean:
+        # Fallback: derive from filename
+        if filename:
+            patterns = [
+                r"([A-Z0-9]{2,}-[A-Z0-9]{2,}-[A-Z0-9][A-Z0-9\-]*)",
+                r"(\d{4,}[\-_]\w+[\-_]\w+)",
+            ]
+            name = filename.rsplit(".", 1)[0]
+            for pat in patterns:
+                m = re.search(pat, name, re.IGNORECASE)
+                if m:
+                    spir_clean = m.group(1)
+                    break
+
+    if not spir_clean:
+        return ""
+
+    # Dedup guard: skip append only when the EXTRACTED TOKEN already ends with a
+    # "-REV" marker (e.g. "-REV" truncated from "-REV.2", or "-REV2", "-REVA").
+    # We do NOT check the raw cell value here — a parenthetical "(REV.2)" in the
+    # SPIR cell is NOT "already appended"; it must still be added in clean form.
+    if revision and not _REV_IN_TOKEN_RE.search(spir_clean):
+        spir_clean = f"{spir_clean}-{revision}"
+
+    return spir_clean
 
 
 def _collect_metadata(profiles: list[SheetProfile]) -> dict[str, Any]:

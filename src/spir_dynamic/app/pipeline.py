@@ -163,9 +163,10 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
 
         # Step 9: Store result
         file_id = str(uuid.uuid4())
-        # Sanitize filename — remove chars invalid in filenames and HTTP headers
-        safe_spir = re.sub(r'[\r\n\t/\\:*?"<>|]+', ' ', spir_no).strip() if spir_no else ""
-        out_filename = f"{safe_spir}_Extraction.xlsx" if safe_spir else f"{original_filename}_Extraction.xlsx"
+        # Use the original input filename (stem only) as the download name so that
+        # the user sees their own file naming convention in the frontend.
+        safe_stem = re.sub(r'[\r\n\t/\\:*?"<>|]+', ' ', Path(original_filename).stem).strip()
+        out_filename = f"{safe_stem}_Extraction.xlsx"
         get_storage().put(file_id, xlsx_bytes, out_filename)
 
         # Step 10: Build response — full dataset, no row limit

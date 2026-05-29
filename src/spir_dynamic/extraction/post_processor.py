@@ -92,7 +92,9 @@ def _is_digit_only_segment(seg: str) -> bool:
 def _maybe_drop_location_segment(segments: list[str]) -> list[str]:
     """
     Numeric project + non-numeric middle (MTY, M4TY, RLCSF3, …) + numeric next
-    → drop the middle token. VP is not a location code — keep for VP fusion.
+    → drop the middle token.
+    2-char alphabetic class codes (VP, MT, …) are kept — they signal the
+    class-code format handled by _compact_class_code_spir.
     """
     if len(segments) < 3:
         return segments
@@ -101,40 +103,70 @@ def _maybe_drop_location_segment(segments: list[str]) -> list[str]:
         return segments
     if _is_digit_only_segment(mid):
         return segments
-    if mid.upper() == "VP":
+    # Keep short 2-char alpha class codes — _compact_class_code_spir handles them
+    if len(mid) == 2 and mid.isalpha():
         return segments
     if not _is_digit_only_segment(nxt):
         return segments
     return [segments[0]] + segments[2:]
 
 
-def _normalize_vp_4400(body: list[str]) -> list[str]:
+def _is_zero_pad(s: str) -> bool:
+    """True when a numeric segment carries no information (e.g. '00', '000', '0')."""
+    try:
+        return s.isdigit() and int(s) == 0
+    except ValueError:
+        return False
+
+
+def _compact_class_code_spir(body: list[str]) -> list[str]:
     """
-    4400-VP-30-00-10-053-2 → 4400, 3010, 53, 2
-    4400-VP-30-00-10-053   → 4400, 3010, 53
+    Dynamic compaction for SPIR numbers of the form:
+      {numeric_project}-{2-char_alpha_class}-{numeric_segments...}
+
+    Detection (all must hold):
+      1. body[0]  — all-digit numeric project code
+      2. body[1]  — exactly 2 alphabetic characters (class code, e.g. VP, MT)
+      3. rest     — all segments are digit-only
+      4. at least one segment in rest is a zero-valued pad (e.g. "00", "000")
+
+    Compaction:
+      • Skip zero-valued padding segments
+      • Concatenate non-zero segments preserving leading zeros (structural part)
+      • Keep a trailing version segment when ≥ 5 numeric segments follow the class
+
+    Examples (no hardcoded values — detects structure automatically):
+      [4400, VP, 30, 00, 10, 053]    → [4400, 3010053]
+      [4400, VP, 30, 00, 10, 053, 2] → [4400, 3010053, 2]
     """
-    if len(body) < 6 or not body[0].isdigit() or body[1].upper() != "VP":
+    if len(body) < 5:
         return body
+
+    proj, cls = body[0], body[1]
     rest = body[2:]
-    if len(rest) == 5:
-        a, b, c, d, e = rest
-        if not all(x.isdigit() for x in (a, b, c, d, e)):
-            return body
-        if b != "00":
-            return body
-        mid = a + c
-        pen = str(int(d))
-        return [body[0], mid, pen, e]
-    if len(rest) == 4:
-        a, b, c, d = rest
-        if not all(x.isdigit() for x in (a, b, c, d)):
-            return body
-        if b != "00":
-            return body
-        mid = a + c
-        pen = str(int(d))
-        return [body[0], mid, pen]
-    return body
+
+    if not proj.isdigit():
+        return body
+    if not (len(cls) == 2 and cls.isalpha()):
+        return body
+    if not rest or not all(s.isdigit() for s in rest):
+        return body
+    if not any(_is_zero_pad(s) for s in rest):
+        return body  # no zero-padding → not this format
+
+    # Trailing version segment: present when ≥ 5 numeric segments follow the class
+    if len(rest) >= 5 and len(rest[-1]) <= 2:
+        version_segs = [rest[-1]]
+        core_segs    = rest[:-1]
+    else:
+        version_segs = []
+        core_segs    = rest
+
+    fused = "".join(s for s in core_segs if not _is_zero_pad(s))
+    if not fused:
+        return body
+
+    return [proj, fused] + version_segs
 
 
 def _drop_trailing_sheet_rev_letter(body: list[str]) -> list[str]:
@@ -163,7 +195,7 @@ def _canonical_omn_body_segments(segments: list[str]) -> tuple[list[str], str]:
         return [], ""
     project_token = body[0]
     body = _maybe_drop_location_segment(body)
-    body = _normalize_vp_4400(body)
+    body = _compact_class_code_spir(body)
     body = _drop_trailing_sheet_rev_letter(body)
     return body, project_token
 

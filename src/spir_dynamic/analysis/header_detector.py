@@ -737,9 +737,9 @@ def _detect_spir_number(ws, scan_rows: int, max_col: int) -> str | None:
     """
     spir_pattern = re.compile(r"[A-Z0-9]{2,}-[A-Z0-9]{2,}-[A-Z0-9]", re.IGNORECASE)
     # Standalone pattern: the entire cell value IS a SPIR-like number (3+ segments,
-    # starts with a letter, no surrounding text).
+    # may start with digits (e.g. 4400-VP-30-...) or letters (VEN-...).
     standalone = re.compile(
-        r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+){2,}$", re.IGNORECASE
+        r"^[A-Z0-9][A-Z0-9]*(?:-[A-Z0-9]+){2,}$", re.IGNORECASE
     )
 
     # Pass 1 — top-right corner, standalone values
@@ -781,8 +781,9 @@ def _extract_spir_token(raw: str) -> str:
 
     Cells often contain noise after the number (e.g. revision markers,
     status notes).  Return only the leading hyphenated alphanumeric segment.
+    Supports both letter-start (VEN-...) and digit-start (4400-VP-...) numbers.
     """
-    m = re.search(r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+){2,}", raw, re.IGNORECASE)
+    m = re.search(r"[A-Z0-9][A-Z0-9]*(?:-[A-Z0-9]+){2,}", raw, re.IGNORECASE)
     return m.group(0) if m else raw.strip()
 
 
@@ -824,3 +825,56 @@ def is_footer_row(desc: str) -> bool:
     """Check if a description value looks like a footer marker."""
     dl = (desc or "").lower().strip()
     return any(dl.startswith(f) for f in FOOTER_STARTS)
+
+
+_ISSUE_LETTER_REV_RE = re.compile(r"REV[\s.\-]*([A-Z0-9]+)", re.IGNORECASE)
+
+
+def find_revision_in_sheet(ws) -> str | None:
+    """
+    Scan the bottom rows of the sheet for an ISSUE LETTER / revision marker.
+
+    SPIR documents stamp the document issue letter in the bottom-left corner,
+    typically as: "ISSUE LETTER:   REV.2"
+
+    Returns a normalized revision string like 'REV.2', or None if not found.
+    """
+    max_row = ws.max_row or 0
+    if not max_row:
+        return None
+
+    scan_start = max(1, max_row - 20)
+    max_scan_col = min(ws.max_column or 30, 30)   # scan full width — ISSUE LETTER may be far right
+
+    for r in range(max_row, scan_start - 1, -1):
+        for c in range(1, max_scan_col + 1):
+            v = ws.cell(r, c).value
+            if v is None:
+                continue
+            s = str(v).strip()
+            if not s:
+                continue
+
+            if "issue" in s.lower() and "letter" in s.lower():
+                # Revision may be in the same cell (after a colon)
+                m = _ISSUE_LETTER_REV_RE.search(s)
+                if m:
+                    return f"REV.{m.group(1).upper()}"
+
+                # Or in the nearest non-empty cell to the right
+                for dc in range(1, 6):
+                    nv = ws.cell(r, c + dc).value
+                    if nv is None:
+                        continue
+                    ns = str(nv).strip()
+                    if not ns:
+                        continue
+                    m2 = _ISSUE_LETTER_REV_RE.search(ns)
+                    if m2:
+                        return f"REV.{m2.group(1).upper()}"
+                    # Plain single token: "A", "2", "B1" etc.
+                    if re.fullmatch(r"[A-Z0-9]{1,3}", ns, re.IGNORECASE):
+                        return f"REV.{ns.upper()}"
+                    break  # non-empty but no match — stop scanning right
+
+    return None

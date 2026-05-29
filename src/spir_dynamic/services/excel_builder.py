@@ -1,13 +1,15 @@
 """
 Builds the styled output Excel workbook.
 
-STYLING:
-  Header: dark green #375623, white bold text, Calibri 10pt, thin borders
-  Data:   unstyled — values written with ws.append() only
+OUTPUT STRUCTURE (4-row header block):
+  Row 1: Display headers     — bright green  #00B050, white bold
+  Row 2: SPIR internal fields — navy blue    #002060, white bold
+  Row 3: Character limits    — dark red      #C00000, white regular
+  Row 4+: Extracted data rows (S.NO 0001, 0002 …)
 
-TO ADD/REMOVE/REORDER COLUMNS:
+TO ADD/REMOVE/REORDER DATA COLUMNS:
   Edit extraction/output_schema.py only.
-  For per-file dynamic columns, pass a DynamicSchema to build_xlsx().
+  Metadata (SPIR field names, char limits) lives in services/spir_metadata.py.
 """
 from __future__ import annotations
 
@@ -20,96 +22,125 @@ from openpyxl.styles import NamedStyle, PatternFill, Font, Alignment, Border, Si
 from openpyxl.utils import get_column_letter
 
 from spir_dynamic.extraction.output_schema import OUTPUT_COLS, COL_WIDTHS
+from spir_dynamic.services.spir_metadata import COLUMN_METADATA
 from spir_dynamic.utils.logging import timed
 
 log = structlog.stdlib.get_logger(__name__)
 
-_HDR_BG        = "375623"
-_HDR_FONT_CLR  = "FFFFFF"
-_DATA_FONT_NAME = "Calibri"
-_FONT_SIZE     = 10
-_HDR_HEIGHT    = 30
-_ROW_HEIGHT    = 15
-_DEFAULT_WIDTH  = 14
+# ── Presentation colours (match QatarEnergy SPIR template) ────────────────────
+_HDR_BG       = "00B050"   # Row 1 display headers: bright green
+_META1_BG     = "002060"   # Row 2 SPIR field names: dark navy blue
+_META2_BG     = "C00000"   # Row 3 character limits: dark red
+_HDR_FONT_CLR = "FFFFFF"   # White text for all three header/meta rows
 
-# Used only for the header row — created once at module level.
+_DATA_FONT_NAME = "Calibri"
+_FONT_SIZE      = 11
+_HDR_HEIGHT     = 30
+_ROW_HEIGHT     = 15
+_DEFAULT_WIDTH  = 14
+_SNO_WIDTH      = 5.43     # S.NO column width (matches template)
+
 _THIN   = Side(style="thin", color="D0D0D0")
 _BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
+
+
+def _register_styles(wb: openpyxl.Workbook) -> None:
+    """Register the three header/metadata row NamedStyles once per workbook."""
+    defs = [
+        ("spir_hdr",   _HDR_BG,   True),
+        ("spir_meta1", _META1_BG, True),
+        ("spir_meta2", _META2_BG, False),
+    ]
+    for name, bg, bold in defs:
+        if name not in wb.named_styles:
+            s            = NamedStyle(name=name)
+            s.fill       = PatternFill("solid", fgColor=bg)
+            s.font       = Font(name=_DATA_FONT_NAME, size=_FONT_SIZE,
+                                bold=bold, color=_HDR_FONT_CLR)
+            s.alignment  = Alignment(horizontal="center", vertical="center",
+                                     wrap_text=True)
+            s.border     = _BORDER
+            wb.add_named_style(s)
 
 
 @timed
 def build_xlsx(rows: list[list], spir_no: str = "") -> bytes:
     """
-    Build a styled .xlsx workbook from extracted rows (always 27 columns).
-    Returns raw .xlsx bytes.
+    Build a styled .xlsx workbook from extracted rows.
 
-    Performance: the header NamedStyle is registered once and applied to 27
-    cells. Data rows are written with ws.append() only — no per-cell style
-    assignment, no border XML per data cell. For a 2,000-row × 27-col file
-    this removes ~54,000 ws.cell() calls and ~54,000 stylesheet mutations,
-    plus eliminates all per-cell border XML from the serialised output.
+    Row 1 = display headers (S.NO + all OUTPUT_COLS)
+    Row 2 = SPIR internal field names
+    Row 3 = character limit metadata (visual / spec reference only)
+    Row 4+ = extracted data; S.NO is zero-padded (0001, 0002 …)
+
+    Extraction logic is untouched — only the presentation layer changes here.
+    Returns raw .xlsx bytes.
     """
-    col_names = OUTPUT_COLS
-    col_widths = COL_WIDTHS
-    n_cols = len(col_names)
+    col_names   = OUTPUT_COLS
+    n_data_cols = len(col_names)
+    n_cols      = n_data_cols + 1          # +1 for S.NO in column A
 
     wb = openpyxl.Workbook()
     ws = wb.active
     safe_title = re.sub(r'[\\/*?:\[\]]+', ' ', spir_no or "SPIR Extraction").strip()
     ws.title = safe_title[:31]
 
-    # ── Header NamedStyle — registered ONCE, applied to 27 cells only ─────────
-    # Guard against ValueError("Style already exists") if called on a workbook
-    # that already registered this style (e.g. in tests).
-    if "spir_hdr" not in wb.named_styles:
-        hdr_style           = NamedStyle(name="spir_hdr")
-        hdr_style.fill      = PatternFill("solid", fgColor=_HDR_BG)
-        hdr_style.font      = Font(name=_DATA_FONT_NAME, size=_FONT_SIZE,
-                                   bold=True, color=_HDR_FONT_CLR)
-        hdr_style.alignment = Alignment(horizontal="center", vertical="center",
-                                        wrap_text=True)
-        hdr_style.border    = _BORDER
-        wb.add_named_style(hdr_style)
+    _register_styles(wb)
 
     # ── Column widths ─────────────────────────────────────────────────────────
-    for idx, col_name in enumerate(col_names, start=1):
-        ws.column_dimensions[get_column_letter(idx)].width = col_widths.get(
+    ws.column_dimensions["A"].width = _SNO_WIDTH
+    for idx, col_name in enumerate(col_names, start=2):
+        ws.column_dimensions[get_column_letter(idx)].width = COL_WIDTHS.get(
             col_name, _DEFAULT_WIDTH
         )
 
-    # ── Row heights ───────────────────────────────────────────────────────────
+    # ── Row heights for the three header rows ─────────────────────────────────
     ws.sheet_format.defaultRowHeight = _ROW_HEIGHT
-    ws.sheet_format.customHeight = True
-    ws.row_dimensions[1].height = _HDR_HEIGHT
+    ws.sheet_format.customHeight     = True
+    for r in (1, 2, 3):
+        ws.row_dimensions[r].height = _HDR_HEIGHT
 
-    # ── Header row ────────────────────────────────────────────────────────────
-    for col_idx, col_name in enumerate(col_names, start=1):
-        cell = ws.cell(row=1, column=col_idx, value=col_name)
-        cell.style = "spir_hdr"
+    # ── Row 1: display headers ────────────────────────────────────────────────
+    ws.cell(row=1, column=1, value="S.NO").style = "spir_hdr"
+    for col_idx, col_name in enumerate(col_names, start=2):
+        ws.cell(row=1, column=col_idx, value=col_name).style = "spir_hdr"
 
-    ws.freeze_panes = "A2"
+    # ── Row 2: SPIR internal field names ──────────────────────────────────────
+    ws.cell(row=2, column=1, value="NA").style = "spir_meta1"
+    for col_idx, col_name in enumerate(col_names, start=2):
+        spir_field = COLUMN_METADATA.get(col_name, {}).get("spir_field", "NA")
+        ws.cell(row=2, column=col_idx, value=spir_field).style = "spir_meta1"
 
-    # ── Data rows — ws.append() only, zero style overhead ────────────────────
-    # No inner style loop, no ws.cell() calls, no border XML per data cell.
-    # Values are identical: ws.append() writes exactly what post_process_rows
-    # produced — column order, row count, and all values are untouched.
-    for row in rows:
+    # ── Row 3: character limit metadata (display/spec only, not DB limits) ────
+    ws.cell(row=3, column=1, value=4).style = "spir_meta2"
+    for col_idx, col_name in enumerate(col_names, start=2):
+        limit = COLUMN_METADATA.get(col_name, {}).get("display_limit")
+        ws.cell(row=3, column=col_idx, value=limit).style = "spir_meta2"
+
+    # ── Freeze the three header rows ──────────────────────────────────────────
+    ws.freeze_panes = "A4"
+
+    # ── Auto-filter on the display header row ─────────────────────────────────
+    ws.auto_filter.ref = f"A1:{get_column_letter(n_cols)}1"
+
+    # ── Data rows (Row 4+) ────────────────────────────────────────────────────
+    # ws.max_row is 3 after writing the header block, so ws.append() starts at 4.
+    for idx, row in enumerate(rows, start=1):
+        s_no = str(idx).zfill(4)
+
         if isinstance(row, (list, tuple)):
             r = list(row)
-            if len(r) < n_cols:
-                r += [None] * (n_cols - len(r))
-            r = r[:n_cols]
+            if len(r) < n_data_cols:
+                r += [None] * (n_data_cols - len(r))
+            r = r[:n_data_cols]
         else:
-            r = [None] * n_cols
+            r = [None] * n_data_cols
 
-        # Sanitize sentinel "." → None
+        # Sanitize sentinel "." → None; uppercase all string values
         r = [None if v == "." else v for v in r]
-        # Uppercase all string values in the output
         r = [v.upper() if isinstance(v, str) else v for v in r]
-        ws.append(r)
 
-    # ── Auto-filter ───────────────────────────────────────────────────────────
-    ws.auto_filter.ref = f"A1:{get_column_letter(n_cols)}1"
+        ws.append([s_no] + r)
 
     # ── Serialise ─────────────────────────────────────────────────────────────
     buf = io.BytesIO()

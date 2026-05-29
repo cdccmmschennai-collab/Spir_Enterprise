@@ -14,6 +14,7 @@ from spir_dynamic.analysis.header_detector import (
     find_header_row,
     find_metadata,
     find_data_end,
+    find_revision_in_sheet,
 )
 from spir_dynamic.analysis.column_mapper import map_headers, get_unmapped_columns
 from spir_dynamic.analysis.tag_locator import locate_tags
@@ -146,8 +147,11 @@ def analyze_sheet(ws, sheet_name: str) -> SheetProfile:
     tag_result = locate_tags(ws, profile.header_row, profile.column_map)
     _apply_tag_result(profile, tag_result)
 
-    # Step 5: Extract metadata
+    # Step 5: Extract metadata + revision (ISSUE LETTER from bottom-left corner)
     profile.metadata = find_metadata(ws, profile.header_row)
+    revision = find_revision_in_sheet(ws)
+    if revision:
+        profile.metadata["revision"] = revision
 
     # Step 6: Determine data range
     profile.data_start_row = profile.header_row + 1
