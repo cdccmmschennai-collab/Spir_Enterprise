@@ -156,7 +156,16 @@ def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
         if tag:
             unique_tags.add(str(tag).strip().upper())
 
-    spare_items = sum(1 for r in all_rows if r.get("item_num"))
+    _spare_keys: set[tuple[str, str]] = set()
+    for _r in all_rows:
+        if not _r.get("item_num"):
+            continue
+        _key = (
+            str(_r.get("desc") or "").strip().lower(),
+            str(_r.get("mfr_part_no") or "").strip().lower(),
+        )
+        _spare_keys.add(_key)
+    spare_items = len(_spare_keys)
 
     from spir_dynamic.extraction.output_schema import OUTPUT_COLS
 
