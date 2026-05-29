@@ -178,15 +178,17 @@ class ColumnarStrategy:
         # Step 3: Determine if we need to read items from this sheet
         is_item_source = items_dict is None
         if is_item_source:
-            items_dict = self._read_items(ws, profile)
+            raw_items = self._read_items(ws, profile)
+            # Strip synthetic negative-row keys (rows with description but no item_number).
+            # Real SPIR item numbers are always positive integers; negative keys are
+            # internal placeholders that must never enter items_dict or they bleed
+            # into the tag-item mapping and create phantom output rows.
+            items_dict = {k: v for k, v in raw_items.items() if k > 0}
         else:
-            # Continuation sheet — also read any items it defines directly
-            # (rows with description but no item_number get synthetic negative-row keys).
-            # Merge without overwriting existing main-sheet items.
+            # Continuation sheet — also read any items it defines directly.
+            # Same guard: skip synthetic negative-row keys.
             conti_items = self._read_items(ws, profile)
             for k, v in conti_items.items():
-                # Skip synthetic negative-row keys (created for rows with no item_number).
-                # Promoting them into items_dict causes extra rows per tag in the output.
                 if k > 0 and k not in items_dict:
                     items_dict[k] = v
 
