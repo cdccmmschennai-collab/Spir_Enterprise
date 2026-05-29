@@ -709,7 +709,7 @@ export default function ExtractionPage() {
             <div className="flex-1 min-w-0">
               <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">System Guide</h3>
               <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                Step-by-step workflow: upload, extract, combine, download.
+                Step-by-step workflow: upload, extract, batch, combine, download.
               </p>
             </div>
             <button
