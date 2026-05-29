@@ -448,12 +448,26 @@ def _get_strategy(profile: SheetProfile):
 
 
 def _resolve_spir_no(profiles: list[SheetProfile], filename: str) -> str:
-    """Resolve the SPIR number: filename is the authoritative document identifier.
+    """Resolve the SPIR number: sheet content is the authoritative source.
 
-    Filename takes priority because a workbook may contain sheets from multiple
-    embedded SPIR documents (different equipment). The filename always identifies
-    the actual document; sheet-embedded SPIR numbers may belong to foreign sheets.
+    The SPIR number printed in the top-right corner of the document is the
+    true document identifier.  Filename is used only as a fallback when no
+    SPIR number is found in the sheet (e.g. the file was renamed or the
+    header area couldn't be parsed).
     """
+    # Primary: SPIR number extracted from the sheet header
+    for p in profiles:
+        spir = p.metadata.get("spir_no")
+        if spir:
+            spir_raw = str(spir).strip()
+            # Cell values often contain trailing noise (revision notes, status text).
+            # Extract only the leading hyphenated alphanumeric SPIR token.
+            _m = re.search(r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+){2,}", spir_raw, re.IGNORECASE)
+            spir_clean = _m.group(0) if _m else spir_raw
+            if len(spir_clean) >= 5 and re.search(r'[A-Z0-9]', spir_clean, re.I):
+                return spir_clean
+
+    # Fallback: derive from filename
     if filename:
         patterns = [
             r"([A-Z0-9]{2,}-[A-Z0-9]{2,}-[A-Z0-9][A-Z0-9\-]*)",
@@ -464,13 +478,6 @@ def _resolve_spir_no(profiles: list[SheetProfile], filename: str) -> str:
             m = re.search(pat, name, re.IGNORECASE)
             if m:
                 return m.group(1)
-
-    for p in profiles:
-        spir = p.metadata.get("spir_no")
-        if spir:
-            spir_clean = str(spir).strip()
-            if len(spir_clean) >= 5 and re.search(r'[A-Z0-9]', spir_clean, re.I):
-                return spir_clean
 
     return ""
 

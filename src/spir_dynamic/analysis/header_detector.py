@@ -726,10 +726,34 @@ def _sanitize_metadata(val: str) -> str:
 
 
 def _detect_spir_number(ws, scan_rows: int, max_col: int) -> str | None:
-    """Try to find a SPIR number by pattern matching cell values."""
-    # Common SPIR number pattern: alphanumeric with hyphens, at least 3 segments
-    spir_pattern = re.compile(r"[A-Z0-9]{2,}-[A-Z0-9]{2,}-[A-Z0-9]", re.IGNORECASE)
+    """Try to find a SPIR number by pattern matching cell values.
 
+    Scans in two passes:
+    1. Top-right corner (rows 1-6, right 40% of columns) for standalone SPIR
+       numbers — no label required.  SPIR documents stamp the document number
+       in the top-right header block.
+    2. Full-width label scan: cell to the left says "SPIR", or cell itself
+       contains "SPIR NO: <value>".
+    """
+    spir_pattern = re.compile(r"[A-Z0-9]{2,}-[A-Z0-9]{2,}-[A-Z0-9]", re.IGNORECASE)
+    # Standalone pattern: the entire cell value IS a SPIR-like number (3+ segments,
+    # starts with a letter, no surrounding text).
+    standalone = re.compile(
+        r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+){2,}$", re.IGNORECASE
+    )
+
+    # Pass 1 — top-right corner, standalone values
+    right_start = max(1, int(max_col * 0.6))
+    for r in range(1, min(7, scan_rows + 1)):
+        for c in range(max_col, right_start - 1, -1):
+            v = ws.cell(r, c).value
+            if v is None:
+                continue
+            s = str(v).strip()
+            if standalone.match(s) and spir_pattern.search(s):
+                return _extract_spir_token(s)
+
+    # Pass 2 — label-based scan across all columns
     for r in range(1, scan_rows + 1):
         for c in range(1, max_col + 1):
             v = ws.cell(r, c).value
@@ -737,22 +761,29 @@ def _detect_spir_number(ws, scan_rows: int, max_col: int) -> str | None:
                 continue
             s = str(v).strip()
 
-            # Check if cell to the left contains "spir"
+            # Cell to the left contains "spir"
             if c > 1:
                 left = str(ws.cell(r, c - 1).value or "").lower()
                 if "spir" in left and spir_pattern.search(s):
-                    # PHASE 4 FIX: Strip leading colon if present (e.g., ": VEN-4142-...")
-                    return s.lstrip(":").strip()
+                    return _extract_spir_token(s)
 
-            # Check if cell itself looks like "SPIR NO: XXX-YYY-ZZZ"
+            # Cell itself looks like "SPIR NO: XXX-YYY-ZZZ"
             if "spir" in s.lower() and ":" in s:
-                after = s.split(":", 1)[1].strip()
-                # PHASE 4 FIX: Strip leading colon if present (e.g., ": VEN-4142-...")
-                after = after.lstrip(":").strip()
+                after = s.split(":", 1)[1].strip().lstrip(":").strip()
                 if spir_pattern.search(after):
-                    return after
+                    return _extract_spir_token(after)
 
     return None
+
+
+def _extract_spir_token(raw: str) -> str:
+    """Extract the clean SPIR number token from a raw cell value.
+
+    Cells often contain noise after the number (e.g. revision markers,
+    status notes).  Return only the leading hyphenated alphanumeric segment.
+    """
+    m = re.search(r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+){2,}", raw, re.IGNORECASE)
+    return m.group(0) if m else raw.strip()
 
 
 def find_data_end(ws, header_row: int) -> int:
