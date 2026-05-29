@@ -146,6 +146,19 @@ def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
         row.pop("_annex_col", None)
         row.pop("_orig_sheet", None)  # safety in case not already restored
 
+    # Strip any rows whose item_num is a synthetic negative-row key.
+    # Real SPIR item numbers are always positive integers.  Negative values
+    # are internal placeholders (_read_items assigns item_num = -r for rows
+    # without an explicit item number).  They must never reach the output.
+    all_rows = [
+        r for r in all_rows
+        if not (
+            r.get("item_num") is not None
+            and isinstance(r.get("item_num"), (int, float))
+            and r["item_num"] < 0
+        )
+    ]
+
     # Step 5: Collect metadata
     metadata = _collect_metadata(profiles)
 
