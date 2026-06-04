@@ -387,6 +387,18 @@ def find_metadata(ws, header_row: int | None) -> dict[str, Any]:
                     if kw in cell:
                         val = _extract_metadata_value(ws, r, c, max_col)
                         if val:
+                            # For equipment: skip annexure references so that a real
+                            # name like "EQUIPMENT: FIELD INSTRUMENTS" found later in
+                            # the scan isn't blocked by an earlier "EQUIPMENT or TAG
+                            # Numbers → ANNEXURE 1" match.
+                            if field == "equipment":
+                                _vl = val.lower()
+                                if (
+                                    _vl.startswith("annexure")
+                                    or re.search(r"\bannex", _vl)
+                                    or _vl.startswith("refer")
+                                ):
+                                    break  # skip this cell's value; keep scanning
                             metadata[field] = val
                         break
 
@@ -417,6 +429,18 @@ def find_metadata(ws, header_row: int | None) -> dict[str, Any]:
                                     metadata[field] = _sanitize_metadata(s)
                                 break
                         break
+
+    # Guard: if equipment was extracted as an annexure reference (e.g. "Refer Annexure 1"),
+    # discard it — it is not a usable equipment name. The real name may come from the
+    # broader fallback below or remain absent.
+    if "equipment" in metadata:
+        _eq_lower = str(metadata["equipment"]).lower().strip()
+        if (
+            _eq_lower.startswith("annexure")
+            or re.search(r"\bannex", _eq_lower)
+            or _eq_lower.startswith("refer")
+        ):
+            del metadata["equipment"]
 
     # Detect standalone equipment title cells (e.g. "SPIR FOR ANALYZER - EMERSON...")
     # that appear as isolated text in the first few header rows with no adjacent label.
@@ -827,7 +851,7 @@ def is_footer_row(desc: str) -> bool:
     return any(dl.startswith(f) for f in FOOTER_STARTS)
 
 
-_ISSUE_LETTER_REV_RE = re.compile(r"REV[\s.\-]*([A-Z0-9]+)", re.IGNORECASE)
+_ISSUE_LETTER_REV_RE = re.compile(r"REV\b[\s.\-]*([A-Z0-9]+)", re.IGNORECASE)
 
 
 def find_revision_in_sheet(ws) -> str | None:
@@ -855,11 +879,35 @@ def find_revision_in_sheet(ws) -> str | None:
             if not s:
                 continue
 
-            if "issue" in s.lower() and "letter" in s.lower():
-                # Revision may be in the same cell (after a colon)
+            s_lower = s.lower()
+            # "ISSUE LETTER" — classic label, unrestricted columns
+            strict_match = "issue" in s_lower and "letter" in s_lower
+            # "REVISION: A" / "REV: A" / "ISSUE NO: A" — cell must START with
+            # the keyword (re.match anchors at start) so data cells that merely
+            # mention "revision" inside a sentence are never matched.
+            broader_match = (
+                re.match(r"rev(?:ision)?\b", s_lower)
+                or (re.match(r"issue\b", s_lower) and re.search(r"\bno\b|\bnum", s_lower))
+            )
+
+            if strict_match or broader_match:
+                # If the cell contains a colon, the value is on the right side.
+                # Handle "REVISION: A", "ISSUE LETTER: 2", "REV: B" etc.
+                # This must come BEFORE the regex so "REVISION: A" doesn't
+                # accidentally match "REVISION" → capture "ISION".
+                if ":" in s:
+                    after_colon = s.split(":", 1)[1].strip()
+                    if after_colon:
+                        m_after = _ISSUE_LETTER_REV_RE.search(after_colon)
+                        if m_after:
+                            return f"REV-{m_after.group(1).upper()}"
+                        if re.fullmatch(r"[A-Z0-9]{1,3}", after_colon, re.IGNORECASE):
+                            return f"REV-{after_colon.upper()}"
+
+                # Revision in same cell without colon (e.g. "ISSUE LETTER REV.2")
                 m = _ISSUE_LETTER_REV_RE.search(s)
                 if m:
-                    return f"REV.{m.group(1).upper()}"
+                    return f"REV-{m.group(1).upper()}"
 
                 # Or in the nearest non-empty cell to the right
                 for dc in range(1, 6):
@@ -871,10 +919,10 @@ def find_revision_in_sheet(ws) -> str | None:
                         continue
                     m2 = _ISSUE_LETTER_REV_RE.search(ns)
                     if m2:
-                        return f"REV.{m2.group(1).upper()}"
+                        return f"REV-{m2.group(1).upper()}"
                     # Plain single token: "A", "2", "B1" etc.
                     if re.fullmatch(r"[A-Z0-9]{1,3}", ns, re.IGNORECASE):
-                        return f"REV.{ns.upper()}"
+                        return f"REV-{ns.upper()}"
                     break  # non-empty but no match — stop scanning right
 
     return None

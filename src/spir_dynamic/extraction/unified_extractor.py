@@ -520,6 +520,16 @@ def _resolve_spir_no(profiles: list[SheetProfile], filename: str) -> str:
         if _pm:
             revision = f"REV.{_pm.group(1).upper()}"
 
+    # Tertiary: revision embedded in the filename itself, e.g.
+    # "VEN-4399-WLHDTYP-4-43-0002_REV.A HONEYWELL.xlsx" → REV.A.
+    # This fires when the sheet has no "ISSUE LETTER" cell but the filename
+    # was saved with the revision marker (common for vendor-supplied files).
+    if spir_clean and not revision and filename:
+        _fname_stem = filename.rsplit(".", 1)[0]
+        _rev_m = re.search(r"[_\s]REV[\s.\-]*([A-Z0-9]+)", _fname_stem, re.IGNORECASE)
+        if _rev_m:
+            revision = f"REV-{_rev_m.group(1).upper()}"
+
     if not spir_clean:
         # Fallback: derive from filename
         if filename:

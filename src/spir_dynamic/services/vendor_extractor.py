@@ -192,6 +192,9 @@ def find_focal_point_cell(ws) -> Optional[str]:
         result = _find_contact_block(ws, max_row, max_col)
 
     if not result:
+        result = _find_spread_contact_block(ws, max_row, max_col)
+
+    if not result:
         log.debug("vendor_extractor: focal point cell not found in sheet")
     return result
 
@@ -273,6 +276,42 @@ def _find_contact_block(ws, max_row: int, max_col: int) -> Optional[str]:
     return None
 
 
+def _find_spread_contact_block(ws, max_row: int, max_col: int) -> Optional[str]:
+    """
+    Quaternary scan: vendor details spread across adjacent single-line cells.
+
+    Catches blocks where each piece of info (company, person, email, phone) lives
+    in its own cell with no embedded newlines and no focal-point label nearby.
+    Anchors on an email cell, then collects all non-empty values within ±5 rows
+    of the same column, returning the block only if a phone number is also present.
+    """
+    scan_start = max(1, max_row - 60)
+    for r in range(scan_start, max_row + 1):
+        for c in range(1, max_col + 1):
+            v = ws.cell(r, c).value
+            if not v:
+                continue
+            s = str(v).strip()
+            if not s or not _EMAIL_RE.search(s):
+                continue
+            # Collect surrounding rows in the same column (±5 rows)
+            row_start = max(1, r - 5)
+            row_end = min(max_row, r + 5)
+            block_lines: list[str] = []
+            for br in range(row_start, row_end + 1):
+                bv = ws.cell(br, c).value
+                if bv is not None:
+                    sv = str(bv).strip()
+                    if sv:
+                        block_lines.append(sv)
+            if len(block_lines) < 2:
+                continue
+            block = "\n".join(block_lines)
+            if _BARE_PHONE_RE.search(block):
+                return block
+    return None
+
+
 def _find_vendor_contact_block(ws, max_row: int, max_col: int) -> Optional[str]:
     """
     Secondary scan for vendor contact blocks with no focal point label.
@@ -313,6 +352,11 @@ def _scan_rows(ws, start: int, end: int, max_col: int) -> Optional[str]:
 
             for kw in _FOCAL_KEYWORDS:
                 if kw in text_lower:
+                    # Short generic keywords (e.g. "tel/fax") can falsely match long
+                    # note/instruction cells. Only process short-keyword matches when
+                    # the cell itself is short enough to be a label, not a sentence.
+                    if len(kw) < 15 and len(text) > 60:
+                        continue
                     # FOUND LABEL → now search for DATA nearby
                     # Strategies 1–4 only return immediately when useful data
                     # (email or phone) is found; otherwise fall through to Strategy 5.
