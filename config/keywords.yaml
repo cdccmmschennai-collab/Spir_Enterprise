@@ -87,6 +87,8 @@ field_keywords:
     - "sap number"
     - "sap no"
     - "sap #"
+    - "sap code"
+    - "sap coding"
     - "material number"
   classification:
     - "classification"
@@ -138,6 +140,8 @@ header_keywords:
   - "delivery"
   - "uom"
   - "sap"
+  - "sap coding"
+  - "sap code"
   - "classification"
   - "drawing"
   - "material"
