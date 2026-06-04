@@ -139,6 +139,8 @@ def get_settings() -> Settings:
 def load_keywords() -> dict:
     """Load keywords.yaml once. Edit the YAML and restart to pick up changes."""
     import yaml
-    path = get_settings().keywords_config_path
+    path = Path(get_settings().keywords_config_path)
+    if not path.is_absolute():
+        path = _PROJECT_ROOT / path
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
