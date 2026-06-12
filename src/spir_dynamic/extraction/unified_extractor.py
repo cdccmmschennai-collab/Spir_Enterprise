@@ -328,6 +328,11 @@ def _extract_columnar_group(
     for cont_profile in global_conts:
         _ws_cont = wb[cont_profile.name]
         _cont_display = cont_profile.name.upper()
+        # Collect rows from all sections before emitting so we can regroup by tag.
+        # Without regrouping the output order is "section-1 all tags, section-2 all
+        # tags, …"; after regrouping it becomes "tag-1 all sections, tag-2 all
+        # sections, …" with one equipment header row per tag.
+        _cont_all_sections: list[dict[str, Any]] = []
         for _main_idx, (_main_profile, _local_items, _this_offset) in enumerate(
             _main_item_info, 1
         ):
@@ -359,9 +364,50 @@ def _extract_columnar_group(
                 # Show the actual continuation sheet name in the output.
                 r["sheet"] = _cont_display
                 r["_group_main"] = _main_profile.name
-            all_rows.extend(_cont_rows)
+            _cont_all_sections.extend(_cont_rows)
+        # Regroup: emit all rows for tag-1, then all rows for tag-2, etc.
+        all_rows.extend(_regroup_global_cont_by_tag(_cont_all_sections))
 
     return all_rows
+
+
+def _regroup_global_cont_by_tag(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Regroup rows from a global continuation sheet so all sections for each tag
+    appear together, with only the first equipment header row kept per tag.
+
+    Input order:  section-1 rows for all tags, section-2 rows for all tags, …
+    Output order: tag-1 (one header + all sections' spares),
+                  tag-2 (one header + all sections' spares), …
+
+    Tag order follows the first time each tag is seen in `rows`.
+    Only spare rows (item_num is not None) are preserved from sections 2+.
+    """
+    tag_order: list[str] = []
+    tag_header: dict[str, dict[str, Any] | None] = {}
+    tag_spares: dict[str, list[dict[str, Any]]] = {}
+
+    for row in rows:
+        tag = str(row.get("tag_no") or "").strip()
+        key = tag if tag else "__NO_TAG__"
+        if key not in tag_header:
+            tag_order.append(key)
+            tag_header[key] = None
+            tag_spares[key] = []
+        if row.get("item_num") is None:
+            if tag_header[key] is None:
+                tag_header[key] = row
+        else:
+            tag_spares[key].append(row)
+
+    result: list[dict[str, Any]] = []
+    for key in tag_order:
+        if tag_header[key] is not None:
+            result.append(tag_header[key])
+        result.extend(tag_spares[key])
+    return result
 
 
 def _group_by_main(

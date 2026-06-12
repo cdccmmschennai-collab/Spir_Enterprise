@@ -281,7 +281,7 @@ def _check_column_headers(
     Check if tags appear as column headers in the top rows.
     This is the matrix layout where each tag has its own column with qty values.
     """
-    max_col = min(ws.max_column or 50, 80)
+    max_col = ws.max_column or 50
     scan_rows = min(_TAG_HEADER_SCAN_ROWS, (ws.max_row or 0))
 
     # PRIORITY: Look for "EQUIPMENT TAG" label in rows 1-2.
