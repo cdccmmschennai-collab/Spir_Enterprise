@@ -254,8 +254,38 @@ def _extract_columnar_group(
         return _extract_single_group(wb, columnar_profiles, spir_no, main_sheet_name=main_name)
 
 
-    # Multiple independent main sheets: partition non-primaries by parent main.
-    groups = _group_by_main(primary_mains, non_primaries, all_profiles)
+    # Multiple independent main sheets: detect global continuations first.
+    # A global continuation's item numbers exceed any single primary main's
+    # item count — it spans all mains (e.g. items 1-64 across 3 mains with
+    # 24 items each, vs. items 1-24 per individual main sheet).
+    _helper_col = ColumnarStrategy()
+
+    # Pre-read items from each primary main (needed for detection + processing).
+    _main_item_info: list[tuple[SheetProfile, dict[int, dict], int]] = []
+    _cum_offset = 0
+    _max_single_main = 0
+    for _main in primary_mains:
+        _ws = wb[_main.name]
+        _raw = _helper_col.read_items(_ws, _main)
+        _real = {k: v for k, v in _raw.items() if k > 0}
+        _max_local = max(_real.keys(), default=0)
+        _main_item_info.append((_main, _real, _cum_offset))
+        _cum_offset += _max_local
+        if _max_local > _max_single_main:
+            _max_single_main = _max_local
+
+    # Partition non-primaries into global vs local continuations.
+    global_conts: list[SheetProfile] = []
+    local_non_primaries: list[SheetProfile] = []
+    for _cont in non_primaries:
+        _cont_max = _read_cont_max_item(wb[_cont.name], _cont)
+        if _max_single_main > 0 and _cont_max > _max_single_main:
+            global_conts.append(_cont)
+        else:
+            local_non_primaries.append(_cont)
+
+    # Process each primary main + its local continuations normally.
+    groups = _group_by_main(primary_mains, local_non_primaries, all_profiles)
 
     all_rows: list[dict[str, Any]] = []
     for main_profile, group_conts in groups:
@@ -284,6 +314,52 @@ def _extract_columnar_group(
                 r["sheet"] = main_name_upper
 
         all_rows.extend(group_rows)
+
+    # Process global continuations: extract once per primary main using that
+    # main's items shifted to align with the CONT sheet's global item numbers.
+    # OMN is pre-computed here with the correct main sheet index so the output
+    # SHEET column can show the actual continuation sheet name rather than the
+    # parent main sheet name.
+    from spir_dynamic.extraction.post_processor import (  # noqa: PLC0415
+        build_omn as _build_omn,
+        _item_to_line_index as _itli,
+    )
+    _total_mains = len(_main_item_info)
+    for cont_profile in global_conts:
+        _ws_cont = wb[cont_profile.name]
+        _cont_display = cont_profile.name.upper()
+        for _main_idx, (_main_profile, _local_items, _this_offset) in enumerate(
+            _main_item_info, 1
+        ):
+            if not _local_items:
+                continue
+            # Shift local item keys by the cumulative offset so they align
+            # with CONT's global item numbering (e.g. MS2 local 1 → global 25).
+            _shifted = {k + _this_offset: v for k, v in _local_items.items()}
+            _max_local = max(_local_items.keys(), default=0)
+            _cont_rows, _ = _helper_col.extract(
+                _ws_cont, cont_profile, spir_no, items_dict=_shifted
+            )
+            for r in _cont_rows:
+                g = r.get("item_num")
+                if g is not None:
+                    local = g - _this_offset
+                    if 1 <= local <= _max_local:
+                        r["item_num"] = local
+                        # Pre-compute OMN using the main sheet index so the
+                        # correct 01L/02L/03L prefix is generated while the
+                        # SHEET column still shows the continuation sheet name.
+                        if spir_no:
+                            r["old_material_no"] = _build_omn(
+                                spir_no,
+                                _main_idx,
+                                _itli(local),
+                                total_main_sheets=_total_mains,
+                            )
+                # Show the actual continuation sheet name in the output.
+                r["sheet"] = _cont_display
+                r["_group_main"] = _main_profile.name
+            all_rows.extend(_cont_rows)
 
     return all_rows
 
@@ -454,6 +530,54 @@ def _find_item_source(profiles: list[SheetProfile]) -> SheetProfile | None:
 
     # Fallback: return the first profile (often the main sheet)
     return profiles[0] if profiles else None
+
+
+def _read_cont_max_item(ws, profile: SheetProfile) -> int:
+    """
+    Scan a non-primary sheet to find its maximum item number.
+
+    Used to detect "global" continuation sheets whose item numbering spans
+    multiple primary main sheets (e.g., items 1-64 across 3 mains with 24
+    items each).  Returns 0 when no item column is found.
+    """
+    start_row = profile.data_start_row or (
+        (profile.header_row + 1) if profile.header_row else 8
+    )
+    end_row = profile.data_end_row or (ws.max_row or 0)
+    tag_col_set = set(profile.tag_columns) if profile.tag_columns else set()
+
+    item_col: int | None = None
+    for sr in range(start_row, min(start_row + 6, end_row + 1)):
+        for c in range(1, min(10, (ws.max_column or 10) + 1)):
+            if c in tag_col_set:
+                continue
+            try:
+                v1 = ws.cell(sr, c).value
+                v2 = ws.cell(sr + 1, c).value
+                if (v1 is not None and v2 is not None
+                        and int(float(v1)) == 1 and int(float(v2)) == 2):
+                    item_col = c
+                    break
+            except (ValueError, TypeError):
+                continue
+        if item_col:
+            break
+
+    if item_col is None:
+        return 0
+
+    max_item = 0
+    for r in range(start_row, end_row + 1):
+        v = ws.cell(r, item_col).value
+        if v is None:
+            continue
+        try:
+            n = int(float(v))
+            if n > max_item:
+                max_item = n
+        except (ValueError, TypeError):
+            continue
+    return max_item
 
 
 def _get_strategy(profile: SheetProfile):
@@ -1098,7 +1222,12 @@ def _enrich_equipment_data(
                                 tag_dtl[field] = tdata[field]
                         if not tag_dtl.get("manufacturer") and tag_hdr.get("manufacturer"):
                             tag_dtl["manufacturer"] = tag_hdr["manufacturer"]
-                        if N > 1 and _pos_items is None:
+                        # Only divide for non-columnar rows. Columnar rows (COLUMN_HEADERS
+                        # format) set qty_identical from the per-tag cell value, which is
+                        # already a per-unit quantity — dividing by N would make it wrong.
+                        # Non-columnar rows may carry a total count that needs dividing.
+                        # Columnar rows are identified by having _annex_col set.
+                        if N > 1 and _pos_items is None and tag_dtl.get("_annex_col") is None:
                             raw_qty = tag_dtl.get("qty_identical")
                             try:
                                 q = float(raw_qty) if raw_qty is not None else None

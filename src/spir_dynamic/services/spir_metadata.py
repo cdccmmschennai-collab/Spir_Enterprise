@@ -28,13 +28,13 @@ COLUMN_METADATA: dict[str, dict] = {
         "spir_field": "EQFNR",
         "display_limit": 30,
     },
-    "EQPT MAKE": {
-        "spir_field": "MFRNR",
-        "display_limit": 30,
-    },
     "EQPT MODEL": {
-        "spir_field": "HERST",
+        "spir_field": "TYPBZ",
         "display_limit": 35,
+    },
+    "EQPT MAKE": {
+        "spir_field": "MFRNR/HERST",
+        "display_limit": 30,
     },
     "EQPT SR NO": {
         "spir_field": "SERGE",

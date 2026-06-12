@@ -685,11 +685,12 @@ def post_process_rows(
                 pos_counter[tag_key] += 10
 
         if spf_col is not None and spf_col < ncols and is_spare and spir_no_clean:
-            line_idx = _item_to_line_index(item)
-            row[spf_col] = build_omn(
-                spir_no_clean, sheet_idx, line_idx,
-                total_main_sheets=sheet_tracker.total_main_sheets,
-            )
+            if not row[spf_col]:  # skip if pre-computed (e.g. global cont rows)
+                line_idx = _item_to_line_index(item)
+                row[spf_col] = build_omn(
+                    spir_no_clean, sheet_idx, line_idx,
+                    total_main_sheets=sheet_tracker.total_main_sheets,
+                )
 
         sheet_norm = SheetTracker._norm(str(sheet or ""))
         is_non_main = 1 if _sheet_name_is_continuation_or_annexure(sheet_norm) else 0
