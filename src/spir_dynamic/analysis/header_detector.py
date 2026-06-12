@@ -100,6 +100,7 @@ METADATA_KEYWORDS: dict[str, list[str]] = {
     "model": ["model no", "model number", "eqpt model", "model"],
     "serial":   ["mfr ser", "mfr ser'l", "serial number", "serial no"],
     "eqpt_qty": ["no. of units", "no of units"],
+    "currency": ["currency"],
 }
 
 # Footers that indicate end of data section
@@ -118,6 +119,7 @@ FOOTER_STARTS = (
     "checked by",
     "approved by",
     "revision",
+    "contract",
 )
 
 

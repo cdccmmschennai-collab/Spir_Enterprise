@@ -397,6 +397,10 @@ class ColumnarStrategy:
         # FIX: Changed {2,} to {1,} to accept single-letter prefix tags like "V-8943", "E-8925"
         _TAG_LIKE_PAT = re.compile(r"[A-Z0-9]{1,}[-/][A-Z0-9]", re.IGNORECASE)
 
+        # Pattern for "CODE NUMBER" style tags with a space separator, e.g. "HCP 9425", "FV 1234"
+        # Allows a short alphanumeric prefix followed by a space and 3+ digits.
+        _ALPHA_SPACE_DIGITS_PAT = re.compile(r"^[A-Z0-9]{1,15}\s+[0-9]{3,}$", re.IGNORECASE)
+
         # Strips leading "TAG : ", "TAG:", "TAG# " prefixes written by some vendors
         # in the EQUIPMENT TAG No cell (e.g. "TAG : 100-30-CB-0001" → "100-30-CB-0001")
         _TAG_PREFIX_PAT = re.compile(r"(?i)^(?:tag\s*[:#]?\s*)+")
@@ -579,9 +583,14 @@ class ColumnarStrategy:
                 # Tags typically have structure: prefix-number, or annexure refs
                 # Reject plain text that doesn't match tag patterns
                 if not _TAG_LIKE_PAT.search(raw) and not _ANNEXURE_PAT.match(raw):
-                    # Allow short alphanumeric codes that could be tag suffixes
-                    # but reject anything that looks like header text
                     if len(raw) > 20 or " " in raw:
+                        # Allow "CODE NUMBER" style tags (e.g. "HCP 9425") —
+                        # short alphanumeric prefix + space + 3-or-more digits.
+                        if not _ALPHA_SPACE_DIGITS_PAT.match(raw):
+                            continue
+                    elif not re.search(r"\d", raw):
+                        # Pure-alphabetic values (no digits) are model/type labels,
+                        # not equipment tag numbers — skip to find a better candidate.
                         continue
 
                 # Accept as tag — split if comma/slash separated

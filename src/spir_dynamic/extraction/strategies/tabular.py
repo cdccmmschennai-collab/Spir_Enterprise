@@ -171,6 +171,7 @@ class TabularStrategy:
                 row["item_num"] = row.pop("item_number", None)
                 row["supplier_name"] = row.pop("supplier", None)
                 row["sap_no"] = row.pop("sap_number", None)
+                row["delivery"] = row.pop("delivery_weeks", None)
 
                 # Compute total_price if missing
                 qty = clean_num(row.get("qty_identical"))
@@ -200,6 +201,18 @@ class TabularStrategy:
                     row["model"] = global_model
                 if global_serial and not row.get("serial"):
                     row["serial"] = global_serial
+
+        # Propagate metadata currency to all rows when the sheet has no currency column.
+        # Handles files where currency appears as metadata (e.g. "Currency: US$" at row 7)
+        # rather than as a per-row column value.
+        if "currency" not in (profile.column_map or {}) and profile.metadata.get("currency"):
+            _meta_currency = profile.metadata["currency"]
+            # Normalize symbol-style currency values to ISO codes (e.g. "US$" → "USD")
+            _CURRENCY_NORM = {"US$": "USD", "$": "USD", "£": "GBP", "€": "EUR", "¥": "JPY"}
+            _meta_currency = _CURRENCY_NORM.get(_meta_currency, _meta_currency)
+            for row in rows:
+                if not row.get("currency"):
+                    row["currency"] = _meta_currency
 
         # Apply eqpt_qty from metadata to spare rows that lack it — but NOT
         # for GLOBAL_TAG sheets. There, eqpt_qty belongs only on the
