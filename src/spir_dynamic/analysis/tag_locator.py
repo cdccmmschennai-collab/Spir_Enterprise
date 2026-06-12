@@ -510,7 +510,7 @@ def _check_global_tag(
     # so that sheets with no proper tag number still extract as GLOBAL_TAG.
     _EQUIP_TAG_KWS = ("tag no", "tag number", "equip")
     _TAG_PREFIX_RE = re.compile(r"(?i)^(?:tag\s*[:#]?\s*)+")
-    for r in range(1, min(3, scan_to + 1)):
+    for r in range(1, min(4, scan_to + 1)):
         for c in range(1, min(5, max_col + 1)):
             v = ws.cell(r, c).value
             if v is None:

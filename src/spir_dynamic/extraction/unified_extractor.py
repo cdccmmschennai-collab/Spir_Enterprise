@@ -1041,6 +1041,8 @@ def _enrich_equipment_data(
                                 for field in _TAG_ENRICH:
                                     if tdata.get(field):
                                         tag_dtl[field] = tdata[field]
+                                if not tag_dtl.get("manufacturer") and hdr.get("manufacturer"):
+                                    tag_dtl["manufacturer"] = hdr["manufacturer"]
                                 if _N_slice > 1:
                                     raw_qty = tag_dtl.get("quantity")
                                     try:
@@ -1052,6 +1054,18 @@ def _enrich_equipment_data(
                                         pass
                                 enriched.append(tag_dtl)
             else:
+                # Limit annexure tags to eqpt_qty when the header explicitly declares
+                # fewer installed units than the full annexure count (e.g. 25 units out of 36).
+                _hdr_eqpt_qty: int | None = None
+                if grp["headers"]:
+                    try:
+                        _hdr_eqpt_qty = int(float(grp["headers"][0].get("eqpt_qty") or 0)) or None
+                    except (TypeError, ValueError):
+                        pass
+                if _hdr_eqpt_qty is not None and 0 < _hdr_eqpt_qty < N:
+                    annex_tags = annex_tags[:_hdr_eqpt_qty]
+                    N = _hdr_eqpt_qty
+
                 for entry_idx, tdata in enumerate(annex_tags):
                     # Determine which detail rows apply to this specific entry
                     if _pos_items is not None:
@@ -1071,7 +1085,8 @@ def _enrich_equipment_data(
                         for field in _TAG_ENRICH:
                             if tdata.get(field):
                                 tag_hdr[field] = tdata[field]
-                        if _use_subgroup_eqpt_qty and entry_idx < len(_entry_subgroup_size):
+                        # Only apply subgroup size when no eqpt_qty is already set on the header
+                        if _use_subgroup_eqpt_qty and not tag_hdr.get("eqpt_qty") and entry_idx < len(_entry_subgroup_size):
                             tag_hdr["eqpt_qty"] = _entry_subgroup_size[entry_idx]
                         enriched.append(tag_hdr)
                     # Tag spare rows — divide total qty by N annexure tags
@@ -1081,13 +1096,15 @@ def _enrich_equipment_data(
                         for field in _TAG_ENRICH:
                             if tdata.get(field):
                                 tag_dtl[field] = tdata[field]
+                        if not tag_dtl.get("manufacturer") and tag_hdr.get("manufacturer"):
+                            tag_dtl["manufacturer"] = tag_hdr["manufacturer"]
                         if N > 1 and _pos_items is None:
-                            raw_qty = tag_dtl.get("quantity")
+                            raw_qty = tag_dtl.get("qty_identical")
                             try:
                                 q = float(raw_qty) if raw_qty is not None else None
                                 if q and q > 0:
                                     per_tag = q / N
-                                    tag_dtl["quantity"] = int(per_tag) if per_tag == int(per_tag) else per_tag
+                                    tag_dtl["qty_identical"] = int(per_tag) if per_tag == int(per_tag) else per_tag
                             except (TypeError, ValueError):
                                 pass
                         enriched.append(tag_dtl)
@@ -1871,6 +1888,10 @@ def _read_annexure_equipment(
                     continue
                 tags = [None]  # blank tag — will output as empty TAG NO
             else:
+                # Skip natural-language notes in the tag column
+                # (e.g. "Tag numbers will be updated progressively after installation")
+                if tag_val.count(' ') > 4:
+                    continue
                 tags = split_tags(tag_val)
 
             # Handle serial ranges for multi-tag cells
