@@ -281,7 +281,7 @@ def _check_column_headers(
     Check if tags appear as column headers in the top rows.
     This is the matrix layout where each tag has its own column with qty values.
     """
-    max_col = min(ws.max_column or 50, 80)
+    max_col = ws.max_column or 50
     scan_rows = min(_TAG_HEADER_SCAN_ROWS, (ws.max_row or 0))
 
     # PRIORITY: Look for "EQUIPMENT TAG" label in rows 1-2.
@@ -510,7 +510,7 @@ def _check_global_tag(
     # so that sheets with no proper tag number still extract as GLOBAL_TAG.
     _EQUIP_TAG_KWS = ("tag no", "tag number", "equip")
     _TAG_PREFIX_RE = re.compile(r"(?i)^(?:tag\s*[:#]?\s*)+")
-    for r in range(1, min(3, scan_to + 1)):
+    for r in range(1, min(4, scan_to + 1)):
         for c in range(1, min(5, max_col + 1)):
             v = ws.cell(r, c).value
             if v is None:
