@@ -467,10 +467,7 @@ async def _stream_batch_upload(
     absolute_max_bytes = cfg.absolute_max_file_size_mb * 1024 * 1024
     max_bytes = min(max_mb * 1024 * 1024, absolute_max_bytes)
 
-    # Build a safe filename: strip path separators and non-printable characters.
-    safe_name = re.sub(r'[^\w\-_. ]', '_', Path(filename).name)[:80] or "upload"
-    disk_filename = f"{job_id}_{idx:03d}_{safe_name}"
-    disk_path = upload_dir / disk_filename
+    disk_path = batch_upload_path(upload_dir, job_id, idx, filename)
 
     total = 0
     try:
@@ -490,57 +487,79 @@ async def _stream_batch_upload(
     return disk_path, total
 
 
+def batch_upload_path(upload_dir: Path, job_id: str, idx: int, filename: str) -> Path:
+    """
+    On-disk path for one upload slot of a job: <upload_dir>/<job_id>_<idx>_<safe_name>.
+
+    Shared by the batch upload endpoints and the single-file /api/extract
+    async hand-off so the worker (and the delivery-cap key, which is derived
+    from this name) sees the same naming convention regardless of entry point.
+    """
+    # Build a safe filename: strip path separators and non-printable characters.
+    safe_name = re.sub(r'[^\w\-_. ]', '_', Path(filename).name)[:80] or "upload"
+    return upload_dir / f"{job_id}_{idx:03d}_{safe_name}"
+
+
+def route_queue(size_bytes: int, cfg) -> tuple[str, dict]:
+    """
+    Three-tier queue routing — the single authority for file size → Celery queue.
+
+      normal  — files ≤ large_file_threshold_mb  (default 100 MB)
+                Standard worker, 2 concurrent processes, 5 min timeout.
+      heavy   — files > 100 MB and ≤ 500 MB
+                Dedicated worker, higher time limits (15 min).
+      giant   — files > giant_file_threshold_mb   (default 500 MB)
+                Dedicated spir-giant-worker, concurrency=1, 30 min timeout.
+                Isolated so giant files never block normal or heavy jobs.
+
+    Returns (queue_name, apply_async kwargs — per-queue time limits).
+    """
+    heavy_bytes = cfg.large_file_threshold_mb * 1024 * 1024
+    giant_bytes = cfg.giant_file_threshold_mb * 1024 * 1024
+
+    if size_bytes > giant_bytes:
+        return "giant", {
+            "soft_time_limit": _GIANT_SOFT_LIMIT,
+            "time_limit": _GIANT_HARD_LIMIT,
+        }
+    if size_bytes > heavy_bytes:
+        return "heavy", {
+            "soft_time_limit": _HEAVY_SOFT_LIMIT,
+            "time_limit": _HEAVY_HARD_LIMIT,
+        }
+    return "normal", {}
+
+
 def _dispatch_celery(
     job_id: str,
     file_data: list[tuple[Path, str, int]],
     cfg,
     user_id: str = "",
     idx_offset: int = 0,
-) -> None:
+) -> list[str]:
     """
-    Enqueue one Celery task per file using three-tier queue routing:
-
-      normal  — files ≤ large_file_threshold_mb  (default 100 MB)
-                Standard worker, 2 concurrent processes, 5 min timeout.
-      heavy   — files > 100 MB and ≤ 500 MB
-                Same worker, higher time limits (15 min).
-      giant   — files > giant_file_threshold_mb   (default 500 MB)
-                Dedicated spir-giant-worker, concurrency=1, 30 min timeout.
-                Isolated so giant files never block normal or heavy jobs.
+    Enqueue one Celery task per file, routed by route_queue().
 
     The API returns immediately; workers pick up tasks independently.
+    Returns the queue name chosen for each file, in input order.
     """
     from spir_dynamic.tasks.extraction_tasks import process_file_task
     from spir_dynamic.monitoring.metrics import GIANT_FILES_ROUTED
 
-    heavy_bytes = cfg.large_file_threshold_mb * 1024 * 1024
-    giant_bytes = cfg.giant_file_threshold_mb * 1024 * 1024
-
+    queues: list[str] = []
     for idx, (disk_path, filename, size_bytes) in enumerate(file_data, start=idx_offset):
         size_mb = size_bytes / (1024 * 1024)
 
-        if size_bytes > giant_bytes:
-            queue = "giant"
-            task_kwargs: dict = {
-                "soft_time_limit": _GIANT_SOFT_LIMIT,
-                "time_limit": _GIANT_HARD_LIMIT,
-            }
+        queue, task_kwargs = route_queue(size_bytes, cfg)
+        if queue == "giant":
             GIANT_FILES_ROUTED.inc()
-        elif size_bytes > heavy_bytes:
-            queue = "heavy"
-            task_kwargs = {
-                "soft_time_limit": _HEAVY_SOFT_LIMIT,
-                "time_limit": _HEAVY_HARD_LIMIT,
-            }
-        else:
-            queue = "normal"
-            task_kwargs = {}
 
         process_file_task.apply_async(
             args=[job_id, idx, str(disk_path), filename, user_id],
             queue=queue,
             **task_kwargs,
         )
+        queues.append(queue)
         log.info(
             "celery.task_enqueued",
             job_id=job_id,
@@ -549,6 +568,7 @@ def _dispatch_celery(
             size_mb=round(size_mb, 1),
             queue=queue,
         )
+    return queues
 
 
 def _do_combine(file_ids: list[str]) -> tuple[str, str, int]:

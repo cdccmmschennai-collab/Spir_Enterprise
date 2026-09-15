@@ -6,8 +6,10 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import shutil
 import tempfile
 import time
+import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -17,18 +19,26 @@ from zoneinfo import ZoneInfo
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from openpyxl.utils.exceptions import InvalidFileException
 from pydantic import BaseModel
 from sqlalchemy import select, desc
 
 from spir_dynamic.app.auth import get_current_user, TokenData, SUPER_ADMIN
+from spir_dynamic.app.batch_router import (
+    _dispatch_celery,
+    _persist_job_to_db,
+    batch_upload_path,
+    route_queue,
+)
 from spir_dynamic.app.pipeline import run_pipeline, retrieve_result
 from spir_dynamic.app.config import get_settings
 from spir_dynamic.db.database import get_db, is_db_enabled
 from spir_dynamic.db.models import ExtractionHistory
 from spir_dynamic.extraction.file_validator import ValidationError
+from spir_dynamic.services.cleanup import safe_delete
 from spir_dynamic.services.currency_service import conversion_summary
+from spir_dynamic.services.job_store import FileResult, get_job_store
 
 log = structlog.stdlib.get_logger(__name__)
 
@@ -164,6 +174,51 @@ async def extract(
         )
         size_mb = file_size / (1024 * 1024)
         log.info("upload.received", size_mb=round(size_mb, 1))
+
+        # ── Phase A½: Route by size ──────────────────────────────────────────
+        # The batch queue router is the single authority: a file it would send
+        # to 'normal' (≤ large_file_threshold_mb) stays on the in-process sync
+        # path below, unchanged. Anything it routes to 'heavy' / 'giant' is
+        # handed to the existing Celery workers instead of occupying FastAPI.
+        # With Celery disabled (native dev mode) there is no worker to hand to,
+        # so every size keeps the sync path.
+        queue, _ = route_queue(file_size, cfg)
+        if cfg.celery_enabled and queue != "normal":
+            try:
+                job_id, queue = await _enqueue_single_file(tmp_path, filename, file_size, cfg, td)
+            except Exception as exc:
+                log.exception(
+                    "extraction.event",
+                    status="enqueue_error",
+                    size_mb=round(size_mb, 1),
+                    queue=queue,
+                    exc_type=type(exc).__name__,
+                    exc_message=str(exc),
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Could not queue extraction: {exc}",
+                )
+            # The upload now lives in batch_upload_dir and belongs to the
+            # worker, which deletes it after extraction — nothing to clean here.
+            tmp_path = None
+            log.info(
+                "extraction.event",
+                status="queued",
+                job_id=job_id,
+                queue=queue,
+                size_mb=round(size_mb, 1),
+            )
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": "queued",
+                    "job_id": job_id,
+                    "filename": filename,
+                    "size_mb": round(size_mb, 1),
+                    "queue": queue,
+                },
+            )
 
         # ── Phase B: Wait for a concurrency slot ─────────────────────────────
         sem = _get_semaphore()
@@ -499,6 +554,60 @@ async def get_avatar(user_id: str):
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
+
+async def _enqueue_single_file(
+    tmp_path: Path,
+    filename: str,
+    size_bytes: int,
+    cfg,
+    td: TokenData,
+) -> tuple[str, str]:
+    """
+    Hand a large single-file upload to the batch worker infrastructure.
+
+    Creates a one-file batch job (same job store the batch page uses), moves
+    the streamed upload from the API temp dir into the shared batch_upload_dir
+    under the batch naming convention, and enqueues it via _dispatch_celery so
+    queue selection (heavy / giant) stays with the batch router. The worker
+    then runs the same run_pipeline, writes rows/history, and deletes the
+    upload — exactly as for a batch file. The frontend polls
+    GET /api/batch/{job_id}/result, which mirrors the sync /api/extract payload.
+
+    Returns (job_id, queue). On failure the moved file is removed and the job
+    slot is marked error so a poll never stalls on "pending"; the caller keeps
+    ownership of tmp_path if the move itself failed.
+    """
+    job_id = str(uuid.uuid4())
+    user_id = td.user_id or ""
+    upload_dir = Path(cfg.batch_upload_dir)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    disk_path = batch_upload_path(upload_dir, job_id, 0, filename)
+
+    # Cross-filesystem in Docker (container /tmp → shared volume), so this is a
+    # copy+unlink of the whole file — keep it off the event loop.
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(None, shutil.move, str(tmp_path), str(disk_path))
+    except Exception:
+        safe_delete(disk_path, log_context=f"move-failed job={job_id}")  # partial copy, if any
+        raise
+
+    job_store = get_job_store()
+    try:
+        job_store.create(job_id, [filename], user_id=user_id)
+        queues = _dispatch_celery(job_id, [(disk_path, filename, size_bytes)], cfg, user_id)
+    except Exception as exc:
+        safe_delete(disk_path, log_context=f"enqueue-failed job={job_id}")
+        # No-op if create() itself failed (store logs "job.not_found").
+        job_store.update_result(
+            job_id, 0,
+            FileResult(filename=filename, status="error", error=f"Could not queue extraction: {exc}"),
+        )
+        raise
+
+    asyncio.create_task(_persist_job_to_db(job_id, user_id, [filename], cfg.batch_ttl_seconds))
+    return job_id, queues[0]
+
 
 def _save_rows_to_disk(result: dict, cfg) -> Optional[str]:
     """

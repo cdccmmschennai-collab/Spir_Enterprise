@@ -28,7 +28,11 @@ import { saveSession, loadSession, clearSession } from "@/lib/extraction-session
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const ACCEPTED = ".xlsx,.xlsm,.xls";
 const ROWS_PER_PAGE = 10;
-const USE_ASYNC_EXTRACT = process.env.NEXT_PUBLIC_USE_ASYNC_EXTRACT === "true";
+// Background (worker) extraction polling. Only files the API routes to the
+// heavy/giant queues are polled, so the cap must outlast the giant worker's
+// hard time limit (36 min) plus any queue wait — well inside the 2 h job TTL.
+const POLL_MS = 2000;
+const MAX_POLL_ATTEMPTS = (60 * 60 * 1000) / POLL_MS; // 60 min
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -376,6 +380,9 @@ export default function ExtractionPage() {
   const [savedFilename, setSavedFilename] = useState("");
   const [hydrated, setHydrated] = useState(false);
   const [recoveredToHistory, setRecoveredToHistory] = useState(false);
+  // True while the API has handed this extraction to a background worker
+  // (large file) — drives the "you can navigate away" hint only.
+  const [backgroundJob, setBackgroundJob] = useState(false);
 
   // Async polling refs — stable across renders, cleaned up on unmount
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -433,7 +440,7 @@ export default function ExtractionPage() {
         } else {
           // still processing
           attempts++;
-          if (attempts > 120) { // ~4 min at 2s intervals
+          if (attempts > MAX_POLL_ATTEMPTS) {
             stopPolling();
             clearSession();
             setError("Extraction timed out. The file may be too large or complex.");
@@ -446,7 +453,7 @@ export default function ExtractionPage() {
     };
 
     poll(); // immediate first check
-    pollIntervalRef.current = setInterval(poll, 2000);
+    pollIntervalRef.current = setInterval(poll, POLL_MS);
   }, [stopPolling]);
 
   useEffect(() => {
@@ -460,8 +467,9 @@ export default function ExtractionPage() {
       setSavedFilename(session.filename);
       setLoading(true);
 
-      if (USE_ASYNC_EXTRACT && session.job_id) {
-        // Async recovery: resume polling the in-flight job
+      if (session.job_id) {
+        // Background job (large file) — resume polling the in-flight job
+        setBackgroundJob(true);
         startPolling(session.job_id);
       } else {
         // Sync recovery: single check against history
@@ -496,76 +504,55 @@ export default function ExtractionPage() {
     setLoading(true);
     setError(null);
     setResult(null);
+    setBackgroundJob(false);
     stopPolling();
 
-    if (!USE_ASYNC_EXTRACT) {
-      // ── Sync path (existing behaviour, unchanged) ──────────────────────────
-      saveSession({ status: "loading", filename: file.name, savedAt: Date.now() });
-      const form = new FormData();
-      form.append("file", file);
-      try {
-        const res = await fetch(`${API_URL}/api/extract`, {
-          method: "POST",
-          headers: authHeaders(),
-          body: form,
-        });
-        if (res.status === 401) {
-          clearSession();
-          setError("Session expired. Please log in again.");
-          return;
-        }
-        if (!res.ok) {
-          clearSession();
-          const data = await res.json().catch(() => ({}));
-          setError(data.detail ?? `Extraction failed (${res.status})`);
-          return;
-        }
-        const data = normalizeResult(await res.json() as Partial<ExtractResult>);
-        setResult(data);
-        // Cap preview_rows before saving to localStorage — full rows can be
-        // 2–10 MB for large SPIRs, exceeding the 5–10 MB quota. The download
-        // still contains all rows; 200 preview rows = 20 paginated pages.
-        saveSession({ status: "complete", filename: data.filename, savedAt: Date.now(),
-          result: { ...data, preview_rows: data.preview_rows.slice(0, 200) } });
-        window.dispatchEvent(new CustomEvent("profile-refresh"));
-      } catch {
+    // One entry point for every size. The API decides after the upload:
+    //   200 + result  → extracted in-process (small file), shown immediately
+    //   202 + job_id  → handed to a background worker (large file), polled
+    saveSession({ status: "loading", filename: file.name, savedAt: Date.now() });
+    const form = new FormData();
+    form.append("file", file);
+    try {
+      const res = await fetch(`${API_URL}/api/extract`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: form,
+      });
+      if (res.status === 401) {
         clearSession();
-        setError("Could not reach the server. Is the backend running?");
-      } finally {
+        setError("Session expired. Please log in again.");
         setLoading(false);
+        return;
       }
-    } else {
-      // ── Async path: upload → job_id → poll ────────────────────────────────
-      const form = new FormData();
-      form.append("files", file); // batch endpoint accepts "files" (plural)
-      try {
-        const res = await fetch(`${API_URL}/api/batch/extract`, {
-          method: "POST",
-          headers: authHeaders(),
-          body: form,
-        });
-        if (res.status === 401) {
-          clearSession();
-          setError("Session expired. Please log in again.");
-          setLoading(false);
-          return;
-        }
-        if (!res.ok) {
-          clearSession();
-          const data = await res.json().catch(() => ({}));
-          setError(data.detail ?? `Upload failed (${res.status})`);
-          setLoading(false);
-          return;
-        }
-        const { job_id } = await res.json();
-        saveSession({ status: "loading", filename: file.name, savedAt: Date.now(), job_id });
-        startPolling(job_id);
-        // loading stays true — cleared by poll when done
-      } catch {
+      if (!res.ok) {
         clearSession();
-        setError("Could not reach the server. Is the backend running?");
+        const data = await res.json().catch(() => ({}));
+        setError(data.detail ?? `Extraction failed (${res.status})`);
         setLoading(false);
+        return;
       }
+      const payload = await res.json();
+      if (res.status === 202 && payload.status === "queued" && payload.job_id) {
+        // Large file — the worker runs the same pipeline; poll until done.
+        saveSession({ status: "loading", filename: file.name, savedAt: Date.now(), job_id: payload.job_id });
+        setBackgroundJob(true);
+        startPolling(payload.job_id);
+        return; // loading stays true — cleared by poll when done
+      }
+      const data = normalizeResult(payload as Partial<ExtractResult>);
+      setResult(data);
+      // Cap preview_rows before saving to localStorage — full rows can be
+      // 2–10 MB for large SPIRs, exceeding the 5–10 MB quota. The download
+      // still contains all rows; 200 preview rows = 20 paginated pages.
+      saveSession({ status: "complete", filename: data.filename, savedAt: Date.now(),
+        result: { ...data, preview_rows: data.preview_rows.slice(0, 200) } });
+      window.dispatchEvent(new CustomEvent("profile-refresh"));
+      setLoading(false);
+    } catch {
+      clearSession();
+      setError("Could not reach the server. Is the backend running?");
+      setLoading(false);
     }
   }, [file, startPolling, stopPolling]);
 
@@ -604,6 +591,7 @@ export default function ExtractionPage() {
     setError(null);
     setSavedFilename("");
     setRecoveredToHistory(false);
+    setBackgroundJob(false);
   }, [stopPolling]);
 
   if (!hydrated) {
@@ -666,6 +654,18 @@ export default function ExtractionPage() {
                 Processing may take 10–30 minutes. The file will be sanitized to remove embedded
                 objects before extraction. You can navigate away — batch processing continues in
                 the background.
+              </span>
+            </div>
+          )}
+
+          {/* Background-worker notice — large file handed to a worker by the API */}
+          {loading && backgroundJob && (
+            <div className="flex items-start gap-3 rounded-xl border border-violet-200 dark:border-violet-800/60 bg-violet-50 dark:bg-violet-950/30 px-4 py-3.5 text-sm text-violet-700 dark:text-violet-300">
+              <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
+              <span>
+                <span className="font-semibold">Large file — processing in the background.</span>{" "}
+                This can take several minutes. You can navigate away; the result will be
+                waiting here and in History when it completes.
               </span>
             </div>
           )}
