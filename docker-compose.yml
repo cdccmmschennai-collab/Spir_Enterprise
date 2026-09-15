@@ -1,65 +1,274 @@
-version: "3.9"
+# SPIR Dynamic Extraction — local Docker Desktop stack (Phase 1).
+#
+#   docker compose up --build
+#
+#   Frontend : http://localhost:3000
+#   API      : http://localhost:8000   (health: /api/health, docs: /api/docs when DEBUG=true)
+#
+# Reproduces the production topology:
+#   frontend → api → db / redis ; redis → worker-normal / worker-heavy / worker-giant / beat
+# Queue routing (batch_router.py + config.py):
+#   normal  ≤ 100 MB   heavy 100–500 MB   giant > 500 MB
+#
+# Redis: the `redis` service below is the ONE SPIR Redis on this machine
+# (published on host 6379). The Docker stack uses logical DB /1; the native
+# (non-Docker) stack keeps using redis://localhost:6379/0, so neither can
+# consume the other's Celery tasks or results.
+#
+# The monitoring stack stays separate: docker-compose.monitoring.yml
+#
+# Overridable interpolation variables (set in the shell or in the repo-root .env,
+# which Compose reads automatically): POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB,
+# APP_USER, APP_PASS, SECRET_KEY, DEBUG, LOG_LEVEL, LOG_FORMAT, CLEANUP_DRY_RUN.
 
-# NOTE: A Dockerfile is required before this compose file can build images.
-# Production deployment uses systemd (deploy/spir-api.service, deploy/spir-worker.service).
-# This file is provided for containerised dev/staging use.
+name: spir
+
+x-backend-env: &backend-env
+  # Container-to-container addresses — Compose service names, never localhost.
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-spir_user}:${POSTGRES_PASSWORD:-strongpassword}@db:5432/${POSTGRES_DB:-spir_db}
+  # Logical DB /1 (native stack = /0). Every Redis consumer (Celery
+  # broker/backend, job store, RedisStorage, delivery keys) reads this one
+  # setting, so /1 isolates the whole Docker stack.
+  REDIS_URL: redis://redis:6379/1
+  CELERY_ENABLED: "true"
+  # Absolute paths inside the container (shared spir_storage volume). These match
+  # what config.py would resolve anyway; explicit so the API/worker paths can
+  # never diverge.
+  ROWS_STORAGE_PATH: /opt/spir_dynamic/storage/extracted_rows
+  BATCH_UPLOAD_DIR: /opt/spir_dynamic/storage/batch_uploads
+  # Auth bootstrap — used only until a super_admin exists in the DB.
+  APP_USER: ${APP_USER:-admin}
+  APP_PASS: ${APP_PASS:-admin123}
+  SECRET_KEY: ${SECRET_KEY:-local-docker-dev-secret-change-me}
+  # Same values as the native local .env files
+  DEBUG: ${DEBUG:-true}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_FORMAT: ${LOG_FORMAT:-text}
+  BATCH_TTL_SECONDS: "7200"
+  MAX_CONCURRENT_EXTRACTIONS: "4"
+  EXTRACTION_TIMEOUT_SECONDS: "600"
+  SANITIZER_ENABLED: "true"
+  SANITIZER_THRESHOLD_MB: "25"
+  LARGE_FILE_THRESHOLD_MB: "100"
+  GIANT_FILE_THRESHOLD_MB: "500"
+  CLEANUP_JSON_RETENTION_DAYS: "14"
+  CLEANUP_UPLOAD_STALE_HOURS: "24"
+  CLEANUP_DRY_RUN: ${CLEANUP_DRY_RUN:-true}
+
+x-backend-base: &backend-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: spir-backend
+  environment: *backend-env
+  volumes:
+    # One shared volume for the whole storage tree: the API stages uploads in
+    # storage/batch_uploads and passes the absolute path to the worker, which
+    # writes storage/extracted_rows/<file_id>.json. Avatars live here too.
+    - spir_storage:/opt/spir_dynamic/storage
+  restart: unless-stopped
 
 services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Baked into the browser bundle at build time — must be reachable from
+        # the browser, i.e. the published API port on the Windows host.
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    image: spir-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # One-shot schema bootstrap. Runs the app's own init_db.initialize() (create
+  # tables + idempotent schema sync + seed branches/admin) exactly once before
+  # the API starts. Without it, the 4 uvicorn workers race each other on
+  # create_all on a fresh database and the losers silently drop into "no-DB
+  # legacy mode". Production never hits this because the schema already exists.
+  db-init:
+    <<: *backend-base
+    restart: "no"
+    command:
+      - python
+      - -c
+      - |
+        import asyncio, sys
+        from spir_dynamic.app.config import get_settings
+        from spir_dynamic.db.init_db import initialize
+        s = get_settings()
+        ok = asyncio.run(initialize(s.database_url, s.app_user, s.app_pass))
+        print("db-init:", "ok" if ok else "FAILED")
+        sys.exit(0 if ok else 1)
+    depends_on:
+      db:
+        condition: service_healthy
+
   api:
-    build: .
+    <<: *backend-base
+    # Mirrors deploy/spir-api.service (4 uvicorn workers). --proxy-headers is
+    # omitted because there is no Nginx in front of the container locally.
+    command:
+      - uvicorn
+      - spir_dynamic.app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --workers
+      - "4"
+      - --access-log
+      - --log-level
+      - info
     ports:
       - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://spir_user:strongpassword@db:5432/spir_db
-      - REDIS_URL=redis://redis:6379/0
-      # Absolute path inside the container — safe regardless of Dockerfile WORKDIR.
-      - ROWS_STORAGE_PATH=/opt/spir_dynamic/storage/extracted_rows
     depends_on:
-      - db
-      - redis
-    volumes:
-      # Persist extracted JSON row files so combine survives container restarts.
-      - extracted_rows:/opt/spir_dynamic/storage/extracted_rows
+      # The lifespan hook falls back to "no-DB legacy mode" if Postgres is not
+      # reachable at startup, so wait for the healthchecks rather than racing.
+      db:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5).status == 200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
-  worker:
-    build: .
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://spir_user:strongpassword@db:5432/spir_db
-      - REDIS_URL=redis://redis:6379/0
-      - ROWS_STORAGE_PATH=/opt/spir_dynamic/storage/extracted_rows
+  # ── Celery workers — one per queue (normal / heavy / giant) ────────────────
+  worker-normal:
+    <<: *backend-base
+    # Same settings as deploy/spir-worker.service (concurrency=2,
+    # max-tasks-per-child=25). Also consumes the default "celery" queue: Beat's
+    # lifecycle_cleanup and the ping smoke-test task are sent without an explicit
+    # queue, so without this no worker would ever pick them up.
+    command:
+      - celery
+      - -A
+      - spir_dynamic.celery_app
+      - worker
+      - --loglevel=info
+      - -Q
+      - normal,celery
+      - --concurrency=2
+      - --max-tasks-per-child=25
+      - --hostname=spir-normal@%h
     depends_on:
-      - redis
-    volumes:
-      - extracted_rows:/opt/spir_dynamic/storage/extracted_rows
-    command: [
-      "celery", "-A", "spir_dynamic.celery_app",
-      "worker",
-      "--loglevel=info",
-      "--concurrency=2",
-      "--max-tasks-per-child=25"
-    ]
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+
+  worker-heavy:
+    <<: *backend-base
+    # 100–500 MB files. One process at a time; recycling/memory cap come from
+    # celery_app.py (worker_max_tasks_per_child=25, worker_max_memory_per_child=1 GB).
+    command:
+      - celery
+      - -A
+      - spir_dynamic.celery_app
+      - worker
+      - --loglevel=info
+      - -Q
+      - heavy
+      - --concurrency=1
+      - --hostname=spir-heavy@%h
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+
+  worker-giant:
+    <<: *backend-base
+    # > 500 MB files. config.py: "dedicated single-concurrency worker ... recycled
+    # after every task so openpyxl memory does not accumulate".
+    command:
+      - celery
+      - -A
+      - spir_dynamic.celery_app
+      - worker
+      - --loglevel=info
+      - -Q
+      - giant
+      - --concurrency=1
+      - --max-tasks-per-child=1
+      - --hostname=spir-giant@%h
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+
+  beat:
+    <<: *backend-base
+    # Schedule defined in celery_app.py (lifecycle-cleanup-daily, 02:00 UTC).
+    # The schedule state file goes to /tmp — it is derived state, not data.
+    command:
+      - celery
+      - -A
+      - spir_dynamic.celery_app
+      - beat
+      - --loglevel=info
+      - --schedule=/tmp/celerybeat-schedule
+    depends_on:
+      redis:
+        condition: service_healthy
 
   redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    # AOF persistence: Celery tasks survive Redis restart (at most 1s of data loss).
+    # Pinned to the 8.x line: the data was migrated from the former standalone
+    # `spir-redis` container (Redis 8.6), and RDB files are not backward
+    # compatible with older majors.
+    image: redis:8-alpine
+    # AOF persistence: queued tasks, batch job state and cached results survive
+    # a Redis restart.
     command: redis-server --appendonly yes --appendfsync everysec
     volumes:
       - redis_data:/data
+    ports:
+      # Same host port the standalone container used, so the native (non-Docker)
+      # stack's redis://localhost:6379/0 keeps working unchanged.
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
 
   db:
     image: postgres:15
     environment:
-      POSTGRES_USER: spir_user
-      POSTGRES_PASSWORD: strongpassword
-      POSTGRES_DB: spir_db
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER:-spir_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-strongpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-spir_db}
     volumes:
       - pg_data:/var/lib/postgresql/data
+    ports:
+      # Host 5432 = native PostgreSQL 18 service, 5433 = wms-db-1; the host side
+      # is shifted to 5434, container port stays 5432.
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-spir_user} -d ${POSTGRES_DB:-spir_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
 
 volumes:
-  extracted_rows:
+  # Survive `docker compose down` / `up`. Only `down -v` deletes them.
+  spir_storage:
   redis_data:
   pg_data:

@@ -1,0 +1,41 @@
+# Backend build context — keep only what the Python image needs.
+.git
+.gitignore
+.claude
+.pytest_cache
+__pycache__
+**/__pycache__
+*.pyc
+*.egg-info
+
+# Local virtualenvs
+venv
+venv311
+
+# Local env files — never bake secrets or localhost URLs into the image.
+# All configuration is supplied by docker-compose.yml.
+.env
+.env.*
+src/.env
+
+# Frontend has its own image and build context
+frontend
+
+# Runtime data, large inputs, outputs
+storage
+templates
+*.xlsx
+*.log
+
+# Not needed inside the container
+deploy
+monitoring
+scripts
+tests
+updated UI
+docker-compose*.yml
+Dockerfile
+lost_code.patch
+migration_extraction_history.sql
+procfile
+railway.json
