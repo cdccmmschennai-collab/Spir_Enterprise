@@ -127,6 +127,20 @@ class Settings(BaseSettings):
     # When false the existing asyncio/thread-pool fallback is used instead.
     celery_enabled: bool = False
 
+    # Object storage (MinIO / S3-compatible) — Phase 3A: connection settings
+    # only. No upload/extraction path reads these yet; an empty endpoint means
+    # "not configured" and every existing workflow keeps using the filesystem.
+    # In Docker the endpoint is the Compose service name (http://minio:9000).
+    minio_endpoint: str = ""            # env: MINIO_ENDPOINT
+    minio_access_key: str = ""          # env: MINIO_ACCESS_KEY
+    minio_secret_key: str = ""          # env: MINIO_SECRET_KEY
+    minio_bucket: str = "spir-files"    # env: MINIO_BUCKET
+    minio_secure: bool = False          # env: MINIO_SECURE (https when true)
+
+    @property
+    def minio_configured(self) -> bool:
+        return bool(self.minio_endpoint and self.minio_access_key and self.minio_secret_key)
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 

@@ -15,11 +15,20 @@
 # (non-Docker) stack keeps using redis://localhost:6379/0, so neither can
 # consume the other's Celery tasks or results.
 #
+# MinIO (Phase 3A — infrastructure only): the `minio` service is the future
+# object store for uploads / extracted rows. Nothing is migrated to it yet; the
+# API and workers only receive its connection settings. `minio-init` creates the
+# bucket idempotently (mirrors db-init) and exits 0.
+#
+#   MinIO S3 API : http://127.0.0.1:9000   (host-local only, e.g. for `mc`)
+#   MinIO console: http://127.0.0.1:9001   (host-local only)
+#
 # The monitoring stack stays separate: docker-compose.monitoring.yml
 #
 # Overridable interpolation variables (set in the shell or in the repo-root .env,
 # which Compose reads automatically): POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB,
-# APP_USER, APP_PASS, SECRET_KEY, DEBUG, LOG_LEVEL, LOG_FORMAT, CLEANUP_DRY_RUN.
+# APP_USER, APP_PASS, SECRET_KEY, DEBUG, LOG_LEVEL, LOG_FORMAT, CLEANUP_DRY_RUN,
+# MINIO_ROOT_USER, MINIO_ROOT_PASSWORD, MINIO_BUCKET.
 
 name: spir
 
@@ -54,6 +63,13 @@ x-backend-env: &backend-env
   CLEANUP_JSON_RETENTION_DAYS: "14"
   CLEANUP_UPLOAD_STALE_HOURS: "24"
   CLEANUP_DRY_RUN: ${CLEANUP_DRY_RUN:-true}
+  # Object storage (Phase 3A) — connection settings only; no code path uses
+  # them yet. Compose service name + container port, never localhost.
+  MINIO_ENDPOINT: http://minio:9000
+  MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-spir_minio}
+  MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-spir_minio_dev_password}
+  MINIO_BUCKET: ${MINIO_BUCKET:-spir-files}
+  MINIO_SECURE: "false"
 
 x-backend-base: &backend-base
   build:
@@ -267,8 +283,63 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  # ── MinIO object storage (Phase 3A — infrastructure only) ─────────────────
+  minio:
+    # Official image moved from Docker Hub to quay.io. Pinned release; `latest`
+    # resolved to this tag on 2026-09-16.
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      # Root credentials. Override in the repo-root .env (gitignored) — the
+      # defaults are development placeholders only. MinIO requires >= 8 chars.
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-spir_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-spir_minio_dev_password}
+    volumes:
+      - minio_data:/data
+    ports:
+      # Bound to localhost only — reachable from this machine for `mc` / the
+      # console, never from the LAN. Containers use http://minio:9000 over the
+      # Compose network. 9000/9001 were free on this host (9090/9100 belong to
+      # the monitoring stack).
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    healthcheck:
+      # `mc` ships inside the server image; `mc ready local` is MinIO's
+      # documented readiness probe.
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  # One-shot bucket bootstrap (same pattern as db-init). `mc mb --ignore-existing`
+  # is idempotent: re-running on every `up` is a no-op once the bucket exists,
+  # and it never deletes or recreates anything. Exited (0) is the expected state.
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+    restart: "no"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-spir_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-spir_minio_dev_password}
+      MINIO_BUCKET: ${MINIO_BUCKET:-spir-files}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        mc alias set spir http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing "spir/$$MINIO_BUCKET"
+        # The mc image is ubi-micro (no grep/curl); `mc ls` on a missing
+        # bucket exits non-zero, which is the verification we need.
+        mc ls "spir/$$MINIO_BUCKET" > /dev/null
+        echo "minio-init: bucket '$$MINIO_BUCKET' ready"
+    depends_on:
+      minio:
+        condition: service_healthy
+
 volumes:
   # Survive `docker compose down` / `up`. Only `down -v` deletes them.
   spir_storage:
   redis_data:
   pg_data:
+  minio_data:
