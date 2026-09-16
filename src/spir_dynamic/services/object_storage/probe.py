@@ -7,8 +7,9 @@ MinIO service is reachable over the Docker network, so the wiring
 (Compose env -> Settings -> network) can be verified before any workflow is
 migrated. Nothing in the API, workers or Beat imports this at startup.
 
-The full storage abstraction (client library, put/get, migration of
-batch_uploads / extracted_rows) is a separate phase.
+The storage abstraction itself (Phase 3B) lives next to this module:
+base.py (contract), local.py, minio.py and factory.py. Migration of the
+batch_uploads / extracted_rows workflows onto it is a later phase.
 """
 from __future__ import annotations
 

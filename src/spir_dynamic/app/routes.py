@@ -39,6 +39,12 @@ from spir_dynamic.extraction.file_validator import ValidationError
 from spir_dynamic.services.cleanup import safe_delete
 from spir_dynamic.services.currency_service import conversion_summary
 from spir_dynamic.services.job_store import FileResult, get_job_store
+from spir_dynamic.services.object_storage import (
+    InvalidObjectKey,
+    ObjectNotFound,
+    StorageArea,
+    get_object_storage,
+)
 
 log = structlog.stdlib.get_logger(__name__)
 
@@ -396,12 +402,11 @@ async def health() -> dict:
         "db_mode": "enabled" if is_db_enabled() else "legacy",
     }
 
-    # Verify the extraction storage directory is writable.
+    # Verify the extracted-rows storage is writable (filesystem: touch/unlink a
+    # probe file in rows_storage_path — same check as before Phase 3B).
+    out["storage_backend"] = cfg.storage_backend
     try:
-        rows_dir = Path(cfg.rows_storage_path)
-        probe = rows_dir / ".health_probe"
-        probe.touch()
-        probe.unlink(missing_ok=True)
+        get_object_storage(StorageArea.EXTRACTED_ROWS).ping()
         out["extraction_dir"] = "ok"
     except Exception as exc:
         out["extraction_dir"] = "error"
@@ -467,9 +472,12 @@ async def me(
     }
 
 
-_AVATAR_DIR = Path("storage/avatars")
+# Avatars go through the storage abstraction (Phase 3B). With the default
+# filesystem backend the object key "<user_id>.<ext>" lands in
+# cfg.avatar_dir ("storage/avatars", CWD-relative) — the same files as before.
 _ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 _MIME_TO_EXT = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}
+_AVATAR_EXTS = ("jpg", "png", "webp", "gif")
 
 
 @router.post("/avatar")
@@ -491,14 +499,13 @@ async def upload_avatar(
         raise HTTPException(status_code=401, detail="Authentication required")
 
     ext = _MIME_TO_EXT[content_type]
-    _AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+    storage = get_object_storage(StorageArea.AVATARS)
 
     # Remove old avatar files for this user before writing the new one
-    for old in _AVATAR_DIR.glob(f"{td.user_id}.*"):
-        old.unlink(missing_ok=True)
+    for old in list(storage.list_objects(prefix=f"{td.user_id}.")):
+        storage.delete(old.key)
 
-    avatar_path = _AVATAR_DIR / f"{td.user_id}.{ext}"
-    avatar_path.write_bytes(content)
+    storage.put_bytes(f"{td.user_id}.{ext}", content, content_type=content_type)
 
     import time as _time
     versioned_url = f"/api/avatar/{td.user_id}?v={int(_time.time())}"
@@ -523,8 +530,9 @@ async def delete_avatar(
     if not td.user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    for ext in ("jpg", "png", "webp", "gif"):
-        (_AVATAR_DIR / f"{td.user_id}.{ext}").unlink(missing_ok=True)
+    storage = get_object_storage(StorageArea.AVATARS)
+    for ext in _AVATAR_EXTS:
+        storage.delete(f"{td.user_id}.{ext}")
 
     if is_db_enabled() and db is not None:
         from spir_dynamic.db.models import User
@@ -541,15 +549,19 @@ async def delete_avatar(
 async def get_avatar(user_id: str):
     """Serve a user's avatar image (public — no auth required)."""
     import mimetypes
-    for ext in ("jpg", "png", "webp", "gif"):
-        path = _AVATAR_DIR / f"{user_id}.{ext}"
-        if path.exists():
-            mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
-            return StreamingResponse(
-                open(path, "rb"),  # noqa: WPS515
-                media_type=mime,
-                headers={"Cache-Control": "public, max-age=86400"},
-            )
+    storage = get_object_storage(StorageArea.AVATARS)
+    for ext in _AVATAR_EXTS:
+        key = f"{user_id}.{ext}"
+        try:
+            stream = storage.open_read(key)
+        except (ObjectNotFound, InvalidObjectKey):
+            continue
+        mime = mimetypes.guess_type(key)[0] or "image/jpeg"
+        return StreamingResponse(
+            stream,
+            media_type=mime,
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
     raise HTTPException(status_code=404, detail="Avatar not found")
 
 

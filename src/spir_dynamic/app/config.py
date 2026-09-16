@@ -141,6 +141,27 @@ class Settings(BaseSettings):
     def minio_configured(self) -> bool:
         return bool(self.minio_endpoint and self.minio_access_key and self.minio_secret_key)
 
+    # Storage backend (Phase 3B) — which ObjectStorage implementation the
+    # factory hands to application code: "filesystem" (current behaviour, the
+    # default) or "minio" (requires the MINIO_* settings above). No workflow
+    # is switched by this setting yet; it only selects the implementation
+    # behind spir_dynamic.services.object_storage.
+    storage_backend: str = "filesystem"   # env: STORAGE_BACKEND
+
+    @field_validator("storage_backend", mode="after")
+    @classmethod
+    def _validate_storage_backend(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        if v not in ("filesystem", "minio"):
+            raise ValueError("STORAGE_BACKEND must be 'filesystem' or 'minio'")
+        return v
+
+    # Avatar image directory. Deliberately NOT anchored to _PROJECT_ROOT: the
+    # avatar endpoints have always used the CWD-relative "storage/avatars"
+    # (Docker/production run from the project root), and Phase 3B keeps that
+    # physical layout unchanged. Override with an absolute AVATAR_DIR if needed.
+    avatar_dir: str = "storage/avatars"   # env: AVATAR_DIR
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
