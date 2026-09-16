@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import shutil
 import tempfile
 import time
 import uuid
@@ -28,7 +27,6 @@ from spir_dynamic.app.auth import get_current_user, TokenData, SUPER_ADMIN
 from spir_dynamic.app.batch_router import (
     _dispatch_celery,
     _persist_job_to_db,
-    batch_upload_path,
     route_queue,
 )
 from spir_dynamic.app.pipeline import run_pipeline, retrieve_result
@@ -36,14 +34,19 @@ from spir_dynamic.app.config import get_settings
 from spir_dynamic.db.database import get_db, is_db_enabled
 from spir_dynamic.db.models import ExtractionHistory
 from spir_dynamic.extraction.file_validator import ValidationError
-from spir_dynamic.services.cleanup import safe_delete
 from spir_dynamic.services.currency_service import conversion_summary
 from spir_dynamic.services.job_store import FileResult, get_job_store
 from spir_dynamic.services.object_storage import (
     InvalidObjectKey,
     ObjectNotFound,
     StorageArea,
+    area_backend,
     get_object_storage,
+)
+from spir_dynamic.services.source_objects import (
+    discard_source_object,
+    source_object_key,
+    store_source_upload,
 )
 
 log = structlog.stdlib.get_logger(__name__)
@@ -205,8 +208,8 @@ async def extract(
                     status_code=503,
                     detail=f"Could not queue extraction: {exc}",
                 )
-            # The upload now lives in batch_upload_dir and belongs to the
-            # worker, which deletes it after extraction — nothing to clean here.
+            # The upload is now a source object owned by the worker, which
+            # deletes it after extraction; the temp file is already gone.
             tmp_path = None
             log.info(
                 "extraction.event",
@@ -405,6 +408,9 @@ async def health() -> dict:
     # Verify the extracted-rows storage is writable (filesystem: touch/unlink a
     # probe file in rows_storage_path — same check as before Phase 3B).
     out["storage_backend"] = cfg.storage_backend
+    # Effective backend of the source-upload area (Phase 3C) — reported only;
+    # it is not probed here so a MinIO outage never takes /health down.
+    out["upload_storage_backend"] = area_backend(StorageArea.BATCH_UPLOADS, cfg)
     try:
         get_object_storage(StorageArea.EXTRACTED_ROWS).ping()
         out["extraction_dir"] = "ok"
@@ -577,39 +583,38 @@ async def _enqueue_single_file(
     """
     Hand a large single-file upload to the batch worker infrastructure.
 
-    Creates a one-file batch job (same job store the batch page uses), moves
-    the streamed upload from the API temp dir into the shared batch_upload_dir
-    under the batch naming convention, and enqueues it via _dispatch_celery so
-    queue selection (heavy / giant) stays with the batch router. The worker
-    then runs the same run_pipeline, writes rows/history, and deletes the
-    upload — exactly as for a batch file. The frontend polls
-    GET /api/batch/{job_id}/result, which mirrors the sync /api/extract payload.
+    Creates a one-file batch job (same job store the batch page uses), stores
+    the streamed upload as the job's source object under the batch key
+    convention (services/source_objects.py — the shared batch_uploads
+    directory, or MinIO when UPLOAD_STORAGE_BACKEND=minio), and enqueues it
+    via _dispatch_celery so queue selection (heavy / giant) stays with the
+    batch router. The worker then runs the same run_pipeline, writes
+    rows/history, and deletes the source object — exactly as for a batch
+    file. The frontend polls GET /api/batch/{job_id}/result, which mirrors
+    the sync /api/extract payload.
 
-    Returns (job_id, queue). On failure the moved file is removed and the job
-    slot is marked error so a poll never stalls on "pending"; the caller keeps
-    ownership of tmp_path if the move itself failed.
+    Returns (job_id, queue). On failure the stored object is removed and the
+    job slot is marked error so a poll never stalls on "pending". The temp
+    file is consumed either way (store_source_upload removes it).
     """
     job_id = str(uuid.uuid4())
     user_id = td.user_id or ""
-    upload_dir = Path(cfg.batch_upload_dir)
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    disk_path = batch_upload_path(upload_dir, job_id, 0, filename)
+    source_key = source_object_key(job_id, 0, filename)
 
-    # Cross-filesystem in Docker (container /tmp → shared volume), so this is a
-    # copy+unlink of the whole file — keep it off the event loop.
+    # Whole-file copy / PUT — keep it off the event loop.
     loop = asyncio.get_event_loop()
     try:
-        await loop.run_in_executor(None, shutil.move, str(tmp_path), str(disk_path))
+        await loop.run_in_executor(None, store_source_upload, tmp_path, source_key)
     except Exception:
-        safe_delete(disk_path, log_context=f"move-failed job={job_id}")  # partial copy, if any
+        discard_source_object(source_key, log_context=f"store-failed job={job_id}")  # partial object, if any
         raise
 
     job_store = get_job_store()
     try:
         job_store.create(job_id, [filename], user_id=user_id)
-        queues = _dispatch_celery(job_id, [(disk_path, filename, size_bytes)], cfg, user_id)
+        queues = _dispatch_celery(job_id, [(source_key, filename, size_bytes)], cfg, user_id)
     except Exception as exc:
-        safe_delete(disk_path, log_context=f"enqueue-failed job={job_id}")
+        discard_source_object(source_key, log_context=f"enqueue-failed job={job_id}")
         # No-op if create() itself failed (store logs "job.not_found").
         job_store.update_result(
             job_id, 0,

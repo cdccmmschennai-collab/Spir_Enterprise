@@ -6,10 +6,14 @@ different users (and different files of the same user) without shared state.
 
 State flow:  pending → running → ok | error
 
-Input files are saved to disk by the API process (storage/batch_uploads/)
-before enqueue. The worker reads directly from disk — no bytes copy in RAM —
-and deletes the upload file after extraction completes (or exhausts retries).
-Orphaned upload files (from crashed workers) are swept on startup.
+The API stores each upload as a *source object* in the BATCH_UPLOADS storage
+area before enqueue and passes the object key (see services/source_objects.py).
+The worker materialises it as a local file — in place on the filesystem
+backend, via a temp download in the scratch dir on MinIO — runs the existing
+sanitizer + pipeline on that path, and deletes the source object after
+extraction completes (or once a failure is final). The temp download is
+removed after every attempt; the source object survives retries. Stale
+scratch files left by a crashed worker process are swept when a process starts.
 """
 from __future__ import annotations
 
@@ -18,6 +22,7 @@ from pathlib import Path
 
 import structlog
 from celery.exceptions import MaxRetriesExceededError, SoftTimeLimitExceeded
+from celery.signals import worker_process_init
 
 from spir_dynamic.celery_app import celery_app
 from spir_dynamic.tasks.base import BaseTask
@@ -29,6 +34,19 @@ from spir_dynamic.monitoring.metrics import (
 )
 
 log = structlog.stdlib.get_logger(__name__)
+
+
+@worker_process_init.connect
+def _sweep_worker_scratch(**_kwargs) -> None:
+    """A fresh worker process removes stale scratch files a crashed predecessor left behind."""
+    from spir_dynamic.app.config import get_settings
+    from spir_dynamic.services.source_objects import scratch_dir, sweep_stale_scratch
+    try:
+        removed = sweep_stale_scratch(scratch_dir(get_settings().worker_scratch_dir))
+        if removed:
+            log.info("worker.scratch_sweep", removed=removed)
+    except Exception as exc:   # never block worker start-up on housekeeping
+        log.warning("worker.scratch_sweep_failed", exc_message=str(exc))
 
 
 @celery_app.task(
@@ -43,7 +61,7 @@ def process_file_task(
     self,
     job_id: str,
     file_idx: int,
-    upload_path: str,
+    source_key: str,
     filename: str,
     user_id: str = "",
 ) -> dict:
@@ -53,7 +71,8 @@ def process_file_task(
     Args:
         job_id:      Batch job identifier — shared across all files in the batch.
         file_idx:    Position of this file in the batch (0-based).
-        upload_path: Absolute path to the file on disk (streamed there by the API).
+        source_key:  Key of the source object in the BATCH_UPLOADS storage area
+                     (stored there by the API). Never a host filesystem path.
         filename:    Original upload filename (used for pipeline and error reporting).
 
     Returns:
@@ -63,6 +82,12 @@ def process_file_task(
     from spir_dynamic.app.config import get_settings as _get_settings
     from spir_dynamic.services.cleanup import safe_delete
     from spir_dynamic.services.job_store import FileResult, get_job_store
+    from spir_dynamic.services.object_storage import ObjectNotFound
+    from spir_dynamic.services.source_objects import (
+        discard_source_object,
+        scratch_dir,
+        staged_source,
+    )
 
     # Bind task context to structlog so every log line in this task carries
     # job_id, file_idx, filename, and task_id without manual repetition.
@@ -74,9 +99,9 @@ def process_file_task(
         filename=filename,
         task_id=self.request.id,
         user_id=user_id or "",
+        source_key=source_key,
     )
 
-    _upload_path = Path(upload_path)
     _log_ctx = f"batch job={job_id} idx={file_idx}"
     _t0 = time.perf_counter()
     _cfg = _get_settings()
@@ -87,13 +112,13 @@ def process_file_task(
     # self.retry() increments self.request.retries (capped at max_retries=3).
     # reject_on_worker_lost re-delivers at broker level and does NOT increment
     # self.request.retries, so a worker OOM-killed by openpyxl memory usage
-    # can loop forever.  A Redis counter keyed to the upload filename caps the
+    # can loop forever.  A Redis counter keyed to the source object key caps the
     # total number of times this file is ever attempted across all delivery paths.
     _DELIVERY_CAP = 5  # 3 explicit retries + 2 broker-level OOM re-deliveries
     try:
         import redis as _redis
         _r = _redis.from_url(_cfg.redis_url, socket_timeout=2, socket_connect_timeout=2)
-        _dlv_key = f"spir:dlv:{_upload_path.name}"
+        _dlv_key = f"spir:dlv:{source_key}"
         _dlv_count = int(_r.incr(_dlv_key) or 1)
         _r.expire(_dlv_key, 86400)  # auto-expire after 24h regardless of outcome
     except Exception as _dlv_exc:
@@ -112,11 +137,11 @@ def process_file_task(
         )
         log.error(
             "extraction.delivery_cap",
-            path=upload_path,
+            source_key=source_key,
             deliveries=_dlv_count,
             cap=_DELIVERY_CAP,
         )
-        safe_delete(_upload_path, log_context=f"delivery-cap {_log_ctx}")
+        discard_source_object(source_key, log_context=f"delivery-cap {_log_ctx}")
         store.update_result(
             job_id, file_idx,
             FileResult(filename=filename, status="error", error=_error_msg),
@@ -133,13 +158,8 @@ def process_file_task(
     # Mark this slot as running so the status endpoint shows progress
     store.update_result(job_id, file_idx, FileResult(filename=filename, status="running"))
 
-    try:
-        if not _upload_path.exists():
-            raise RuntimeError(
-                f"Upload file not found on disk: {upload_path} — "
-                "it may have been removed by a prior attempt or a system restart"
-            )
-
+    def _extract_from_local(_upload_path: Path) -> dict:
+        """The pre-3C worker body: sanitize + run_pipeline on a local file."""
         # ── Sanitize: strip embedded bulk assets before openpyxl opens file ──
         # Runs only for XLSX/XLSM files above SANITIZER_THRESHOLD_MB.
         # On any failure the sanitizer returns a fallback result and extraction
@@ -169,17 +189,40 @@ def process_file_task(
         # run_pipeline opens the workbook directly from the Path — no bytes copy.
         # The inner try/finally guarantees the sanitized temp file is deleted
         # after extraction regardless of success or failure, while the outer
-        # except block preserves the original upload for retry attempts.
+        # except block preserves the source object for retry attempts.
         try:
-            result = run_pipeline(_effective_path, filename)
+            return run_pipeline(_effective_path, filename)
         finally:
             # Always clean up the sanitized copy; original upload is untouched.
             if _san.sanitized_path is not None:
                 safe_delete(_san.sanitized_path, log_context=f"san-cleanup {_log_ctx}")
 
-        # Extraction done — the upload file is no longer needed.
-        safe_delete(_upload_path, log_context=_log_ctx)
-        log.debug("upload.deleted", path=str(_upload_path))
+    try:
+        # staged_source yields the object's own file on the filesystem backend
+        # or a temp download in the scratch dir otherwise; the temp file is
+        # removed when the block exits, whatever happens inside it.
+        try:
+            with staged_source(
+                source_key,
+                scratch=scratch_dir(_cfg.worker_scratch_dir),
+                log_context=_log_ctx,
+            ) as _local_path:
+                result = _extract_from_local(_local_path)
+        except ObjectNotFound:
+            # Nothing to retry against: the object was removed by a prior
+            # attempt, a cleanup run, or never stored. Fail the slot now.
+            _error_msg = (
+                f"Source upload not found in storage ({source_key}) — it may have "
+                "been removed by a prior attempt, a cleanup run or a system restart"
+            )
+            log.error("extraction.source_missing", status="error")
+            store.update_result(job_id, file_idx, FileResult(
+                filename=filename, status="error", error=_error_msg,
+            ))
+            return {"status": "error", "job_id": job_id, "file_idx": file_idx, "error": _error_msg}
+
+        # Extraction done — the source object is no longer needed.
+        discard_source_object(source_key, log_context=_log_ctx)
 
         store.update_result(job_id, file_idx, FileResult(
             filename=filename,
@@ -278,8 +321,8 @@ def process_file_task(
         }
 
     except SoftTimeLimitExceeded:
-        # Soft time limit fired — not retryable; clean up the upload file.
-        safe_delete(_upload_path, log_context=f"timeout {_log_ctx}")
+        # Soft time limit fired — not retryable; drop the source object.
+        discard_source_object(source_key, log_context=f"timeout {_log_ctx}")
         log.error(
             "extraction.timeout",
             status="timeout",
@@ -309,11 +352,12 @@ def process_file_task(
             countdown_s=backoff,
         )
         try:
-            # Upload file stays on disk — next retry needs it.
+            # Source object stays in storage — next retry downloads it again
+            # (a StorageUnavailable download failure lands here too).
             raise self.retry(exc=exc, countdown=backoff)
         except MaxRetriesExceededError:
-            # Final failure — no more retries; clean up the upload file.
-            safe_delete(_upload_path, log_context=f"max-retries {_log_ctx}")
+            # Final failure — no more retries; drop the source object.
+            discard_source_object(source_key, log_context=f"max-retries {_log_ctx}")
             log.exception(
                 "extraction.failed",
                 status="error",

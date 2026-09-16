@@ -12,7 +12,9 @@ kept as-is on the filesystem and mirrored as a key prefix on MinIO:
     AVATARS          avatar_dir                     avatars/
 
 Settings.storage_backend picks the implementation ("filesystem" is the
-default and the only backend the application workflow uses in this phase).
+default). Phase 3C adds one per-area override: Settings.upload_storage_backend
+selects the backend for BATCH_UPLOADS alone (the source workbooks handed to the
+Celery workers), so MinIO can hold those while the other areas stay on disk.
 """
 from __future__ import annotations
 
@@ -50,16 +52,24 @@ def local_root(area: StorageArea, settings: Settings) -> str:
     raise StorageConfigError(f"unknown storage area: {area!r}")   # pragma: no cover
 
 
+def area_backend(area: StorageArea, settings: Settings) -> str:
+    """Backend name for `area`: the global setting, unless the area has an explicit override."""
+    if area is StorageArea.BATCH_UPLOADS and settings.upload_storage_backend:
+        return settings.upload_storage_backend
+    return settings.storage_backend
+
+
 def build_object_storage(area: StorageArea, settings: Settings | None = None) -> ObjectStorage:
     """Construct a fresh backend for `area` from settings (no caching)."""
     cfg = settings or get_settings()
-    backend = cfg.storage_backend
+    backend = area_backend(area, cfg)
     if backend == BACKEND_FILESYSTEM:
         return LocalFilesystemStorage(local_root(area, cfg))
     if backend == BACKEND_MINIO:
         return MinioObjectStorage.from_settings(cfg, prefix=f"{area.value}/")
     raise StorageConfigError(
-        f"unsupported STORAGE_BACKEND={backend!r}; expected one of {SUPPORTED_BACKENDS}"
+        f"unsupported storage backend {backend!r} for area {area.value!r}; "
+        f"expected one of {SUPPORTED_BACKENDS}"
     )
 
 

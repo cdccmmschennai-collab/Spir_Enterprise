@@ -23,10 +23,12 @@ from spir_dynamic.app.batch_router import (
     _GIANT_SOFT_LIMIT,
     _HEAVY_HARD_LIMIT,
     _HEAVY_SOFT_LIMIT,
+    DispatchError,
     _dispatch_celery,
-    batch_upload_path,
     route_queue,
 )
+from spir_dynamic.services.object_storage import LocalFilesystemStorage
+from spir_dynamic.services.source_objects import source_object_key
 
 MB = 1024 * 1024
 _CFG = SimpleNamespace(large_file_threshold_mb=100, giant_file_threshold_mb=500)
@@ -79,9 +81,9 @@ class TestDispatchCelery:
     def test_each_file_goes_to_its_queue(self):
         task = MagicMock()
         files = [
-            (Path("/u/a.xlsx"), "a.xlsx", 5 * MB),
-            (Path("/u/b.xlsm"), "b.xlsm", 223 * MB),
-            (Path("/u/c.xlsm"), "c.xlsm", 700 * MB),
+            ("job-1_000_a.xlsx", "a.xlsx", 5 * MB),
+            ("job-1_001_b.xlsm", "b.xlsm", 223 * MB),
+            ("job-1_002_c.xlsm", "c.xlsm", 700 * MB),
         ]
         with patch("spir_dynamic.tasks.extraction_tasks.process_file_task", task), \
              patch("spir_dynamic.monitoring.metrics.GIANT_FILES_ROUTED") as giant_metric:
@@ -90,8 +92,8 @@ class TestDispatchCelery:
         assert queues == ["normal", "heavy", "giant"]
         sent = [c.kwargs["queue"] for c in task.apply_async.call_args_list]
         assert sent == ["normal", "heavy", "giant"]
-        # args carry job_id, idx, path, filename, user_id — unchanged contract
-        assert task.apply_async.call_args_list[1].kwargs["args"] == ["job-1", 1, "/u/b.xlsm", "b.xlsm", "u1"]
+        # args carry job_id, idx, source object key, filename, user_id
+        assert task.apply_async.call_args_list[1].kwargs["args"] == ["job-1", 1, "job-1_001_b.xlsm", "b.xlsm", "u1"]
         assert task.apply_async.call_args_list[1].kwargs["soft_time_limit"] == _HEAVY_SOFT_LIMIT
         giant_metric.inc.assert_called_once()
 
@@ -99,14 +101,24 @@ class TestDispatchCelery:
         task = MagicMock()
         with patch("spir_dynamic.tasks.extraction_tasks.process_file_task", task), \
              patch("spir_dynamic.monitoring.metrics.GIANT_FILES_ROUTED"):
-            _dispatch_celery("job-2", [(Path("/u/x.xlsx"), "x.xlsx", 1)], _CFG, idx_offset=3)
+            _dispatch_celery("job-2", [("job-2_003_x.xlsx", "x.xlsx", 1)], _CFG, idx_offset=3)
         assert task.apply_async.call_args.kwargs["args"][1] == 3
 
+    def test_broker_failure_reports_failing_slot(self):
+        task = MagicMock()
+        task.apply_async.side_effect = [None, RuntimeError("broker down")]
+        files = [("j_000_a.xlsx", "a.xlsx", 1), ("j_001_b.xlsx", "b.xlsx", 1), ("j_002_c.xlsx", "c.xlsx", 1)]
+        with patch("spir_dynamic.tasks.extraction_tasks.process_file_task", task), \
+             patch("spir_dynamic.monitoring.metrics.GIANT_FILES_ROUTED"), \
+             pytest.raises(DispatchError) as exc_info:
+            _dispatch_celery("j", files, _CFG)
+        assert exc_info.value.file_idx == 1              # first file was queued, second failed
+        assert "broker down" in str(exc_info.value)
+        assert task.apply_async.call_count == 2          # nothing after the failure is sent
 
-def test_batch_upload_path_naming():
-    p = batch_upload_path(Path("/uploads"), "abc", 0, "../we ird/name:1.xlsm")
-    assert p.parent == Path("/uploads")
-    assert p.name == "abc_000_name_1.xlsm"
+
+def test_source_object_key_naming():
+    assert source_object_key("abc", 0, "../we ird/name:1.xlsm") == "abc_000_name_1.xlsm"
 
 
 # ── /api/extract: sync for 'normal', async hand-off for 'heavy' / 'giant' ────
@@ -127,10 +139,13 @@ def api(tmp_path):
         "giant_file_threshold_mb": 500,
     })
     app.dependency_overrides[get_current_user] = lambda: TokenData("tester", "user-1", "jti-1")
-    try:
-        yield SimpleNamespace(client=TestClient(app), cfg=base_cfg, tmp=tmp_path)
-    finally:
-        app.dependency_overrides.clear()
+    # Source objects land in the isolated uploads dir (filesystem backend).
+    with patch("spir_dynamic.services.source_objects.get_source_storage",
+               return_value=LocalFilesystemStorage(tmp_path / "uploads")):
+        try:
+            yield SimpleNamespace(client=TestClient(app), cfg=base_cfg, tmp=tmp_path)
+        finally:
+            app.dependency_overrides.clear()
 
 
 _FAKE_RESULT = {
@@ -182,14 +197,16 @@ class TestExtractEndpointRouting:
         pipeline.assert_not_called()                  # FastAPI did NOT extract
         store.create.assert_called_once_with(job_id, ["big.xlsm"], user_id="user-1")
 
-        # Enqueued through the batch router with the file now in batch_upload_dir
+        # Enqueued through the batch router with the file now a source object
+        # in the BATCH_UPLOADS area (here: the isolated uploads dir)
         dispatch.assert_called_once()
         _job, file_data, _cfg, user_id = dispatch.call_args.args
         assert _job == job_id and user_id == "user-1"
-        (disk_path, filename, size_bytes), = file_data
+        (source_key, filename, size_bytes), = file_data
         assert filename == "big.xlsm" and size_bytes == 10
-        assert disk_path == batch_upload_path(api.tmp / "uploads", job_id, 0, "big.xlsm")
-        assert disk_path.exists() and disk_path.read_bytes() == b"x" * 10
+        assert source_key == source_object_key(job_id, 0, "big.xlsm")
+        stored = api.tmp / "uploads" / source_key
+        assert stored.exists() and stored.read_bytes() == b"x" * 10
 
     def test_giant_file_is_queued_to_giant(self, api):
         cfg = api.cfg.model_copy(update={

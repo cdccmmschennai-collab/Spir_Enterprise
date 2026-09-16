@@ -156,6 +156,29 @@ class Settings(BaseSettings):
             raise ValueError("STORAGE_BACKEND must be 'filesystem' or 'minio'")
         return v
 
+    # Source-upload backend (Phase 3C) — overrides storage_backend for the
+    # BATCH_UPLOADS area only, i.e. the uploaded SPIR workbooks that the API
+    # hands to the Celery workers (large single files and every batch file).
+    # "" (default) inherits STORAGE_BACKEND, so nothing changes unless this is
+    # set explicitly; "minio" makes MinIO the durable home of those source
+    # objects while extracted rows and avatars stay wherever STORAGE_BACKEND
+    # puts them. Workers download the object to a temporary file for openpyxl.
+    upload_storage_backend: str = ""   # env: UPLOAD_STORAGE_BACKEND
+
+    @field_validator("upload_storage_backend", mode="after")
+    @classmethod
+    def _validate_upload_storage_backend(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        if v not in ("", "filesystem", "minio"):
+            raise ValueError("UPLOAD_STORAGE_BACKEND must be '', 'filesystem' or 'minio'")
+        return v
+
+    # Where a worker materialises a source object it has to download before
+    # extraction (Phase 3C). Must be a local disk the worker can write; the
+    # sanitizer writes its stripped copy next to it. Empty = the system temp
+    # directory. Never a durable storage area.
+    worker_scratch_dir: str = ""   # env: WORKER_SCRATCH_DIR
+
     # Avatar image directory. Deliberately NOT anchored to _PROJECT_ROOT: the
     # avatar endpoints have always used the CWD-relative "storage/avatars"
     # (Docker/production run from the project root), and Phase 3B keeps that

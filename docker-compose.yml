@@ -15,9 +15,9 @@
 # (non-Docker) stack keeps using redis://localhost:6379/0, so neither can
 # consume the other's Celery tasks or results.
 #
-# MinIO (Phase 3A — infrastructure only): the `minio` service is the future
-# object store for uploads / extracted rows. Nothing is migrated to it yet; the
-# API and workers only receive its connection settings. `minio-init` creates the
+# MinIO (Phase 3A infra, Phase 3C workflow): the `minio` service holds the
+# source workbooks the API hands to the Celery workers (UPLOAD_STORAGE_BACKEND
+# below). Extracted rows / avatars are not migrated. `minio-init` creates the
 # bucket idempotently (mirrors db-init) and exits 0.
 #
 #   MinIO S3 API : http://127.0.0.1:9000   (host-local only, e.g. for `mc`)
@@ -63,13 +63,19 @@ x-backend-env: &backend-env
   CLEANUP_JSON_RETENTION_DAYS: "14"
   CLEANUP_UPLOAD_STALE_HOURS: "24"
   CLEANUP_DRY_RUN: ${CLEANUP_DRY_RUN:-true}
-  # Object storage (Phase 3A) — connection settings only; no code path uses
-  # them yet. Compose service name + container port, never localhost.
+  # Object storage (Phase 3A) — connection settings. Compose service name +
+  # container port, never localhost.
   MINIO_ENDPOINT: http://minio:9000
   MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-spir_minio}
   MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-spir_minio_dev_password}
   MINIO_BUCKET: ${MINIO_BUCKET:-spir-files}
   MINIO_SECURE: "false"
+  # Phase 3C: the uploads handed to the Celery workers (large single files,
+  # every batch file) are stored in MinIO under batch_uploads/<key>; workers
+  # download them to a temp file for openpyxl. Extracted rows and avatars stay
+  # on the spir_storage volume (STORAGE_BACKEND is still filesystem). Set to
+  # "filesystem" to fall back to the shared batch_uploads directory.
+  UPLOAD_STORAGE_BACKEND: ${UPLOAD_STORAGE_BACKEND:-minio}
 
 x-backend-base: &backend-base
   build:
@@ -78,9 +84,10 @@ x-backend-base: &backend-base
   image: spir-backend
   environment: *backend-env
   volumes:
-    # One shared volume for the whole storage tree: the API stages uploads in
-    # storage/batch_uploads and passes the absolute path to the worker, which
-    # writes storage/extracted_rows/<file_id>.json. Avatars live here too.
+    # One shared volume for the whole storage tree: the worker writes
+    # storage/extracted_rows/<file_id>.json, avatars live here, and
+    # storage/batch_uploads is the upload staging area whenever
+    # UPLOAD_STORAGE_BACKEND=filesystem (with minio it stays empty).
     - spir_storage:/opt/spir_dynamic/storage
   restart: unless-stopped
 

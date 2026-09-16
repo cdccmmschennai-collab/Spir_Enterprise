@@ -3,20 +3,23 @@ Batch extraction API — accept multiple files, process via Celery queue, combin
 
 Upload flow (safe for large files):
   POST /api/batch/extract
-    ├─ Stream each file to storage/batch_uploads/ (never loads all bytes into RAM)
+    ├─ Stream each file to a temp file (never loads all bytes into RAM), then
+    │  store it as a source object in the BATCH_UPLOADS storage area
+    │  (storage/batch_uploads/ on the filesystem backend, MinIO when
+    │  UPLOAD_STORAGE_BACKEND=minio — see services/source_objects.py)
     ├─ Enqueue one Celery task per file — small files → 'normal' queue,
     │  large files → 'heavy' queue (dedicated worker, higher time limits)
     └─ Return job_id immediately; frontend polls GET /api/batch/{job_id}
 
 Workers pick up tasks from their respective queues, process one file at a time
-per worker process, and delete the upload file when done.
+per worker process, and delete the source object when done.
 """
 from __future__ import annotations
 
 import asyncio
 import io
 import json
-import re
+import tempfile
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -30,8 +33,14 @@ from pydantic import BaseModel
 from spir_dynamic.app.auth import get_current_user, TokenData, SUPER_ADMIN
 from spir_dynamic.app.config import get_settings
 from spir_dynamic.app.pipeline import run_pipeline
-from spir_dynamic.services.cleanup import safe_delete
 from spir_dynamic.services.job_store import FileResult, get_job_store
+from spir_dynamic.services.object_storage import StorageError
+from spir_dynamic.services.source_objects import (
+    discard_source_object,
+    source_object_key,
+    staged_source,
+    store_source_upload,
+)
 from spir_dynamic.services.storage import get_storage
 from spir_dynamic.services.zip_builder import build_zip
 
@@ -74,37 +83,47 @@ async def batch_extract(
     # Enrich all subsequent log lines for this request with batch context.
     structlog.contextvars.bind_contextvars(job_id=job_id, user_id=user_id, file_count=len(files))
 
-    # Stream all uploads to disk before enqueuing tasks.
+    # Store all uploads before enqueuing tasks.
     # This is done sequentially — one file at a time — so RAM usage stays flat
     # regardless of how many files are in the batch.
-    upload_dir = Path(cfg.batch_upload_dir)
-    upload_dir.mkdir(parents=True, exist_ok=True)
-
-    file_data: list[tuple[Path, str, int]] = []  # (disk_path, original_name, size_bytes)
+    file_data: list[tuple[str, str, int]] = []  # (source_key, original_name, size_bytes)
     try:
         for idx, (f, name) in enumerate(zip(files, filenames)):
-            disk_path, size_bytes = await _stream_batch_upload(
-                f, name, upload_dir, job_id, idx, cfg.max_file_size_mb
+            source_key, size_bytes = await _stream_batch_upload(
+                f, name, job_id, idx, cfg.max_file_size_mb
             )
-            file_data.append((disk_path, name, size_bytes))
+            file_data.append((source_key, name, size_bytes))
             log.info(
                 "batch.upload_saved",
                 job_id=job_id,
                 file_idx=idx,
                 filename=name,
                 size_mb=round(size_bytes / (1024 * 1024), 1),
-                path=str(disk_path),
+                source_key=source_key,
             )
     except HTTPException:
-        # Clean up any files already saved if one upload fails
-        for p, _, _ in file_data:
-            safe_delete(p, log_context=f"upload-abort job={job_id}")
+        # Clean up any objects already stored if one upload fails
+        for key, _, _ in file_data:
+            discard_source_object(key, log_context=f"upload-abort job={job_id}")
         raise
 
     if cfg.celery_enabled:
-        _dispatch_celery(job_id, file_data, cfg, user_id)
+        try:
+            _dispatch_celery(job_id, file_data, cfg, user_id)
+        except DispatchError as exc:
+            # Files before exc.file_idx are queued and belong to their workers.
+            # The rest were stored but never queued: drop the objects and fail
+            # the slots so the job completes instead of stalling on "pending".
+            store = get_job_store()
+            for idx, (key, name, _) in enumerate(file_data[exc.file_idx:], start=exc.file_idx):
+                discard_source_object(key, log_context=f"enqueue-failed job={job_id} idx={idx}")
+                store.update_result(
+                    job_id, idx,
+                    FileResult(filename=name, status="error", error=f"Could not queue extraction: {exc}"),
+                )
+            log.exception("batch.enqueue_failed", exc_type=type(exc).__name__, exc_message=str(exc))
     else:
-        asyncio.create_task(_process_batch_from_disk(job_id, file_data))
+        asyncio.create_task(_process_batch_from_storage(job_id, file_data))
 
     asyncio.create_task(_persist_job_to_db(job_id, user_id, filenames, cfg.batch_ttl_seconds))
 
@@ -150,7 +169,7 @@ async def batch_upload_file(
 ) -> dict[str, Any]:
     """
     Phase 2 of the sequential upload flow (one call per file).
-    Streams the file to disk and dispatches one Celery task.
+    Stores the file as a source object and dispatches one Celery task.
     Returns immediately — frontend polls GET /api/batch/{job_id} for status.
     """
     cfg = get_settings()
@@ -168,15 +187,13 @@ async def batch_upload_file(
         )
 
     filename = job.results[file_idx].filename  # use registered name — avoids client mismatch
-    upload_dir = Path(cfg.batch_upload_dir)
-    upload_dir.mkdir(parents=True, exist_ok=True)
     user_id = td.user_id or ""
 
     structlog.contextvars.bind_contextvars(job_id=job_id, file_idx=file_idx, filename=filename, user_id=user_id)
 
     try:
-        disk_path, size_bytes = await _stream_batch_upload(
-            file, filename, upload_dir, job_id, file_idx, cfg.max_file_size_mb
+        source_key, size_bytes = await _stream_batch_upload(
+            file, filename, job_id, file_idx, cfg.max_file_size_mb
         )
     except HTTPException as exc:
         # Mark slot as error so polling never stalls on "pending"
@@ -195,12 +212,23 @@ async def batch_upload_file(
     )
 
     if cfg.celery_enabled:
-        _dispatch_celery(job_id, [(disk_path, filename, size_bytes)], cfg, user_id,
-                         idx_offset=file_idx)
+        try:
+            _dispatch_celery(job_id, [(source_key, filename, size_bytes)], cfg, user_id,
+                             idx_offset=file_idx)
+        except Exception as exc:
+            # Stored but never queued: drop the object and fail the slot so the
+            # poller never stalls on "pending" and nothing is left behind.
+            discard_source_object(source_key, log_context=f"enqueue-failed job={job_id} idx={file_idx}")
+            job_store.update_result(
+                job_id, file_idx,
+                FileResult(filename=filename, status="error", error=f"Could not queue extraction: {exc}"),
+            )
+            log.exception("batch.enqueue_failed", exc_type=type(exc).__name__, exc_message=str(exc))
+            raise HTTPException(status_code=503, detail=f"Could not queue extraction: {exc}")
     else:
         asyncio.create_task(
-            _process_batch_from_disk(job_id, [(disk_path, filename, size_bytes)],
-                                     idx_offset=file_idx)
+            _process_batch_from_storage(job_id, [(source_key, filename, size_bytes)],
+                                        idx_offset=file_idx)
         )
 
     return {"status": "queued", "file_idx": file_idx, "filename": filename}
@@ -450,28 +478,35 @@ async def batch_combine(
 async def _stream_batch_upload(
     upload: UploadFile,
     filename: str,
-    upload_dir: Path,
     job_id: str,
     idx: int,
     max_mb: int,
     chunk_size: int = 1_048_576,
-) -> tuple[Path, int]:
+) -> tuple[str, int]:
     """
-    Stream one UploadFile to upload_dir in chunks.
+    Stream one UploadFile to a temp file in chunks, then store it as the
+    source object for slot (job_id, idx).
 
     File is never fully in RAM — each 1 MB chunk is written to disk and
-    released. Raises HTTP 413 if the file exceeds max_mb mid-stream.
-    Returns (disk_path, total_bytes).
+    released. Raises HTTP 413 if the file exceeds max_mb mid-stream and
+    HTTP 503 if the storage backend cannot take the object; nothing is left
+    behind in either case. Returns (source_key, total_bytes).
     """
     cfg = get_settings()
     absolute_max_bytes = cfg.absolute_max_file_size_mb * 1024 * 1024
     max_bytes = min(max_mb * 1024 * 1024, absolute_max_bytes)
 
-    disk_path = batch_upload_path(upload_dir, job_id, idx, filename)
+    source_key = source_object_key(job_id, idx, filename)
 
+    # Same temp naming as the single-file upload so the API's startup sweep of
+    # stale spir_upload_* files covers a crash mid-stream here too.
+    tmp = tempfile.NamedTemporaryFile(
+        delete=False, prefix="spir_upload_", suffix=Path(source_key).suffix,
+    )
+    tmp_path = Path(tmp.name)
     total = 0
     try:
-        with disk_path.open("wb") as fh:
+        with tmp:
             while chunk := await upload.read(chunk_size):
                 total += len(chunk)
                 if total > max_bytes:
@@ -479,25 +514,30 @@ async def _stream_batch_upload(
                         status_code=413,
                         detail=f"File '{filename}' exceeds {max_mb} MB limit",
                     )
-                fh.write(chunk)
+                tmp.write(chunk)
     except Exception:
-        safe_delete(disk_path, log_context=f"upload-error job={job_id} idx={idx}")
+        tmp_path.unlink(missing_ok=True)
         raise
 
-    return disk_path, total
+    # Blocking put (a whole-file copy / PUT) — keep it off the event loop.
+    # store_source_upload removes the temp file whether or not the put succeeds.
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(None, store_source_upload, tmp_path, source_key)
+    except StorageError as exc:
+        log.error("batch.upload_store_failed", source_key=source_key, exc_message=str(exc))
+        raise HTTPException(status_code=503, detail=f"Could not store upload '{filename}': {exc}")
+
+    return source_key, total
 
 
-def batch_upload_path(upload_dir: Path, job_id: str, idx: int, filename: str) -> Path:
-    """
-    On-disk path for one upload slot of a job: <upload_dir>/<job_id>_<idx>_<safe_name>.
+class DispatchError(RuntimeError):
+    """_dispatch_celery could not enqueue file `file_idx`; earlier files were enqueued."""
 
-    Shared by the batch upload endpoints and the single-file /api/extract
-    async hand-off so the worker (and the delivery-cap key, which is derived
-    from this name) sees the same naming convention regardless of entry point.
-    """
-    # Build a safe filename: strip path separators and non-printable characters.
-    safe_name = re.sub(r'[^\w\-_. ]', '_', Path(filename).name)[:80] or "upload"
-    return upload_dir / f"{job_id}_{idx:03d}_{safe_name}"
+    def __init__(self, file_idx: int, cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.file_idx = file_idx
+        self.__cause__ = cause
 
 
 def route_queue(size_bytes: int, cfg) -> tuple[str, dict]:
@@ -532,33 +572,39 @@ def route_queue(size_bytes: int, cfg) -> tuple[str, dict]:
 
 def _dispatch_celery(
     job_id: str,
-    file_data: list[tuple[Path, str, int]],
+    file_data: list[tuple[str, str, int]],
     cfg,
     user_id: str = "",
     idx_offset: int = 0,
 ) -> list[str]:
     """
-    Enqueue one Celery task per file, routed by route_queue().
+    Enqueue one Celery task per (source_key, filename, size) file, routed by
+    route_queue(). The task receives the source object key — never a host path.
 
     The API returns immediately; workers pick up tasks independently.
-    Returns the queue name chosen for each file, in input order.
+    Returns the queue name chosen for each file, in input order. Raises
+    DispatchError (carrying the failing slot index) if the broker rejects a
+    task; files before that index are already queued.
     """
     from spir_dynamic.tasks.extraction_tasks import process_file_task
     from spir_dynamic.monitoring.metrics import GIANT_FILES_ROUTED
 
     queues: list[str] = []
-    for idx, (disk_path, filename, size_bytes) in enumerate(file_data, start=idx_offset):
+    for idx, (source_key, filename, size_bytes) in enumerate(file_data, start=idx_offset):
         size_mb = size_bytes / (1024 * 1024)
 
         queue, task_kwargs = route_queue(size_bytes, cfg)
         if queue == "giant":
             GIANT_FILES_ROUTED.inc()
 
-        process_file_task.apply_async(
-            args=[job_id, idx, str(disk_path), filename, user_id],
-            queue=queue,
-            **task_kwargs,
-        )
+        try:
+            process_file_task.apply_async(
+                args=[job_id, idx, source_key, filename, user_id],
+                queue=queue,
+                **task_kwargs,
+            )
+        except Exception as exc:
+            raise DispatchError(idx, exc) from exc
         queues.append(queue)
         log.info(
             "celery.task_enqueued",
@@ -567,6 +613,7 @@ def _dispatch_celery(
             filename=filename,
             size_mb=round(size_mb, 1),
             queue=queue,
+            source_key=source_key,
         )
     return queues
 
@@ -657,23 +704,29 @@ async def _persist_job_to_db(
         log.warning("batch.db_persist_failed", exc_message=str(exc))
 
 
-async def _process_batch_from_disk(
+async def _process_batch_from_storage(
     job_id: str,
-    file_data: list[tuple[Path, str, int]],
+    file_data: list[tuple[str, str, int]],
     idx_offset: int = 0,
 ) -> None:
     """
     Fallback coroutine used when celery_enabled=False (dev/test mode).
 
-    Processes files SEQUENTIALLY — one at a time — from their on-disk paths.
-    Each file is cleaned up after extraction regardless of success or failure.
+    Processes files SEQUENTIALLY — one at a time — from their source objects,
+    materialised the same way a worker does (in place on the filesystem
+    backend, via a temp download otherwise). Each source object is discarded
+    after extraction regardless of success or failure.
     """
     loop = asyncio.get_event_loop()
     store = get_job_store()
 
-    for idx, (disk_path, filename, _) in enumerate(file_data, start=idx_offset):
+    def _extract(source_key: str, filename: str) -> dict:
+        with staged_source(source_key, log_context=f"fallback job={job_id}") as local_path:
+            return run_pipeline(local_path, filename)
+
+    for idx, (source_key, filename, _) in enumerate(file_data, start=idx_offset):
         try:
-            result = await loop.run_in_executor(None, run_pipeline, disk_path, filename)
+            result = await loop.run_in_executor(None, _extract, source_key, filename)
             store.update_result(job_id, idx, FileResult(
                 filename=filename,
                 status="ok",
@@ -690,4 +743,4 @@ async def _process_batch_from_disk(
                 error=str(exc),
             ))
         finally:
-            safe_delete(disk_path, log_context=f"fallback job={job_id} idx={idx}")
+            discard_source_object(source_key, log_context=f"fallback job={job_id} idx={idx}")

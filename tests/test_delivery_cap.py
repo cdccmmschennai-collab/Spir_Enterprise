@@ -4,10 +4,13 @@ Tests for the broker delivery-cap guard in process_file_task.
 The guard stops infinite OOM re-delivery loops that bypass max_retries=3:
   - reject_on_worker_lost causes broker-level re-delivery on OOM kill
   - broker re-deliveries do NOT increment self.request.retries
-  - a Redis counter keyed to the upload filename caps total deliveries at 5
+  - a Redis counter keyed to the source object key caps total deliveries at 5
 
 All imports inside process_file_task are local (deferred), so patches target
 the source modules directly rather than the extraction_tasks namespace.
+
+The task takes a source object key (Phase 3C); here the BATCH_UPLOADS area is
+a LocalFilesystemStorage rooted at tmp_path, so the key is the file name.
 
 For bind=True Celery tasks, the task instance IS self. Tests use
 push_request()/pop_request() to inject a fake request context without a
@@ -22,11 +25,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from spir_dynamic.services.object_storage import LocalFilesystemStorage
+
 
 # ── Patch targets (all imports inside the task body are deferred) ─────────────
 _P_JOB_STORE   = "spir_dynamic.services.job_store.get_job_store"
 _P_FILE_RESULT = "spir_dynamic.services.job_store.FileResult"
 _P_SETTINGS    = "spir_dynamic.app.config.get_settings"
+_P_SRC_STORAGE = "spir_dynamic.services.source_objects.get_source_storage"
 _P_PIPELINE    = "spir_dynamic.app.pipeline.run_pipeline"
 _P_SANITIZER   = "spir_dynamic.extraction.sanitizer.sanitize_workbook"
 _P_SAFE_DELETE = "spir_dynamic.services.cleanup.safe_delete"
@@ -84,6 +90,7 @@ def _task_context(
     settings = SimpleNamespace(
         redis_url="redis://localhost:6379/0",
         rows_storage_path=str(Path(upload_path).parent / "rows"),
+        worker_scratch_dir=str(Path(upload_path).parent / "scratch"),
     )
 
     redis_stub = _fake_redis(delivery_count)
@@ -93,6 +100,7 @@ def _task_context(
         patch(_P_JOB_STORE,   return_value=store),
         patch(_P_FILE_RESULT, side_effect=lambda **kw: SimpleNamespace(**kw)),
         patch(_P_SETTINGS,    return_value=settings),
+        patch(_P_SRC_STORAGE, return_value=LocalFilesystemStorage(Path(upload_path).parent)),
         patch(_P_REDIS,       side_effect=redis_factory),
         patch(_P_SAFE_DELETE),
         patch(_P_PIPELINE,    return_value=pipeline_result or _GOOD_PIPELINE_RESULT),
@@ -127,7 +135,7 @@ def _run(tmp_path: Path, delivery_count: int, **ctx_kw):
     with _task_context(str(upload_file), delivery_count, **ctx_kw) as (task, *_):
         return task.run(
             job_id="job-1", file_idx=0,
-            upload_path=str(upload_file),
+            source_key=upload_file.name,
             filename="test_upload.xlsx",
             user_id="user-1",
         )
@@ -173,7 +181,7 @@ class TestDeliveryCapGuard:
         with _task_context(str(upload_file), delivery_count=7) as (task, store, *_):
             task.run(
                 job_id="job-1", file_idx=0,
-                upload_path=str(upload_file), filename="test_upload.xlsx",
+                source_key=upload_file.name, filename="test_upload.xlsx",
             )
 
         store.update_result.assert_called_once()
@@ -193,7 +201,7 @@ class TestDeliveryCapGuard:
         ) as (task, *_):
             task.run(
                 job_id="job-1", file_idx=0,
-                upload_path=str(upload_file), filename="test_upload.xlsx",
+                source_key=upload_file.name, filename="test_upload.xlsx",
             )
 
         mock_counter.inc.assert_called_once()
@@ -206,7 +214,7 @@ class TestDeliveryCapGuard:
         with _task_context(str(upload_file), delivery_count=1) as (task, _, redis_stub, _m):
             task.run(
                 job_id="job-1", file_idx=0,
-                upload_path=str(upload_file), filename="my_special_upload.xlsx",
+                source_key=upload_file.name, filename="my_special_upload.xlsx",
             )
 
         incr_key = redis_stub.incr.call_args[0][0]
@@ -221,7 +229,7 @@ class TestDeliveryCapGuard:
         with _task_context(str(upload_file), delivery_count=1) as (task, _, redis_stub, _m):
             task.run(
                 job_id="job-1", file_idx=0,
-                upload_path=str(upload_file), filename="expire_test.xlsx",
+                source_key=upload_file.name, filename="expire_test.xlsx",
             )
 
         _, expire_ttl = redis_stub.expire.call_args[0]
@@ -240,29 +248,23 @@ class TestDeliveryCapGuard:
         ) as (task, *_):
             result = task.run(
                 job_id="job-1", file_idx=0,
-                upload_path=str(upload_file), filename="redis_down.xlsx",
+                source_key=upload_file.name, filename="redis_down.xlsx",
             )
 
         assert result["status"] == "ok"
 
     def test_upload_file_deleted_on_cap_breach(self, tmp_path):
-        """The upload file must be deleted when the cap fires to prevent disk leaks."""
+        """The source object must be discarded when the cap fires to prevent storage leaks."""
         upload_file = tmp_path / "cap_delete.xlsx"
         upload_file.write_bytes(b"PK\x03\x04" + b"\x00" * 100)
 
-        mock_delete = MagicMock()
-        with _task_context(
-            str(upload_file), delivery_count=9,
-            extra_patches=[patch(_P_SAFE_DELETE, mock_delete)],
-        ) as (task, *_):
+        with _task_context(str(upload_file), delivery_count=9) as (task, *_):
             task.run(
                 job_id="job-1", file_idx=0,
-                upload_path=str(upload_file), filename="cap_delete.xlsx",
+                source_key=upload_file.name, filename="cap_delete.xlsx",
             )
 
-        mock_delete.assert_called_once()
-        deleted_path = mock_delete.call_args[0][0]
-        assert deleted_path == upload_file
+        assert not upload_file.exists()
 
     def test_cap_boundary_at_exactly_5_and_6(self, tmp_path):
         """Boundary: delivery_count=5 passes, delivery_count=6 is the first to block."""

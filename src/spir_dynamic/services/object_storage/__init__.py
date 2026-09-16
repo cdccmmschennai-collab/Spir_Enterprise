@@ -6,8 +6,8 @@ Object storage layer.
         v
     ObjectStorage contract (base.py) + backend selection (factory.py)
         |
-        +-- LocalFilesystemStorage (local.py)   <- active backend (Phase 3B)
-        +-- MinioObjectStorage     (minio.py)   <- available, not yet used by any workflow
+        +-- LocalFilesystemStorage (local.py)   <- default backend for every area
+        +-- MinioObjectStorage     (minio.py)   <- BATCH_UPLOADS when UPLOAD_STORAGE_BACKEND=minio (Phase 3C)
 
 Import from this package only; the backend modules are implementation detail.
 The Phase 3A health probe (probe.py) keeps its original import path here.
@@ -29,6 +29,7 @@ from spir_dynamic.services.object_storage.factory import (
     BACKEND_MINIO,
     SUPPORTED_BACKENDS,
     StorageArea,
+    area_backend,
     build_object_storage,
     get_object_storage,
     reset_object_storage,
@@ -56,6 +57,7 @@ __all__ = [
     "StorageConfigError",
     "StorageError",
     "StorageUnavailable",
+    "area_backend",
     "build_object_storage",
     "check_minio_reachable",
     "get_object_storage",

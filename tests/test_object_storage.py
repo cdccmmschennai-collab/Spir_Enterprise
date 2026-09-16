@@ -65,7 +65,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 TEST_PREFIX_ROOT = "_tests/object_storage/"   # every MinIO test object lives under here
 
 _STORAGE_ENV = (
-    "STORAGE_BACKEND", "AVATAR_DIR", "ROWS_STORAGE_PATH", "BATCH_UPLOAD_DIR",
+    "STORAGE_BACKEND", "UPLOAD_STORAGE_BACKEND", "WORKER_SCRATCH_DIR",   # 3C adds a per-area override
+    "AVATAR_DIR", "ROWS_STORAGE_PATH", "BATCH_UPLOAD_DIR",
     "MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_BUCKET", "MINIO_SECURE",
 )
 
