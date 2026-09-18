@@ -66,6 +66,15 @@ class StorageConfigError(StorageError):
     """The storage settings are incomplete or invalid for the selected backend."""
 
 
+class MultipartUploadNotFound(StorageError):
+    """The multipart upload does not exist (never created, already completed, aborted or expired)."""
+
+    def __init__(self, key: str, upload_id: str) -> None:
+        super().__init__(f"multipart upload not found: {key} ({upload_id})")
+        self.key = key
+        self.upload_id = upload_id
+
+
 # ── Metadata ─────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -74,6 +83,22 @@ class ObjectInfo:
     size: int
     last_modified: datetime          # tz-aware, UTC
     content_type: str | None = None
+
+
+@dataclass(frozen=True)
+class UploadedPart:
+    """One part of a multipart upload as the backend itself reports it (never client-supplied)."""
+    part_number: int
+    size: int
+    etag: str
+
+
+@dataclass(frozen=True)
+class MultipartUploadInfo:
+    """An in-progress (neither completed nor aborted) multipart upload."""
+    key: str
+    upload_id: str
+    initiated: datetime              # tz-aware, UTC
 
 
 # ── Key rules ────────────────────────────────────────────────────────────────
@@ -166,4 +191,59 @@ class ObjectStorage(Protocol):
 
     def ping(self) -> None:
         """Verify the backend is usable (reachable, writable). Raises StorageUnavailable."""
+        ...
+
+
+# ── Direct (browser -> backend) upload contract — Phase 3D ───────────────────
+#
+# Optional capability: a backend that can let a client outside the application
+# write ONE object through URLs the server signs. Only object backends can do
+# this (the filesystem backend does not implement it, and `isinstance(st,
+# DirectUploadStorage)` is how callers find out). The unit of work is an S3
+# multipart upload:
+#
+#     upload_id = create_multipart_upload(key)
+#     url       = presign_upload_part(key, upload_id, n, expires_in=...)   # client PUTs part n
+#     parts     = list_parts(key, upload_id)                                # what the backend has
+#     info      = complete_multipart_upload(key, upload_id, parts)
+#     abort_multipart_upload(key, upload_id)                                # discard the pieces
+#
+# A presigned URL is scoped to exactly one (key, upload_id, part_number),
+# one HTTP method (PUT) and one lifetime; it never carries the secret key.
+# `list_parts` is the server's own view of what was uploaded — callers verify
+# against that, never against what a client reports.
+
+@runtime_checkable
+class DirectUploadStorage(Protocol):
+    def supports_direct_upload(self) -> bool:
+        """True when this instance can sign URLs a browser can reach (public endpoint configured)."""
+        ...
+
+    def create_multipart_upload(self, key: str, *, content_type: str | None = None) -> str:
+        """Start a multipart upload for `key`; returns the backend's upload id."""
+        ...
+
+    def presign_upload_part(self, key: str, upload_id: str, part_number: int, *, expires_in: int) -> str:
+        """URL a client may PUT part `part_number` to, valid for `expires_in` seconds."""
+        ...
+
+    def list_parts(self, key: str, upload_id: str) -> list[UploadedPart]:
+        """Parts the backend has received so far, in part-number order. Raises MultipartUploadNotFound."""
+        ...
+
+    def complete_multipart_upload(self, key: str, upload_id: str, parts: list[UploadedPart]) -> ObjectInfo:
+        """Assemble `parts` into the object `key`. Raises MultipartUploadNotFound."""
+        ...
+
+    def abort_multipart_upload(self, key: str, upload_id: str) -> bool:
+        """Discard an in-progress upload. True if it existed, False if already gone."""
+        ...
+
+    def list_multipart_uploads(self, prefix: str = "") -> Iterator[MultipartUploadInfo]:
+        """
+        In-progress multipart uploads whose key starts with `prefix`. NOTE:
+        MinIO only answers for an exact object key (no prefix navigation), so
+        callers must not rely on this to enumerate a whole area — see
+        services/direct_upload.open_uploads() for the application's own index.
+        """
         ...

@@ -186,6 +186,10 @@ async def batch_upload_file(
             detail=f"file_idx must be 0–{job.total - 1}",
         )
 
+    if job.results[file_idx].status == "uploading":
+        # A direct browser->MinIO upload (Phase 3D) owns this slot right now.
+        raise HTTPException(status_code=409, detail="This file is being uploaded directly to storage")
+
     filename = job.results[file_idx].filename  # use registered name — avoids client mismatch
     user_id = td.user_id or ""
 
@@ -314,8 +318,9 @@ async def batch_single_result(
 
     result = job.results[0]
 
-    if result.status in ("pending", "running"):
-        return {"status": "processing", "completed": job.completed, "total": job.total}
+    if result.status in ("uploading", "pending", "running"):
+        return {"status": "processing", "completed": job.completed, "total": job.total,
+                "phase": result.status}
 
     if result.status == "error":
         return {"status": "error", "error": result.error or "Extraction failed"}
@@ -492,9 +497,7 @@ async def _stream_batch_upload(
     HTTP 503 if the storage backend cannot take the object; nothing is left
     behind in either case. Returns (source_key, total_bytes).
     """
-    cfg = get_settings()
-    absolute_max_bytes = cfg.absolute_max_file_size_mb * 1024 * 1024
-    max_bytes = min(max_mb * 1024 * 1024, absolute_max_bytes)
+    max_bytes = max_upload_bytes(get_settings(), max_mb)
 
     source_key = source_object_key(job_id, idx, filename)
 
@@ -529,6 +532,17 @@ async def _stream_batch_upload(
         raise HTTPException(status_code=503, detail=f"Could not store upload '{filename}': {exc}")
 
     return source_key, total
+
+
+def max_upload_bytes(cfg, max_mb: int | None = None) -> int:
+    """
+    The single upload ceiling: max_file_size_mb (or an explicit max_mb) capped
+    by absolute_max_file_size_mb. Shared by the streamed uploads here and the
+    direct-upload initiation (upload_router.py) so both paths enforce the same
+    limit.
+    """
+    limit_mb = cfg.max_file_size_mb if max_mb is None else max_mb
+    return min(limit_mb, cfg.absolute_max_file_size_mb) * 1024 * 1024
 
 
 class DispatchError(RuntimeError):

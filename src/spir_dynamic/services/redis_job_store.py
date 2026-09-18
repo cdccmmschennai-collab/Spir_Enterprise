@@ -19,6 +19,7 @@ log = structlog.stdlib.get_logger(__name__)
 
 _KEY_META = "batch:meta:{}"       # hash: total, created_at, expires_at
 _KEY_RESULT = "batch:result:{}:{}"  # string: JSON-serialised FileResult
+_KEY_UPLOAD = "batch:upload:{}:{}"  # string: JSON direct-upload record (Phase 3D), same TTL as the job
 
 
 class RedisJobStore:
@@ -106,3 +107,52 @@ class RedisJobStore:
             return
         result_key = _KEY_RESULT.format(job_id, idx)
         self._r.set(result_key, json.dumps(result.to_dict()), ex=self._ttl + 300)
+
+    # ── Direct-upload state (Phase 3D) — same interface as JobStore ────────
+
+    def set_upload(self, job_id: str, idx: int, data: dict) -> None:
+        if not self._r.exists(_KEY_META.format(job_id)):
+            log.warning("job.not_found", job_id=job_id)
+            return
+        self._r.set(_KEY_UPLOAD.format(job_id, idx), json.dumps(data), ex=self._ttl + 300)
+
+    def get_upload(self, job_id: str, idx: int) -> dict | None:
+        raw = self._r.get(_KEY_UPLOAD.format(job_id, idx))
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except Exception:
+            log.warning("upload.state_corrupt", job_id=job_id, file_idx=idx)
+            return None
+
+    def clear_upload(self, job_id: str, idx: int) -> None:
+        self._r.delete(_KEY_UPLOAD.format(job_id, idx))
+
+    def transition_upload(self, job_id: str, idx: int, from_state: str, to_state: str) -> bool:
+        """
+        Atomic compare-and-set on the record's "state" (WATCH/MULTI), so two
+        API processes racing on the same slot — e.g. a duplicate "complete"
+        call — cannot both win.
+        """
+        key = _KEY_UPLOAD.format(job_id, idx)
+        with self._r.pipeline() as pipe:
+            while True:
+                try:
+                    pipe.watch(key)
+                    raw = pipe.get(key)
+                    if not raw:
+                        pipe.unwatch()
+                        return False
+                    data = json.loads(raw)
+                    if data.get("state") != from_state:
+                        pipe.unwatch()
+                        return False
+                    data["state"] = to_state
+                    ttl = pipe.ttl(key)
+                    pipe.multi()
+                    pipe.set(key, json.dumps(data), ex=ttl if ttl and ttl > 0 else self._ttl + 300)
+                    pipe.execute()
+                    return True
+                except redis.WatchError:
+                    continue

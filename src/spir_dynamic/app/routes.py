@@ -411,6 +411,8 @@ async def health() -> dict:
     # Effective backend of the source-upload area (Phase 3C) — reported only;
     # it is not probed here so a MinIO outage never takes /health down.
     out["upload_storage_backend"] = area_backend(StorageArea.BATCH_UPLOADS, cfg)
+    # Phase 3D: whether large uploads go browser -> MinIO directly (reported only).
+    out["direct_upload"] = "enabled" if (cfg.direct_upload_configured and cfg.celery_enabled) else "disabled"
     try:
         get_object_storage(StorageArea.EXTRACTED_ROWS).ping()
         out["extraction_dir"] = "ok"

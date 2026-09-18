@@ -28,6 +28,11 @@ Phase 3 — Stale batch uploads
   UPLOAD_STORAGE_BACKEND=minio) the same rule is applied to the source
   objects through the ObjectStorage contract (list_objects / delete) — only
   objects under that area's prefix, never the bucket or anything else.
+  If that backend also takes direct browser uploads (Phase 3D), multipart
+  uploads under the same prefix that were started more than
+  CLEANUP_UPLOAD_STALE_HOURS ago and never completed or aborted (browser
+  closed mid-upload, lost session) are aborted too, so their parts do not
+  accumulate in the bucket.
 
 Phase 4 — Disk metrics
   Refresh Prometheus Gauges for JSON count, JSON dir size, and upload dir
@@ -143,6 +148,19 @@ def lifecycle_cleanup_task(self, dry_run: bool = False) -> dict:
     except Exception as exc:
         log.error("cleanup.phase_failed", phase="stale_uploads", exc_message=str(exc))
         summary["phases"]["stale_uploads"] = {"error": str(exc)}
+
+    # Phase 3b — Abandoned direct (multipart) uploads on an object backend
+    if upload_storage is not None and _takes_direct_uploads(upload_storage):
+        try:
+            result = _purge_stale_multipart_uploads(
+                upload_storage,
+                stale_hours=cfg.cleanup_upload_stale_hours,
+                dry_run=effective_dry_run,
+            )
+            summary["phases"]["stale_multipart_uploads"] = result
+        except Exception as exc:
+            log.error("cleanup.phase_failed", phase="stale_multipart_uploads", exc_message=str(exc))
+            summary["phases"]["stale_multipart_uploads"] = {"error": str(exc)}
 
     # Phase 4 — Refresh disk metrics (always runs, even in dry-run)
     try:
@@ -516,6 +534,41 @@ def _purge_stale_source_objects(storage, stale_hours: int, dry_run: bool) -> dic
         "mb_freed": mb_freed,
         "stale_hours": stale_hours,
     }
+
+
+# ── Phase 3b (object backend): abandoned multipart uploads ──────────────────
+
+def _takes_direct_uploads(storage) -> bool:
+    """True when the backend implements the Phase 3D multipart contract (MinIO does; the filesystem never)."""
+    from spir_dynamic.services.object_storage import DirectUploadStorage
+    return isinstance(storage, DirectUploadStorage)
+
+
+def _purge_stale_multipart_uploads(storage, stale_hours: int, dry_run: bool) -> dict:
+    """
+    Abort direct browser uploads that were started more than stale_hours ago
+    and never completed or aborted (tab closed mid-upload, lost session, API
+    restart with no client return). The candidates come from the index the
+    API keeps of every upload it started (services/direct_upload.py) — MinIO
+    cannot enumerate in-progress multipart uploads by prefix — and are
+    aborted through the DirectUploadStorage contract. Same recent guard as
+    the object sweep: nothing started in the last hour is touched.
+    """
+    from spir_dynamic.monitoring.metrics import CLEANUP_DELETED_FILES
+    from spir_dynamic.services.direct_upload import reclaim_abandoned_uploads
+
+    result = reclaim_abandoned_uploads(storage, stale_hours=stale_hours, dry_run=dry_run)
+    for _ in range(result["aborted"]):
+        CLEANUP_DELETED_FILES.labels(reason="stale_multipart").inc()
+
+    log.info(
+        "cleanup.multipart.done",
+        backend=storage.backend,
+        stale_hours=stale_hours,
+        dry_run=dry_run,
+        **result,
+    )
+    return {"backend": storage.backend, "stale_hours": stale_hours, **result}
 
 
 # ── Phase 4: Disk metrics ─────────────────────────────────────────────────────

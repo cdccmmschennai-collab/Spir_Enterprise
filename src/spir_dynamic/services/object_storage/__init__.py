@@ -15,13 +15,17 @@ The Phase 3A health probe (probe.py) keeps its original import path here.
 from __future__ import annotations
 
 from spir_dynamic.services.object_storage.base import (
+    DirectUploadStorage,
     InvalidObjectKey,
+    MultipartUploadInfo,
+    MultipartUploadNotFound,
     ObjectInfo,
     ObjectNotFound,
     ObjectStorage,
     StorageConfigError,
     StorageError,
     StorageUnavailable,
+    UploadedPart,
     normalize_key,
 )
 from spir_dynamic.services.object_storage.factory import (
@@ -45,10 +49,13 @@ from spir_dynamic.services.object_storage.probe import (
 __all__ = [
     "BACKEND_FILESYSTEM",
     "BACKEND_MINIO",
+    "DirectUploadStorage",
     "InvalidObjectKey",
     "LocalFilesystemStorage",
     "MinioObjectStorage",
     "MinioProbe",
+    "MultipartUploadInfo",
+    "MultipartUploadNotFound",
     "ObjectInfo",
     "ObjectNotFound",
     "ObjectStorage",
@@ -57,6 +64,7 @@ __all__ = [
     "StorageConfigError",
     "StorageError",
     "StorageUnavailable",
+    "UploadedPart",
     "area_backend",
     "build_object_storage",
     "check_minio_reachable",

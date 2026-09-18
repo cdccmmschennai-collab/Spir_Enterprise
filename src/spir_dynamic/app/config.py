@@ -141,6 +141,56 @@ class Settings(BaseSettings):
     def minio_configured(self) -> bool:
         return bool(self.minio_endpoint and self.minio_access_key and self.minio_secret_key)
 
+    # Direct browser-to-MinIO upload (Phase 3D). MINIO_ENDPOINT above is the
+    # container-to-container address (http://minio:9000) and stays exactly
+    # that; a browser cannot resolve a Compose service name, so presigned
+    # upload URLs are signed against this second, browser-reachable address
+    # instead (Compose: http://localhost:9000; production: the HTTPS host that
+    # fronts MinIO). Empty = direct upload off; every upload keeps the Phase 3C
+    # API-streamed path.
+    minio_public_endpoint: str = ""          # env: MINIO_PUBLIC_ENDPOINT
+    # Optional credential used ONLY to sign the browser's part-upload URLs
+    # (a presigned URL carries its access-key id in the query string). Point
+    # this at a MinIO user whose policy is limited to the batch_uploads/ prefix
+    # so the root key id never reaches a browser. Empty = sign with the main
+    # MINIO_ACCESS_KEY / MINIO_SECRET_KEY.
+    minio_presign_access_key: str = ""       # env: MINIO_PRESIGN_ACCESS_KEY
+    minio_presign_secret_key: str = ""       # env: MINIO_PRESIGN_SECRET_KEY
+    # Kill switch: keep the endpoint configured but serve every upload through
+    # the API again.
+    direct_upload_enabled: bool = True       # env: DIRECT_UPLOAD_ENABLED
+    # Size of each multipart part the browser PUTs. S3 requires >= 5 MB for
+    # every part but the last; 16 MB keeps a 1.5 GB file under 100 parts.
+    direct_upload_part_size_mb: int = 16     # env: DIRECT_UPLOAD_PART_SIZE_MB
+    # Lifetime of each presigned part URL. The browser asks the API for fresh
+    # URLs when one expires mid-upload, so this only bounds a single part's
+    # window, not the whole upload.
+    direct_upload_url_ttl_seconds: int = 3600   # env: DIRECT_UPLOAD_URL_TTL_SECONDS
+
+    @field_validator("direct_upload_part_size_mb", mode="after")
+    @classmethod
+    def _validate_part_size(cls, v: int) -> int:
+        if v < 5:
+            raise ValueError("DIRECT_UPLOAD_PART_SIZE_MB must be at least 5 (S3 minimum part size)")
+        return v
+
+    @field_validator("direct_upload_url_ttl_seconds", mode="after")
+    @classmethod
+    def _validate_url_ttl(cls, v: int) -> int:
+        if not 60 <= v <= 7 * 24 * 3600:
+            raise ValueError("DIRECT_UPLOAD_URL_TTL_SECONDS must be between 60 and 604800 (7 days)")
+        return v
+
+    @property
+    def direct_upload_configured(self) -> bool:
+        """Direct browser uploads are possible: switched on, MinIO holds the source objects, public endpoint set."""
+        return bool(
+            self.direct_upload_enabled
+            and self.minio_configured
+            and self.minio_public_endpoint
+            and (self.upload_storage_backend or self.storage_backend) == "minio"
+        )
+
     # Storage backend (Phase 3B) — which ObjectStorage implementation the
     # factory hands to application code: "filesystem" (current behaviour, the
     # default) or "minio" (requires the MINIO_* settings above). No workflow

@@ -22,6 +22,7 @@ import {
 import { SidebarLayout } from "@/components/sidebar";
 import { authHeaders } from "@/lib/auth";
 import { cn } from "@/lib/utils";
+import { directUpload } from "@/lib/direct-upload";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const ACCEPTED = ".xlsx,.xlsm,.xls";
@@ -57,7 +58,8 @@ function getSessionKey(): string {
 
 interface FileResult {
   filename: string;
-  status: "pending" | "running" | "ok" | "error";
+  // "uploading": the slot's file is going browser → storage directly (Phase 3D)
+  status: "uploading" | "pending" | "running" | "ok" | "error";
   total_rows: number;
   total_tags: number;
   spir_no: string;
@@ -67,7 +69,7 @@ interface FileResult {
 }
 
 // Display-only status extending backend statuses with upload-phase states
-type BadgeStatus = FileResult["status"] | "uploading" | "waiting";
+type BadgeStatus = FileResult["status"] | "waiting";
 
 function getBadgeStatus(
   r: FileResult,
@@ -217,6 +219,8 @@ export default function BatchPage() {
   const [combinedFileId, setCombinedFileId] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
   const [uploadingFileIdx, setUploadingFileIdx] = useState<number | null>(null);
+  // Byte progress of the file currently going browser → storage directly (large files only)
+  const [directPct, setDirectPct] = useState<number | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -382,6 +386,25 @@ export default function BatchPage() {
       // Phase 2: upload files one at a time
       for (let idx = 0; idx < files.length; idx++) {
         setUploadingFileIdx(idx); // show "Uploading…" badge for current file
+        setDirectPct(null);
+
+        // Large files go browser → storage directly (Phase 3D); the API
+        // answers "api" for normal-sized ones and the request below runs.
+        const outcome = await directUpload(files[idx], {
+          jobId: job_id,
+          fileIdx: idx,
+          onProgress: (loaded, total) => setDirectPct(total > 0 ? Math.round((loaded / total) * 100) : 0),
+        });
+        if (outcome.kind !== "api") {
+          if (outcome.kind === "error" && outcome.status === 401) {
+            setError("Session expired. Please log in again.");
+            return;
+          }
+          // queued / error: the backend has set the slot's status — polling shows it
+          setUploadProgress({ done: idx + 1, total: files.length });
+          continue;
+        }
+
         const form = new FormData();
         form.append("file", files[idx]);
         form.append("file_idx", String(idx));
@@ -407,6 +430,7 @@ export default function BatchPage() {
     } finally {
       setUploading(false);
       setUploadingFileIdx(null); // upload phase always ends here
+      setDirectPct(null);
     }
   }, [files, startPolling, stopPolling]);
 
@@ -943,9 +967,13 @@ export default function BatchPage() {
                             Extracting data…
                           </p>
                         )}
-                        {r.status === "pending" && displayStatus === "uploading" && (
+                        {displayStatus === "uploading" && (
                           <p className="mt-0.5 text-xs text-violet-500 dark:text-violet-400">
-                            Sending file to server…
+                            {r.status === "uploading" && i === uploadingFileIdx && directPct !== null
+                              ? `Uploading directly to storage… ${directPct}%`
+                              : r.status === "uploading"
+                              ? "Uploading directly to storage…"
+                              : "Sending file to server…"}
                           </p>
                         )}
                         {r.status === "pending" && displayStatus === "waiting" && (

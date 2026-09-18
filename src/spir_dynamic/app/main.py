@@ -15,6 +15,7 @@ from spir_dynamic.app.auth import auth_router
 from spir_dynamic.app.batch_router import batch_router
 from spir_dynamic.app.config import get_settings
 from spir_dynamic.app.routes import router
+from spir_dynamic.app.upload_router import upload_router
 from spir_dynamic.utils.logging import setup_logging
 
 log = structlog.stdlib.get_logger(__name__)
@@ -144,6 +145,8 @@ def create_app() -> FastAPI:
     app.include_router(router, prefix="/api")          # register first so /api/me wins
     app.include_router(auth_router, prefix="/api")     # /api/login + /api/logout aliases
     app.include_router(batch_router, prefix="/api/batch")
+    # Phase 3D: control plane for direct browser->MinIO uploads (no file bodies).
+    app.include_router(upload_router, prefix="/api/uploads")
 
     # Admin + user history endpoints (require DB — gracefully disabled when unavailable)
     from spir_dynamic.app.admin_router import admin_router as _admin

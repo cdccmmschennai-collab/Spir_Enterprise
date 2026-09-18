@@ -76,6 +76,22 @@ x-backend-env: &backend-env
   # on the spir_storage volume (STORAGE_BACKEND is still filesystem). Set to
   # "filesystem" to fall back to the shared batch_uploads directory.
   UPLOAD_STORAGE_BACKEND: ${UPLOAD_STORAGE_BACKEND:-minio}
+  # Phase 3D: large uploads (> LARGE_FILE_THRESHOLD_MB) go browser -> MinIO
+  # through presigned URLs. Those URLs must point at an address the BROWSER
+  # can reach, which is not the Compose name above: locally that is the
+  # host-published MinIO port. In production set it to the HTTPS host that
+  # fronts MinIO (Nginx must pass `Host` through unchanged — the signature
+  # covers it). MINIO_ENDPOINT stays the container-to-container address.
+  # Leave empty to disable direct upload (everything streams through the API).
+  MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
+  # The URLs are signed with this scoped MinIO user (created by minio-init,
+  # policy limited to batch_uploads/*), so the root access-key id never
+  # appears in a browser. Only the API uses these; workers ignore them.
+  MINIO_PRESIGN_ACCESS_KEY: ${MINIO_UPLOADER_USER:-spir_uploader}
+  MINIO_PRESIGN_SECRET_KEY: ${MINIO_UPLOADER_PASSWORD:-spir_uploader_dev_password}
+  DIRECT_UPLOAD_ENABLED: ${DIRECT_UPLOAD_ENABLED:-true}
+  DIRECT_UPLOAD_PART_SIZE_MB: "16"
+  DIRECT_UPLOAD_URL_TTL_SECONDS: "3600"
 
 x-backend-base: &backend-base
   build:
@@ -301,13 +317,24 @@ services:
       # defaults are development placeholders only. MinIO requires >= 8 chars.
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-spir_minio}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-spir_minio_dev_password}
+      # Phase 3D: the browser PUTs upload parts straight to this service, so
+      # its S3 API must answer CORS for the frontend origin — and only that
+      # origin (MinIO's default is "*"). Comma-separated for several origins.
+      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_CORS_ALLOW_ORIGIN:-http://localhost:3000}
+      # MinIO's own reclaim of multipart uploads nobody completed or aborted.
+      # These are MinIO's defaults, written out so the policy is visible and
+      # matches CLEANUP_UPLOAD_STALE_HOURS=24 above; the lifecycle cleanup
+      # task aborts the ones the API indexed, MinIO catches the rest.
+      MINIO_API_STALE_UPLOADS_EXPIRY: 24h
+      MINIO_API_STALE_UPLOADS_CLEANUP_INTERVAL: 6h
     volumes:
       - minio_data:/data
     ports:
-      # Bound to localhost only — reachable from this machine for `mc` / the
-      # console, never from the LAN. Containers use http://minio:9000 over the
-      # Compose network. 9000/9001 were free on this host (9090/9100 belong to
-      # the monitoring stack).
+      # Bound to localhost only — reachable from this machine for `mc`, the
+      # console and (Phase 3D) the browser's direct part uploads via
+      # MINIO_PUBLIC_ENDPOINT=http://localhost:9000; never from the LAN.
+      # Containers use http://minio:9000 over the Compose network. 9000/9001
+      # were free on this host (9090/9100 belong to the monitoring stack).
       - "127.0.0.1:9000:9000"
       - "127.0.0.1:9001:9001"
     healthcheck:
@@ -323,6 +350,13 @@ services:
   # One-shot bucket bootstrap (same pattern as db-init). `mc mb --ignore-existing`
   # is idempotent: re-running on every `up` is a no-op once the bucket exists,
   # and it never deletes or recreates anything. Exited (0) is the expected state.
+  #
+  # Phase 3D also provisions the scoped `spir_uploader` user the API signs the
+  # browser's part URLs with. Its policy allows exactly the multipart-part
+  # write on batch_uploads/* and nothing else in the bucket, so a leaked URL
+  # (or the key id every presigned URL carries) can never read, list or
+  # delete anything. `user add` / `policy create` overwrite idempotently;
+  # `policy attach` errors when already attached, hence the info check.
   minio-init:
     image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
     restart: "no"
@@ -330,6 +364,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-spir_minio}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-spir_minio_dev_password}
       MINIO_BUCKET: ${MINIO_BUCKET:-spir-files}
+      MINIO_UPLOADER_USER: ${MINIO_UPLOADER_USER:-spir_uploader}
+      MINIO_UPLOADER_PASSWORD: ${MINIO_UPLOADER_PASSWORD:-spir_uploader_dev_password}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -340,6 +376,14 @@ services:
         # bucket exits non-zero, which is the verification we need.
         mc ls "spir/$$MINIO_BUCKET" > /dev/null
         echo "minio-init: bucket '$$MINIO_BUCKET' ready"
+        printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:PutObject","s3:AbortMultipartUpload","s3:ListMultipartUploadParts"],"Resource":["arn:aws:s3:::'"$$MINIO_BUCKET"'/batch_uploads/*"]}]}' > /tmp/spir-uploader.json
+        mc admin policy create spir spir-uploader /tmp/spir-uploader.json
+        mc admin user add spir "$$MINIO_UPLOADER_USER" "$$MINIO_UPLOADER_PASSWORD"
+        case "$$(mc admin user info spir "$$MINIO_UPLOADER_USER" --json)" in
+          *spir-uploader*) ;;
+          *) mc admin policy attach spir spir-uploader --user "$$MINIO_UPLOADER_USER" ;;
+        esac
+        echo "minio-init: uploader '$$MINIO_UPLOADER_USER' ready (policy spir-uploader)"
     depends_on:
       minio:
         condition: service_healthy

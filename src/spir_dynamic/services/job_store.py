@@ -17,7 +17,10 @@ log = logging.getLogger(__name__)
 @dataclass
 class FileResult:
     filename: str
-    status: str = "pending"      # "pending" | "ok" | "error"
+    # "pending" | "running" | "ok" | "error", plus "uploading" while the browser
+    # is writing the slot's source object straight to MinIO (Phase 3D) — the
+    # slot goes back to "pending" the moment the upload is verified and queued.
+    status: str = "pending"
     total_rows: int = 0
     total_tags: int = 0
     spir_no: str = ""
@@ -89,6 +92,7 @@ class JobStore:
 
     def __init__(self, ttl_seconds: int = 7200):
         self._jobs: dict[str, BatchJob] = {}
+        self._uploads: dict[tuple[str, int], dict] = {}
         self._ttl = ttl_seconds
         self._lock = threading.Lock()
 
@@ -121,11 +125,41 @@ class JobStore:
             if job and 0 <= idx < len(job.results):
                 job.results[idx] = result
 
+    # ── Direct-upload state (Phase 3D) ─────────────────────────────────────
+    # One small record per (job, slot) while a browser uploads the slot's
+    # source object directly to storage: it lives exactly as long as the job
+    # and is removed once the upload is queued or aborted. Not a second job
+    # state — the FileResult above stays the only per-slot status.
+
+    def set_upload(self, job_id: str, idx: int, data: dict) -> None:
+        with self._lock:
+            self._uploads[(job_id, idx)] = dict(data)
+
+    def get_upload(self, job_id: str, idx: int) -> dict | None:
+        with self._lock:
+            data = self._uploads.get((job_id, idx))
+            return dict(data) if data is not None else None
+
+    def clear_upload(self, job_id: str, idx: int) -> None:
+        with self._lock:
+            self._uploads.pop((job_id, idx), None)
+
+    def transition_upload(self, job_id: str, idx: int, from_state: str, to_state: str) -> bool:
+        """Atomically move the record's "state" from `from_state` to `to_state`. False if it is not in `from_state`."""
+        with self._lock:
+            data = self._uploads.get((job_id, idx))
+            if data is None or data.get("state") != from_state:
+                return False
+            data["state"] = to_state
+            return True
+
     def _purge_expired(self) -> None:
         # Must be called while holding self._lock.
         expired = [jid for jid, j in self._jobs.items() if j.is_expired()]
         for jid in expired:
             del self._jobs[jid]
+            for k in [k for k in self._uploads if k[0] == jid]:
+                del self._uploads[k]
 
 
 # Singleton — type is JobStore or RedisJobStore depending on config
