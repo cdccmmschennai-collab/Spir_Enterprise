@@ -1,0 +1,14 @@
+node_modules
+.next
+out
+Dockerfile
+.dockerignore
+
+# Local/production env files — the API URL is supplied as a Docker build arg.
+# .env.local in this repo points at the production domain and must not be baked
+# into a local image.
+.env
+.env.*
+
+# PM2 config is for the Hostinger deployment, not the container.
+ecosystem.config.js

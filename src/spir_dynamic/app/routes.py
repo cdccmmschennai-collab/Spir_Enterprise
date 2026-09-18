@@ -8,6 +8,7 @@ import io
 import json
 import tempfile
 import time
+import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -17,18 +18,36 @@ from zoneinfo import ZoneInfo
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from openpyxl.utils.exceptions import InvalidFileException
 from pydantic import BaseModel
 from sqlalchemy import select, desc
 
 from spir_dynamic.app.auth import get_current_user, TokenData, SUPER_ADMIN
+from spir_dynamic.app.batch_router import (
+    _dispatch_celery,
+    _persist_job_to_db,
+    route_queue,
+)
 from spir_dynamic.app.pipeline import run_pipeline, retrieve_result
 from spir_dynamic.app.config import get_settings
 from spir_dynamic.db.database import get_db, is_db_enabled
 from spir_dynamic.db.models import ExtractionHistory
 from spir_dynamic.extraction.file_validator import ValidationError
 from spir_dynamic.services.currency_service import conversion_summary
+from spir_dynamic.services.job_store import FileResult, get_job_store
+from spir_dynamic.services.object_storage import (
+    InvalidObjectKey,
+    ObjectNotFound,
+    StorageArea,
+    area_backend,
+    get_object_storage,
+)
+from spir_dynamic.services.source_objects import (
+    discard_source_object,
+    source_object_key,
+    store_source_upload,
+)
 
 log = structlog.stdlib.get_logger(__name__)
 
@@ -164,6 +183,51 @@ async def extract(
         )
         size_mb = file_size / (1024 * 1024)
         log.info("upload.received", size_mb=round(size_mb, 1))
+
+        # ── Phase A½: Route by size ──────────────────────────────────────────
+        # The batch queue router is the single authority: a file it would send
+        # to 'normal' (≤ large_file_threshold_mb) stays on the in-process sync
+        # path below, unchanged. Anything it routes to 'heavy' / 'giant' is
+        # handed to the existing Celery workers instead of occupying FastAPI.
+        # With Celery disabled (native dev mode) there is no worker to hand to,
+        # so every size keeps the sync path.
+        queue, _ = route_queue(file_size, cfg)
+        if cfg.celery_enabled and queue != "normal":
+            try:
+                job_id, queue = await _enqueue_single_file(tmp_path, filename, file_size, cfg, td)
+            except Exception as exc:
+                log.exception(
+                    "extraction.event",
+                    status="enqueue_error",
+                    size_mb=round(size_mb, 1),
+                    queue=queue,
+                    exc_type=type(exc).__name__,
+                    exc_message=str(exc),
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Could not queue extraction: {exc}",
+                )
+            # The upload is now a source object owned by the worker, which
+            # deletes it after extraction; the temp file is already gone.
+            tmp_path = None
+            log.info(
+                "extraction.event",
+                status="queued",
+                job_id=job_id,
+                queue=queue,
+                size_mb=round(size_mb, 1),
+            )
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": "queued",
+                    "job_id": job_id,
+                    "filename": filename,
+                    "size_mb": round(size_mb, 1),
+                    "queue": queue,
+                },
+            )
 
         # ── Phase B: Wait for a concurrency slot ─────────────────────────────
         sem = _get_semaphore()
@@ -341,12 +405,16 @@ async def health() -> dict:
         "db_mode": "enabled" if is_db_enabled() else "legacy",
     }
 
-    # Verify the extraction storage directory is writable.
+    # Verify the extracted-rows storage is writable (filesystem: touch/unlink a
+    # probe file in rows_storage_path — same check as before Phase 3B).
+    out["storage_backend"] = cfg.storage_backend
+    # Effective backend of the source-upload area (Phase 3C) — reported only;
+    # it is not probed here so a MinIO outage never takes /health down.
+    out["upload_storage_backend"] = area_backend(StorageArea.BATCH_UPLOADS, cfg)
+    # Phase 3D: whether large uploads go browser -> MinIO directly (reported only).
+    out["direct_upload"] = "enabled" if (cfg.direct_upload_configured and cfg.celery_enabled) else "disabled"
     try:
-        rows_dir = Path(cfg.rows_storage_path)
-        probe = rows_dir / ".health_probe"
-        probe.touch()
-        probe.unlink(missing_ok=True)
+        get_object_storage(StorageArea.EXTRACTED_ROWS).ping()
         out["extraction_dir"] = "ok"
     except Exception as exc:
         out["extraction_dir"] = "error"
@@ -412,9 +480,12 @@ async def me(
     }
 
 
-_AVATAR_DIR = Path("storage/avatars")
+# Avatars go through the storage abstraction (Phase 3B). With the default
+# filesystem backend the object key "<user_id>.<ext>" lands in
+# cfg.avatar_dir ("storage/avatars", CWD-relative) — the same files as before.
 _ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 _MIME_TO_EXT = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}
+_AVATAR_EXTS = ("jpg", "png", "webp", "gif")
 
 
 @router.post("/avatar")
@@ -436,14 +507,13 @@ async def upload_avatar(
         raise HTTPException(status_code=401, detail="Authentication required")
 
     ext = _MIME_TO_EXT[content_type]
-    _AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+    storage = get_object_storage(StorageArea.AVATARS)
 
     # Remove old avatar files for this user before writing the new one
-    for old in _AVATAR_DIR.glob(f"{td.user_id}.*"):
-        old.unlink(missing_ok=True)
+    for old in list(storage.list_objects(prefix=f"{td.user_id}.")):
+        storage.delete(old.key)
 
-    avatar_path = _AVATAR_DIR / f"{td.user_id}.{ext}"
-    avatar_path.write_bytes(content)
+    storage.put_bytes(f"{td.user_id}.{ext}", content, content_type=content_type)
 
     import time as _time
     versioned_url = f"/api/avatar/{td.user_id}?v={int(_time.time())}"
@@ -468,8 +538,9 @@ async def delete_avatar(
     if not td.user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    for ext in ("jpg", "png", "webp", "gif"):
-        (_AVATAR_DIR / f"{td.user_id}.{ext}").unlink(missing_ok=True)
+    storage = get_object_storage(StorageArea.AVATARS)
+    for ext in _AVATAR_EXTS:
+        storage.delete(f"{td.user_id}.{ext}")
 
     if is_db_enabled() and db is not None:
         from spir_dynamic.db.models import User
@@ -486,19 +557,76 @@ async def delete_avatar(
 async def get_avatar(user_id: str):
     """Serve a user's avatar image (public — no auth required)."""
     import mimetypes
-    for ext in ("jpg", "png", "webp", "gif"):
-        path = _AVATAR_DIR / f"{user_id}.{ext}"
-        if path.exists():
-            mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
-            return StreamingResponse(
-                open(path, "rb"),  # noqa: WPS515
-                media_type=mime,
-                headers={"Cache-Control": "public, max-age=86400"},
-            )
+    storage = get_object_storage(StorageArea.AVATARS)
+    for ext in _AVATAR_EXTS:
+        key = f"{user_id}.{ext}"
+        try:
+            stream = storage.open_read(key)
+        except (ObjectNotFound, InvalidObjectKey):
+            continue
+        mime = mimetypes.guess_type(key)[0] or "image/jpeg"
+        return StreamingResponse(
+            stream,
+            media_type=mime,
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
     raise HTTPException(status_code=404, detail="Avatar not found")
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
+
+async def _enqueue_single_file(
+    tmp_path: Path,
+    filename: str,
+    size_bytes: int,
+    cfg,
+    td: TokenData,
+) -> tuple[str, str]:
+    """
+    Hand a large single-file upload to the batch worker infrastructure.
+
+    Creates a one-file batch job (same job store the batch page uses), stores
+    the streamed upload as the job's source object under the batch key
+    convention (services/source_objects.py — the shared batch_uploads
+    directory, or MinIO when UPLOAD_STORAGE_BACKEND=minio), and enqueues it
+    via _dispatch_celery so queue selection (heavy / giant) stays with the
+    batch router. The worker then runs the same run_pipeline, writes
+    rows/history, and deletes the source object — exactly as for a batch
+    file. The frontend polls GET /api/batch/{job_id}/result, which mirrors
+    the sync /api/extract payload.
+
+    Returns (job_id, queue). On failure the stored object is removed and the
+    job slot is marked error so a poll never stalls on "pending". The temp
+    file is consumed either way (store_source_upload removes it).
+    """
+    job_id = str(uuid.uuid4())
+    user_id = td.user_id or ""
+    source_key = source_object_key(job_id, 0, filename)
+
+    # Whole-file copy / PUT — keep it off the event loop.
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(None, store_source_upload, tmp_path, source_key)
+    except Exception:
+        discard_source_object(source_key, log_context=f"store-failed job={job_id}")  # partial object, if any
+        raise
+
+    job_store = get_job_store()
+    try:
+        job_store.create(job_id, [filename], user_id=user_id)
+        queues = _dispatch_celery(job_id, [(source_key, filename, size_bytes)], cfg, user_id)
+    except Exception as exc:
+        discard_source_object(source_key, log_context=f"enqueue-failed job={job_id}")
+        # No-op if create() itself failed (store logs "job.not_found").
+        job_store.update_result(
+            job_id, 0,
+            FileResult(filename=filename, status="error", error=f"Could not queue extraction: {exc}"),
+        )
+        raise
+
+    asyncio.create_task(_persist_job_to_db(job_id, user_id, [filename], cfg.batch_ttl_seconds))
+    return job_id, queues[0]
+
 
 def _save_rows_to_disk(result: dict, cfg) -> Optional[str]:
     """

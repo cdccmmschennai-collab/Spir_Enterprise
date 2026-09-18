@@ -24,10 +24,20 @@ Phase 3 — Stale batch uploads
   Normally the extraction task deletes uploads immediately on success or
   after exhausting retries.  This phase catches anything that slipped
   through (worker killed mid-task, disk full at cleanup time, etc.).
+  When the BATCH_UPLOADS area is on an object backend (Phase 3C,
+  UPLOAD_STORAGE_BACKEND=minio) the same rule is applied to the source
+  objects through the ObjectStorage contract (list_objects / delete) — only
+  objects under that area's prefix, never the bucket or anything else.
+  If that backend also takes direct browser uploads (Phase 3D), multipart
+  uploads under the same prefix that were started more than
+  CLEANUP_UPLOAD_STALE_HOURS ago and never completed or aborted (browser
+  closed mid-upload, lost session) are aborted too, so their parts do not
+  accumulate in the bucket.
 
 Phase 4 — Disk metrics
   Refresh Prometheus Gauges for JSON count, JSON dir size, and upload dir
-  size so Grafana always shows current storage state.
+  size (or the total size of the source objects on an object backend) so
+  Grafana always shows current storage state.
 
 Dry-run mode:
   Set CLEANUP_DRY_RUN=true in .env, or pass dry_run=True when triggering
@@ -116,21 +126,45 @@ def lifecycle_cleanup_task(self, dry_run: bool = False) -> dict:
         log.error("cleanup.phase_failed", phase="orphan_cleanup", exc_message=str(exc))
         summary["phases"]["orphan_cleanup"] = {"error": str(exc)}
 
-    # Phase 3 — Stale upload staging files
+    # Phase 3 — Stale upload staging files / source objects
+    # The filesystem backend exposes the directory (path_for), so the original
+    # directory sweep runs unchanged; any other backend is swept through the
+    # ObjectStorage contract.
+    upload_storage = _source_object_storage()
     try:
-        result = _purge_stale_uploads(
-            upload_dir,
-            stale_hours=cfg.cleanup_upload_stale_hours,
-            dry_run=effective_dry_run,
-        )
+        if upload_storage is None:
+            result = _purge_stale_uploads(
+                upload_dir,
+                stale_hours=cfg.cleanup_upload_stale_hours,
+                dry_run=effective_dry_run,
+            )
+        else:
+            result = _purge_stale_source_objects(
+                upload_storage,
+                stale_hours=cfg.cleanup_upload_stale_hours,
+                dry_run=effective_dry_run,
+            )
         summary["phases"]["stale_uploads"] = result
     except Exception as exc:
         log.error("cleanup.phase_failed", phase="stale_uploads", exc_message=str(exc))
         summary["phases"]["stale_uploads"] = {"error": str(exc)}
 
+    # Phase 3b — Abandoned direct (multipart) uploads on an object backend
+    if upload_storage is not None and _takes_direct_uploads(upload_storage):
+        try:
+            result = _purge_stale_multipart_uploads(
+                upload_storage,
+                stale_hours=cfg.cleanup_upload_stale_hours,
+                dry_run=effective_dry_run,
+            )
+            summary["phases"]["stale_multipart_uploads"] = result
+        except Exception as exc:
+            log.error("cleanup.phase_failed", phase="stale_multipart_uploads", exc_message=str(exc))
+            summary["phases"]["stale_multipart_uploads"] = {"error": str(exc)}
+
     # Phase 4 — Refresh disk metrics (always runs, even in dry-run)
     try:
-        result = _update_disk_metrics(rows_dir, upload_dir)
+        result = _update_disk_metrics(rows_dir, upload_dir, upload_storage=upload_storage)
         summary["phases"]["disk_metrics"] = result
     except Exception as exc:
         log.error("cleanup.phase_failed", phase="disk_metrics", exc_message=str(exc))
@@ -424,13 +458,128 @@ def _purge_stale_uploads(
     }
 
 
+# ── Phase 3 (object backend): stale source objects ────────────────────────────
+
+def _source_object_storage():
+    """
+    The BATCH_UPLOADS backend when it is NOT the filesystem, else None.
+
+    None means "sweep the directory as before" — the filesystem backend's root
+    is that very directory. Resolving the backend can only fail on a bad
+    configuration; that is logged and the directory sweep is used.
+    """
+    try:
+        from spir_dynamic.services.object_storage import StorageArea, get_object_storage
+        storage = get_object_storage(StorageArea.BATCH_UPLOADS)
+    except Exception as exc:
+        log.warning("cleanup.upload_backend_unresolved", exc_message=str(exc))
+        return None
+    return None if getattr(storage, "path_for", None) is not None else storage
+
+
+def _purge_stale_source_objects(storage, stale_hours: int, dry_run: bool) -> dict:
+    """
+    Object-backend twin of _purge_stale_uploads (Phase 3C).
+
+    Applies the same rule to the source objects of the BATCH_UPLOADS area —
+    older than stale_hours → delete, modified within the last hour → never
+    touched — using only the ObjectStorage contract. The instance is scoped
+    to the area prefix, so nothing outside it can be listed or deleted.
+    """
+    from datetime import datetime, timezone
+    from spir_dynamic.monitoring.metrics import CLEANUP_DELETED_FILES
+
+    now         = datetime.now(timezone.utc)
+    cutoff_s    = now.timestamp() - (stale_hours * 3600)
+    safe_guard  = now.timestamp() - 3600
+    deleted     = 0
+    skipped     = 0
+    bytes_freed = 0
+
+    for obj in list(storage.list_objects()):
+        mtime = obj.last_modified.timestamp()
+        age_h = round((now.timestamp() - mtime) / 3600, 1)
+
+        if mtime >= safe_guard:
+            skipped += 1
+            continue
+
+        if mtime < cutoff_s:
+            if dry_run:
+                log.info("cleanup.uploads.would_delete", key=obj.key, age_h=age_h)
+            else:
+                try:
+                    if storage.delete(obj.key):
+                        CLEANUP_DELETED_FILES.labels(reason="stale_upload").inc()
+                        log.info("cleanup.uploads.deleted", key=obj.key, age_h=age_h)
+                        deleted += 1
+                        bytes_freed += obj.size
+                except Exception as exc:
+                    log.warning("cleanup.uploads.delete_failed", key=obj.key, exc_message=str(exc))
+
+    mb_freed = round(bytes_freed / (1024 * 1024), 2)
+    log.info(
+        "cleanup.uploads.done",
+        backend=storage.backend,
+        deleted=deleted,
+        skipped_recent=skipped,
+        mb_freed=mb_freed,
+        stale_hours=stale_hours,
+        dry_run=dry_run,
+    )
+    return {
+        "backend": storage.backend,
+        "deleted": deleted,
+        "skipped_recent": skipped,
+        "mb_freed": mb_freed,
+        "stale_hours": stale_hours,
+    }
+
+
+# ── Phase 3b (object backend): abandoned multipart uploads ──────────────────
+
+def _takes_direct_uploads(storage) -> bool:
+    """True when the backend implements the Phase 3D multipart contract (MinIO does; the filesystem never)."""
+    from spir_dynamic.services.object_storage import DirectUploadStorage
+    return isinstance(storage, DirectUploadStorage)
+
+
+def _purge_stale_multipart_uploads(storage, stale_hours: int, dry_run: bool) -> dict:
+    """
+    Abort direct browser uploads that were started more than stale_hours ago
+    and never completed or aborted (tab closed mid-upload, lost session, API
+    restart with no client return). The candidates come from the index the
+    API keeps of every upload it started (services/direct_upload.py) — MinIO
+    cannot enumerate in-progress multipart uploads by prefix — and are
+    aborted through the DirectUploadStorage contract. Same recent guard as
+    the object sweep: nothing started in the last hour is touched.
+    """
+    from spir_dynamic.monitoring.metrics import CLEANUP_DELETED_FILES
+    from spir_dynamic.services.direct_upload import reclaim_abandoned_uploads
+
+    result = reclaim_abandoned_uploads(storage, stale_hours=stale_hours, dry_run=dry_run)
+    for _ in range(result["aborted"]):
+        CLEANUP_DELETED_FILES.labels(reason="stale_multipart").inc()
+
+    log.info(
+        "cleanup.multipart.done",
+        backend=storage.backend,
+        stale_hours=stale_hours,
+        dry_run=dry_run,
+        **result,
+    )
+    return {"backend": storage.backend, "stale_hours": stale_hours, **result}
+
+
 # ── Phase 4: Disk metrics ─────────────────────────────────────────────────────
 
-def _update_disk_metrics(rows_dir: Path, upload_dir: Path) -> dict:
+def _update_disk_metrics(rows_dir: Path, upload_dir: Path, upload_storage=None) -> dict:
     """
     Measure current storage state and update Prometheus Gauges.
 
     Always runs (even in dry-run mode) — reading filesystem state is safe.
+    `upload_storage` (Phase 3C) is the non-filesystem BATCH_UPLOADS backend,
+    if any; its objects are then measured instead of upload_dir.
     """
     from spir_dynamic.monitoring.metrics import (
         STORAGE_JSON_COUNT,
@@ -451,7 +600,12 @@ def _update_disk_metrics(rows_dir: Path, upload_dir: Path) -> dict:
                 except OSError:
                     pass
 
-    if upload_dir.is_dir():
+    if upload_storage is not None:
+        try:
+            upload_bytes = sum(obj.size for obj in upload_storage.list_objects())
+        except Exception as exc:
+            log.warning("cleanup.metrics.upload_list_failed", exc_message=str(exc))
+    elif upload_dir.is_dir():
         for p in upload_dir.iterdir():
             if p.is_file():
                 try:

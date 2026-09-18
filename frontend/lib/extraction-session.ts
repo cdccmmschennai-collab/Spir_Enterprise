@@ -6,6 +6,10 @@ export interface ExtractionSession {
   filename: string;
   savedAt: number;
   job_id?: string;
+  // "uploading": the browser was writing the file directly to storage when
+  // this was saved. That transfer cannot survive a navigation (the File is
+  // gone), so on restore it is cancelled server-side instead of polled.
+  phase?: "uploading" | "processing";
   result?: unknown;
 }
 
