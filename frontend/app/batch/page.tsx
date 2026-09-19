@@ -970,10 +970,8 @@ export default function BatchPage() {
                         {displayStatus === "uploading" && (
                           <p className="mt-0.5 text-xs text-violet-500 dark:text-violet-400">
                             {r.status === "uploading" && i === uploadingFileIdx && directPct !== null
-                              ? `Uploading directly to storage… ${directPct}%`
-                              : r.status === "uploading"
-                              ? "Uploading directly to storage…"
-                              : "Sending file to server…"}
+                              ? `Uploading… ${directPct}%`
+                              : "Uploading…"}
                           </p>
                         )}
                         {r.status === "pending" && displayStatus === "waiting" && (

@@ -21,10 +21,12 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { SidebarLayout } from "@/components/sidebar";
+import { UploadProgressCard, type UploadStage } from "@/components/upload-progress-card";
 import { authHeaders } from "@/lib/auth";
-import { cn } from "@/lib/utils";
-import { saveSession, loadSession, clearSession } from "@/lib/extraction-session";
+import { cn, formatBytes } from "@/lib/utils";
+import { saveSession, loadSession, clearSession, dismissSession } from "@/lib/extraction-session";
 import { directUpload, cancelDirectUpload } from "@/lib/direct-upload";
+import { postExtract, ExtractRequestCancelled } from "@/lib/extract-request";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const ACCEPTED = ".xlsx,.xlsm,.xls";
@@ -34,6 +36,13 @@ const ROWS_PER_PAGE = 10;
 // hard time limit (36 min) plus any queue wait — well inside the 2 h job TTL.
 const POLL_MS = 2000;
 const MAX_POLL_ATTEMPTS = (60 * 60 * 1000) / POLL_MS; // 60 min
+
+// Generation counter for handleExtract runs. Module-level (not a ref) on
+// purpose: after a client-side navigation the previous page instance is
+// unmounted but its in-flight request continuation still runs in this tab.
+// "Start a new extraction" bumps this so that continuation stops touching
+// page state and the persisted session — the request itself is left alone.
+let extractionRun = 0;
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -80,12 +89,6 @@ function normalizeResult(data: Partial<ExtractResult>): ExtractResult {
     filename: "",
     ...data,
   };
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // ─── Row status helper ─────────────────────────────────────────────────────────
@@ -379,41 +382,50 @@ export default function ExtractionPage() {
   const [result, setResult] = useState<ExtractResult | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [savedFilename, setSavedFilename] = useState("");
+  // Size from the persisted session — the File object is gone after a remount.
+  const [savedSize, setSavedSize] = useState<number | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [recoveredToHistory, setRecoveredToHistory] = useState(false);
   // True while the API has handed this extraction to a background worker
-  // (large file) — drives the "you can navigate away" hint only.
+  // (large file). Kept for session restore; the card itself never shows it.
   const [backgroundJob, setBackgroundJob] = useState(false);
-  // Direct browser->storage upload of a large file (Phase 3D): progress in
-  // bytes while parts are in flight, "finalizing" while the server verifies.
+  // Real bytes on the wire for either upload path: the direct browser->storage
+  // transfer (Phase 3D) or the classic /api/extract request. "finalizing" is
+  // the direct path's server-side verification (cancel no longer possible).
+  // null once the body has been delivered — the file is then "processing".
   const [upload, setUpload] = useState<{ loaded: number; total: number; phase: "uploading" | "finalizing" } | null>(null);
   const uploadAbortRef = useRef<AbortController | null>(null);
 
-  // Async polling refs — stable across renders, cleaned up on unmount
+  // Async polling refs — stable across renders, cleaned up on unmount.
+  // The token is a fresh object per polling run so that a stale in-flight
+  // poll (reset, or a Strict Mode remount) is dropped even for the same job.
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const activeJobIdRef = useRef<string | null>(null);
+  const activePollRef = useRef<object | null>(null);
 
   const stopPolling = useCallback(() => {
     if (pollIntervalRef.current !== null) {
       clearInterval(pollIntervalRef.current);
       pollIntervalRef.current = null;
     }
-    activeJobIdRef.current = null;
+    activePollRef.current = null;
   }, []);
 
   // Clean up polling interval on unmount
   useEffect(() => () => stopPolling(), [stopPolling]);
 
   const startPolling = useCallback((job_id: string) => {
-    activeJobIdRef.current = job_id;
+    stopPolling();
+    const token = {};
+    activePollRef.current = token;
     let attempts = 0;
 
     const poll = async () => {
-      if (activeJobIdRef.current !== job_id) return; // stale poll after reset
+      if (activePollRef.current !== token) return; // stale poll after reset
       try {
         const res = await fetch(`${API_URL}/api/batch/${job_id}/result`, {
           headers: authHeaders(),
         });
+        if (activePollRef.current !== token) return; // reset while in flight
         if (res.status === 401) {
           stopPolling();
           clearSession();
@@ -429,11 +441,12 @@ export default function ExtractionPage() {
           return;
         }
         const data = await res.json();
+        if (activePollRef.current !== token) return;
         if (data.status === "done") {
           stopPolling();
           const extracted = normalizeResult(data as Partial<ExtractResult>);
           setResult(extracted);
-          saveSession({ status: "complete", filename: extracted.filename, savedAt: Date.now(),
+          saveSession({ status: "complete", filename: extracted.filename, size: loadSession()?.size, savedAt: Date.now(),
             result: { ...extracted, preview_rows: extracted.preview_rows.slice(0, 200) } });
           window.dispatchEvent(new CustomEvent("profile-refresh"));
           setLoading(false);
@@ -461,10 +474,75 @@ export default function ExtractionPage() {
     pollIntervalRef.current = setInterval(poll, POLL_MS);
   }, [stopPolling]);
 
+  // Sync (in-process) request recovery. The classic /api/extract request has
+  // no job_id: after a remount the only durable evidence that it finished is
+  // (a) the session flipping to "complete" — the original request's
+  // continuation still runs in this tab if the user only navigated within
+  // the app — or (b) a matching History entry. Checked on the same cadence
+  // as worker polling, with the same cap, so the spinner cannot stick forever.
+  const startSyncRecovery = useCallback((filename: string, savedAt: number) => {
+    stopPolling();
+    const token = {};
+    activePollRef.current = token;
+    let attempts = 0;
+
+    const check = async () => {
+      if (activePollRef.current !== token) return;
+      const session = loadSession();
+      if (session?.status === "complete" && session.result && !session.dismissed) {
+        stopPolling();
+        setResult(normalizeResult(session.result as Partial<ExtractResult>));
+        setLoading(false);
+        setSavedFilename("");
+        return;
+      }
+      try {
+        const res = await fetch(`${API_URL}/api/history`, { headers: authHeaders() });
+        if (activePollRef.current !== token) return;
+        if (!res.ok) return; // transient — keep checking
+        const items = (await res.json()) as Array<{ filename: string; created_at: string }>;
+        if (activePollRef.current !== token) return;
+        const completed = items.some(
+          (item) =>
+            item.filename === filename &&
+            new Date(item.created_at).getTime() >= savedAt - 10_000
+        );
+        if (completed) {
+          stopPolling();
+          clearSession();
+          setLoading(false);
+          setSavedFilename("");
+          setRecoveredToHistory(true);
+          return;
+        }
+      } catch {
+        // Network error — keep checking; "Start a new extraction" is the escape hatch
+      }
+      attempts++;
+      if (attempts > MAX_POLL_ATTEMPTS) {
+        stopPolling();
+        clearSession();
+        setError("Extraction timed out. The file may be too large or complex.");
+        setLoading(false);
+      }
+    };
+
+    check();
+    pollIntervalRef.current = setInterval(check, POLL_MS);
+  }, [stopPolling]);
+
   useEffect(() => {
     const session = loadSession();
+    // Intentionally left behind via "Start a new extraction": the job (if any)
+    // keeps running server-side and shows up in History, but the page starts
+    // fresh. Restoring it here would trap the user in the old extraction.
+    if (session?.dismissed) {
+      setHydrated(true);
+      return;
+    }
     if (session?.status === "complete" && session.result) {
       setResult(normalizeResult(session.result as Partial<ExtractResult>));
+      setSavedSize(session.size ?? null);
       setHydrated(true);
       return;
     }
@@ -479,35 +557,16 @@ export default function ExtractionPage() {
         return;
       }
       setSavedFilename(session.filename);
+      setSavedSize(session.size ?? null);
       setLoading(true);
 
       if (session.job_id) {
-        // Background job (large file) — resume polling the in-flight job
+        // Background job (large file) — resume polling the in-flight job.
+        // Nothing is re-uploaded or re-queued; the job_id is the whole handle.
         setBackgroundJob(true);
         startPolling(session.job_id);
       } else {
-        // Sync recovery: single check against history
-        const { filename, savedAt } = session;
-        fetch(`${API_URL}/api/history`, { headers: authHeaders() })
-          .then((res) => (res.ok ? res.json() : null))
-          .then((items: Array<{ filename: string; created_at: string }> | null) => {
-            if (!items) return;
-            const completed = items.some(
-              (item) =>
-                item.filename === filename &&
-                new Date(item.created_at).getTime() >= savedAt - 10_000
-            );
-            if (completed) {
-              clearSession();
-              setHydrated(true);
-              setLoading(false);
-              setSavedFilename("");
-              setRecoveredToHistory(true);
-            }
-          })
-          .catch(() => {
-            // Network error — keep spinner; "New Extraction" button is the escape hatch
-          });
+        startSyncRecovery(session.filename, session.savedAt);
       }
     }
     setHydrated(true);
@@ -519,9 +578,18 @@ export default function ExtractionPage() {
     setError(null);
     setResult(null);
     setBackgroundJob(false);
+    setSavedSize(null);
     stopPolling();
 
-    saveSession({ status: "loading", filename: file.name, savedAt: Date.now() });
+    // This run owns the page until "Start a new extraction" (or a reset)
+    // bumps the counter. Everything after an await checks `live()` first so
+    // an extraction the user walked away from can finish server-side without
+    // overwriting the next one's state or session.
+    const run = ++extractionRun;
+    const live = () => extractionRun === run;
+    const base = { filename: file.name, size: file.size };
+
+    saveSession({ status: "loading", ...base, savedAt: Date.now() });
 
     // Large files (Phase 3D): the API only plans the upload; the browser
     // writes the workbook straight to storage, then the server verifies it
@@ -529,28 +597,43 @@ export default function ExtractionPage() {
     // small files, and the classic request below runs unchanged.
     const controller = new AbortController();
     uploadAbortRef.current = controller;
+    const releaseController = () => {
+      if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
+    };
+    // Nothing has been submitted until the upload plan comes back, so this
+    // window is "uploading" (0 bytes, cancellable) — not "processing", where
+    // "Start a new extraction" would leave an extraction that never existed.
+    setUpload({ loaded: 0, total: file.size, phase: "uploading" });
     const outcome = await directUpload(file, {
       signal: controller.signal,
-      onJob: (job_id) =>
-        saveSession({ status: "loading", filename: file.name, savedAt: Date.now(), job_id, phase: "uploading" }),
-      onPhase: (phase) => setUpload((u) => ({ loaded: u?.loaded ?? 0, total: file.size, phase })),
-      onProgress: (loaded, total) => setUpload((u) => ({ loaded, total, phase: u?.phase ?? "uploading" })),
+      onJob: (job_id) => {
+        if (live()) saveSession({ status: "loading", ...base, savedAt: Date.now(), job_id, phase: "uploading" });
+      },
+      onPhase: (phase) => {
+        if (live()) setUpload((u) => ({ loaded: u?.loaded ?? 0, total: file.size, phase }));
+      },
+      onProgress: (loaded, total) => {
+        if (live()) setUpload((u) => ({ loaded, total, phase: u?.phase ?? "uploading" }));
+      },
     });
-    uploadAbortRef.current = null;
+    if (!live()) return;
     setUpload(null);
     if (outcome.kind === "queued") {
-      saveSession({ status: "loading", filename: file.name, savedAt: Date.now(),
+      releaseController();
+      saveSession({ status: "loading", ...base, savedAt: Date.now(),
         job_id: outcome.response.job_id, phase: "processing" });
       setBackgroundJob(true);
       startPolling(outcome.response.job_id);
       return; // loading stays true — cleared by poll when done
     }
     if (outcome.kind === "cancelled") {
+      releaseController();
       clearSession();
       setLoading(false);
       return;
     }
     if (outcome.kind === "error") {
+      releaseController();
       clearSession();
       setError(outcome.status === 401 ? "Session expired. Please log in again." : outcome.message);
       setLoading(false);
@@ -560,31 +643,36 @@ export default function ExtractionPage() {
     // One entry point for every size. The API decides after the upload:
     //   200 + result  → extracted in-process (small file), shown immediately
     //   202 + job_id  → handed to a background worker (large file), polled
+    // Sent via XHR (same request) so the card can show real bytes and switch
+    // to "processing" once the body has been delivered.
     const form = new FormData();
     form.append("file", file);
+    setUpload({ loaded: 0, total: file.size, phase: "uploading" });
     try {
-      const res = await fetch(`${API_URL}/api/extract`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: form,
+      const res = await postExtract(form, {
+        signal: controller.signal,
+        onProgress: (loaded, total) => { if (live()) setUpload({ loaded, total, phase: "uploading" }); },
+        onSent: () => { if (live()) setUpload(null); },
       });
+      if (!live()) return;
+      releaseController();
+      setUpload(null);
       if (res.status === 401) {
         clearSession();
         setError("Session expired. Please log in again.");
         setLoading(false);
         return;
       }
-      if (!res.ok) {
+      if (res.status < 200 || res.status >= 300) {
         clearSession();
-        const data = await res.json().catch(() => ({}));
-        setError(data.detail ?? `Extraction failed (${res.status})`);
+        setError(typeof res.body.detail === "string" ? res.body.detail : `Extraction failed (${res.status})`);
         setLoading(false);
         return;
       }
-      const payload = await res.json();
-      if (res.status === 202 && payload.status === "queued" && payload.job_id) {
+      const payload = res.body;
+      if (res.status === 202 && payload.status === "queued" && typeof payload.job_id === "string") {
         // Large file — the worker runs the same pipeline; poll until done.
-        saveSession({ status: "loading", filename: file.name, savedAt: Date.now(), job_id: payload.job_id });
+        saveSession({ status: "loading", ...base, savedAt: Date.now(), job_id: payload.job_id, phase: "processing" });
         setBackgroundJob(true);
         startPolling(payload.job_id);
         return; // loading stays true — cleared by poll when done
@@ -594,13 +682,18 @@ export default function ExtractionPage() {
       // Cap preview_rows before saving to localStorage — full rows can be
       // 2–10 MB for large SPIRs, exceeding the 5–10 MB quota. The download
       // still contains all rows; 200 preview rows = 20 paginated pages.
-      saveSession({ status: "complete", filename: data.filename, savedAt: Date.now(),
+      saveSession({ status: "complete", filename: data.filename, size: file.size, savedAt: Date.now(),
         result: { ...data, preview_rows: data.preview_rows.slice(0, 200) } });
       window.dispatchEvent(new CustomEvent("profile-refresh"));
       setLoading(false);
-    } catch {
+    } catch (err) {
+      if (!live()) return;
+      releaseController();
+      setUpload(null);
       clearSession();
-      setError("Could not reach the server. Is the backend running?");
+      if (!(err instanceof ExtractRequestCancelled)) {
+        setError("Could not reach the server. Is the backend running?");
+      }
       setLoading(false);
     }
   }, [file, startPolling, stopPolling]);
@@ -632,16 +725,37 @@ export default function ExtractionPage() {
     }
   }, [result]);
 
-  const handleReset = useCallback(() => {
+  // Back to file selection. Only the page's display state is touched: no
+  // cancel/delete call is made, and any upload controller is released, not
+  // aborted, so a request already handed to the server carries on.
+  const resetDisplay = useCallback(() => {
+    extractionRun++;
     stopPolling();
-    clearSession();
+    uploadAbortRef.current = null;
     setFile(null);
     setResult(null);
     setError(null);
+    setLoading(false);
+    setUpload(null);
     setSavedFilename("");
+    setSavedSize(null);
     setRecoveredToHistory(false);
     setBackgroundJob(false);
   }, [stopPolling]);
+
+  // Completed / failed: nothing is running, so the session can simply go.
+  const handleReset = useCallback(() => {
+    clearSession();
+    resetDisplay();
+  }, [resetDisplay]);
+
+  // Processing: leave the submitted extraction running (it still lands in
+  // History) and stop showing it here. The session is kept but flagged so the
+  // next mount does not restore it and trap the user in the old extraction.
+  const handleStartNew = useCallback(() => {
+    dismissSession();
+    resetDisplay();
+  }, [resetDisplay]);
 
   // Cancel an in-flight direct upload (parts are discarded server-side).
   const handleCancelUpload = useCallback(() => {
@@ -660,6 +774,15 @@ export default function ExtractionPage() {
     return <SidebarLayout><></></SidebarLayout>;
   }
 
+  // Unified stage: both upload paths land on the same card. Bytes in flight →
+  // uploading; anything else in flight (sync wait, worker poll, restored
+  // session) → processing. "cancelled" is not a stage of its own — the page
+  // simply returns to the select-file state.
+  const stage: UploadStage | null = loading
+    ? upload ? "uploading" : "processing"
+    : error ? "failed" : null;
+  const activeFilename = file?.name ?? savedFilename;
+
   return (
     <SidebarLayout>
       {/* ── Dashboard / Upload State ── */}
@@ -670,7 +793,7 @@ export default function ExtractionPage() {
             <div className="flex items-start gap-3 rounded-xl border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3.5 text-sm text-emerald-700 dark:text-emerald-400">
               <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
               <span>
-                Your extraction completed in the background.{" "}
+                Your file finished processing while you were away.{" "}
                 Check{" "}
                 <button
                   onClick={() => setRecoveredToHistory(false)}
@@ -683,118 +806,56 @@ export default function ExtractionPage() {
             </div>
           )}
 
-          {/* Restored loading state — shown when file is unavailable (e.g. after navigation/refresh) */}
-          {loading && !file && savedFilename && (
-            <div className="flex flex-col items-center justify-center gap-5 rounded-2xl border-2 border-dashed border-violet-300 bg-violet-50/40 dark:border-violet-700 dark:bg-violet-950/20 px-6 py-16">
-              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-violet-100 dark:bg-violet-900/50">
-                <Loader2 className="h-8 w-8 animate-spin text-violet-600 dark:text-violet-400" />
-              </div>
-              <div className="text-center">
-                <p className="text-base font-semibold text-slate-700 dark:text-slate-300">Extracting…</p>
-                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{savedFilename}</p>
-              </div>
-              <button
-                onClick={handleReset}
-                className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200 transition-colors"
-              >
-                <X className="h-3.5 w-3.5" /> New Extraction
-              </button>
-            </div>
-          )}
+          {/* One card for every path: uploading → processing → (results view) / failed.
+              Restored sessions (file object gone after reload) use the saved name. */}
+          {stage ? (
+            <UploadProgressCard
+              stage={stage}
+              filename={activeFilename}
+              size={file?.size ?? savedSize}
+              loaded={upload?.loaded}
+              total={upload?.total}
+              message={stage === "failed" ? error ?? undefined : undefined}
+              onCancel={
+                stage === "uploading" && upload?.phase === "uploading"
+                  ? handleCancelUpload // Cancel: aborts the transfer
+                  : stage === "processing"
+                  ? handleStartNew // Start a new extraction: leaves the job running
+                  : undefined
+              }
+              cancelLabel={stage === "processing" ? "Start a new extraction" : "Cancel"}
+              onRetry={stage === "failed" && file ? handleExtract : undefined}
+              onReset={stage === "failed" ? handleReset : undefined}
+            />
+          ) : (
+            <>
+              <UploadZone file={file} onFile={setFile} />
 
-          {/* Upload zone — hidden while restoring loading state */}
-          {!(loading && !file && savedFilename) && (
-            <UploadZone file={file} onFile={setFile} disabled={loading} />
-          )}
+              {/* Large-file advisory — shown before extraction starts */}
+              {file && file.size > 500 * 1024 * 1024 && (
+                <div className="flex items-start gap-3 rounded-xl border border-amber-200 dark:border-amber-800/60 bg-amber-50 dark:bg-amber-950/30 px-4 py-3.5 text-sm text-amber-700 dark:text-amber-400">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>
+                    <span className="font-semibold">This is a large file ({formatBytes(file.size)}).</span>{" "}
+                    Processing may take 10–30 minutes. Once the upload finishes you can continue
+                    working and check the result in History.
+                  </span>
+                </div>
+              )}
 
-          {/* Large-file advisory — shown before extraction starts */}
-          {file && !loading && file.size > 500 * 1024 * 1024 && (
-            <div className="flex items-start gap-3 rounded-xl border border-amber-200 dark:border-amber-800/60 bg-amber-50 dark:bg-amber-950/30 px-4 py-3.5 text-sm text-amber-700 dark:text-amber-400">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>
-                <span className="font-semibold">Large file detected ({formatBytes(file.size)}).</span>{" "}
-                Processing may take 10–30 minutes. The file will be sanitized to remove embedded
-                objects before extraction. You can navigate away — batch processing continues in
-                the background.
-              </span>
-            </div>
-          )}
-
-          {/* Direct upload progress — large file going browser → storage */}
-          {loading && upload && (
-            <div className="rounded-xl border border-violet-200 dark:border-violet-800/60 bg-violet-50 dark:bg-violet-950/30 px-4 py-3.5 text-sm text-violet-700 dark:text-violet-300">
-              <div className="flex items-start gap-3">
-                <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
-                <span className="flex-1">
-                  <span className="font-semibold">
-                    {upload.phase === "finalizing" ? "Verifying upload…" : "Uploading large file…"}
-                  </span>{" "}
-                  {upload.phase === "finalizing"
-                    ? "The server is checking the uploaded file before extraction starts."
-                    : `${formatBytes(upload.loaded)} of ${formatBytes(upload.total)} sent directly to storage. Keep this page open until the upload finishes.`}
-                </span>
-                {upload.phase === "uploading" && (
+              {/* Extract button */}
+              {file && (
+                <div className="flex justify-center">
                   <button
-                    onClick={handleCancelUpload}
-                    className="flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-violet-700 hover:bg-violet-100 dark:text-violet-300 dark:hover:bg-violet-900/40 transition-colors"
+                    onClick={handleExtract}
+                    className="flex h-11 items-center gap-2 rounded-xl bg-violet-700 px-8 text-sm font-semibold text-white shadow-md shadow-violet-200 transition-all hover:bg-violet-800"
                   >
-                    <X className="h-3.5 w-3.5" /> Cancel
-                  </button>
-                )}
-              </div>
-              <div className="mt-3 h-2 overflow-hidden rounded-full bg-violet-100 dark:bg-violet-900/40">
-                <div
-                  className="h-2 rounded-full bg-violet-500 transition-all duration-300 ease-out"
-                  style={{ width: `${upload.total > 0 ? Math.round((upload.loaded / upload.total) * 100) : 0}%` }}
-                />
-              </div>
-              <p className="mt-1.5 text-right text-xs tabular-nums text-violet-500 dark:text-violet-400">
-                {upload.total > 0 ? Math.round((upload.loaded / upload.total) * 100) : 0}%
-              </p>
-            </div>
-          )}
-
-          {/* Background-worker notice — large file handed to a worker by the API */}
-          {loading && backgroundJob && (
-            <div className="flex items-start gap-3 rounded-xl border border-violet-200 dark:border-violet-800/60 bg-violet-50 dark:bg-violet-950/30 px-4 py-3.5 text-sm text-violet-700 dark:text-violet-300">
-              <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
-              <span>
-                <span className="font-semibold">Large file — processing in the background.</span>{" "}
-                This can take several minutes. You can navigate away; the result will be
-                waiting here and in History when it completes.
-              </span>
-            </div>
-          )}
-
-          {/* Extract button */}
-          {file && (
-            <div className="flex justify-center">
-              <button
-                onClick={handleExtract}
-                disabled={loading}
-                className="flex h-11 items-center gap-2 rounded-xl bg-violet-700 px-8 text-sm font-semibold text-white shadow-md shadow-violet-200 transition-all hover:bg-violet-800 disabled:opacity-60"
-              >
-                {loading ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    {upload ? "Uploading…" : "Extracting…"}
-                  </>
-                ) : (
-                  <>
                     <FileSpreadsheet className="h-4 w-4" />
                     Run Extraction
-                  </>
-                )}
-              </button>
-            </div>
-          )}
-
-          {/* Error */}
-          {error && (
-            <div className="flex items-start gap-3 rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30 px-4 py-3.5 text-sm text-red-700 dark:text-red-400">
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>{error}</span>
-            </div>
+                  </button>
+                </div>
+              )}
+            </>
           )}
 
           {/* System Guide card */}
@@ -822,42 +883,35 @@ export default function ExtractionPage() {
       {/* ── Extraction Results State ── */}
       {result && (
         <div className="mx-auto max-w-6xl space-y-6 p-4 sm:p-6 lg:p-8">
-          {/* Header bar */}
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-2.5">
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 dark:bg-emerald-950 px-3 py-1 text-xs font-bold text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
-                  <CheckCircle2 className="h-3.5 w-3.5" />
-                  Extraction Complete
-                </span>
-              </div>
-              <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
-                Successfully processed{" "}
-                <span className="font-semibold text-slate-700 dark:text-slate-300">{result.filename || file?.name}</span>
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleReset}
-                className="flex h-9 items-center gap-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-4 text-sm font-medium text-slate-600 dark:text-slate-300 shadow-sm hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
-              >
-                <RefreshCw className="h-3.5 w-3.5" />
-                New File
-              </button>
-              <button
-                onClick={handleDownload}
-                disabled={downloading}
-                className="flex h-9 items-center gap-2 rounded-xl bg-violet-700 px-4 text-sm font-semibold text-white shadow-md shadow-violet-200 hover:bg-violet-800 transition-colors disabled:opacity-60"
-              >
-                {downloading ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Download className="h-3.5 w-3.5" />
-                )}
-                Download Results
-              </button>
-            </div>
-          </div>
+          {/* Completed state — same card as uploading/processing, with the result actions */}
+          <UploadProgressCard
+            stage="completed"
+            filename={result.filename || file?.name || ""}
+            size={file?.size ?? savedSize}
+            actions={
+              <>
+                <button
+                  onClick={handleReset}
+                  className="flex h-9 items-center gap-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-4 text-sm font-medium text-slate-600 dark:text-slate-300 shadow-sm hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  New File
+                </button>
+                <button
+                  onClick={handleDownload}
+                  disabled={downloading}
+                  className="flex h-9 items-center gap-2 rounded-xl bg-violet-700 px-4 text-sm font-semibold text-white shadow-md shadow-violet-200 hover:bg-violet-800 transition-colors disabled:opacity-60"
+                >
+                  {downloading ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Download className="h-3.5 w-3.5" />
+                  )}
+                  Download Results
+                </button>
+              </>
+            }
+          />
 
           {/* Stats row */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">

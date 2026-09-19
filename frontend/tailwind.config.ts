@@ -55,11 +55,17 @@ const config: Config = {
           from: { opacity: "0", transform: "translateY(8px)" },
           to: { opacity: "1", transform: "translateY(0)" },
         },
+        // Indeterminate progress: a 40%-wide segment sweeping across its track.
+        "progress-indeterminate": {
+          from: { transform: "translateX(-100%)" },
+          to: { transform: "translateX(250%)" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
         "fade-in": "fade-in 0.3s ease-out",
+        "progress-indeterminate": "progress-indeterminate 1.6s ease-in-out infinite",
       },
     },
   },
