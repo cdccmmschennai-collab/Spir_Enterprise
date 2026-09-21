@@ -671,10 +671,11 @@ export default function BatchPage() {
               />
             </div>
 
-            {/* Selected file list */}
+            {/* Selected file list — action button lives in the header so it is
+                reachable without scrolling past a long file list */}
             {files.length > 0 && (
               <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
-                <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3 dark:border-slate-700">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-3 dark:border-slate-700">
                   <div className="flex items-center gap-2">
                     <Files className="h-4 w-4 text-slate-400" />
                     <span className="text-sm font-semibold text-slate-700 dark:text-slate-300">
@@ -682,12 +683,35 @@ export default function BatchPage() {
                       selected
                     </span>
                   </div>
-                  <button
-                    onClick={() => setFiles([])}
-                    className="text-xs text-slate-400 transition-colors hover:text-slate-600 dark:hover:text-slate-200"
-                  >
-                    Clear all
-                  </button>
+                  <div className="flex items-center gap-4">
+                    <button
+                      onClick={() => setFiles([])}
+                      disabled={uploading}
+                      className="text-xs text-slate-400 transition-colors hover:text-slate-600 disabled:opacity-50 dark:hover:text-slate-200"
+                    >
+                      Clear all
+                    </button>
+                    <button
+                      onClick={handleUpload}
+                      disabled={uploading}
+                      className="flex h-9 items-center gap-2 rounded-xl bg-violet-700 px-5 text-sm font-semibold text-white shadow-md shadow-violet-200 transition-all hover:bg-violet-800 disabled:opacity-60"
+                    >
+                      {uploading ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          {uploadProgress
+                            ? `Uploading ${uploadProgress.done + 1} of ${uploadProgress.total}…`
+                            : "Preparing…"}
+                        </>
+                      ) : (
+                        <>
+                          <Zap className="h-4 w-4" />
+                          Start Extraction ({files.length} file
+                          {files.length !== 1 ? "s" : ""})
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
                 <ul className="divide-y divide-slate-100 dark:divide-slate-700">
                   {files.map((f, i) => (
@@ -714,32 +738,6 @@ export default function BatchPage() {
                     </li>
                   ))}
                 </ul>
-              </div>
-            )}
-
-            {/* Start extraction button */}
-            {files.length > 0 && (
-              <div className="flex justify-center">
-                <button
-                  onClick={handleUpload}
-                  disabled={uploading}
-                  className="flex h-11 items-center gap-2 rounded-xl bg-violet-700 px-8 text-sm font-semibold text-white shadow-md shadow-violet-200 transition-all hover:bg-violet-800 disabled:opacity-60"
-                >
-                  {uploading ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      {uploadProgress
-                        ? `Uploading ${uploadProgress.done + 1} of ${uploadProgress.total}…`
-                        : "Preparing…"}
-                    </>
-                  ) : (
-                    <>
-                      <Zap className="h-4 w-4" />
-                      Start Extraction Queue ({files.length} file
-                      {files.length !== 1 ? "s" : ""})
-                    </>
-                  )}
-                </button>
               </div>
             )}
 
@@ -887,6 +885,88 @@ export default function BatchPage() {
                 </div>
               </div>
             </div>
+
+            {/* ── Combine / Merge section — placed above the queue list so the
+                action is visible without scrolling past every file ── */}
+            {canCombine && (
+              <div className="rounded-2xl border border-violet-200 bg-violet-50 p-5 shadow-sm dark:border-violet-800/50 dark:bg-violet-950/20">
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-violet-100 dark:bg-violet-900/50">
+                      <GitMerge className="h-4 w-4 text-violet-600 dark:text-violet-400" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-violet-900 dark:text-violet-200">
+                        Merge Successful Extractions
+                      </p>
+                      <p className="mt-0.5 text-xs text-violet-600 dark:text-violet-400">
+                        Combine {jobStatus.succeeded} completed files into one
+                        Excel workbook
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    {/* Download merged file (shown after combine succeeds) */}
+                    {combineState === "ready" && combinedFileId && (
+                      <button
+                        onClick={() =>
+                          handleDownload(
+                            combinedFileId,
+                            "COMBINED_Extraction.xlsx"
+                          )
+                        }
+                        disabled={downloading === combinedFileId}
+                        className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:opacity-60"
+                      >
+                        {downloading === combinedFileId ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Download className="h-3.5 w-3.5" />
+                        )}
+                        Download Combined Excel
+                      </button>
+                    )}
+
+                    {/* Combine trigger button */}
+                    {combineState !== "ready" && (
+                      <button
+                        onClick={handleCombine}
+                        disabled={combineState === "combining"}
+                        className="flex items-center gap-1.5 rounded-lg bg-violet-700 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-violet-800 disabled:opacity-60"
+                      >
+                        {combineState === "combining" ? (
+                          <>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            Combining…
+                          </>
+                        ) : (
+                          <>
+                            <GitMerge className="h-3.5 w-3.5" />
+                            Combine All Successful Files ({jobStatus.succeeded})
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Status line */}
+                {combineState === "ready" && (
+                  <p className="mt-3 text-xs text-emerald-700 dark:text-emerald-400">
+                    Combined workbook ready: {jobStatus.succeeded} files merged
+                    into one Excel file. Individual downloads remain available
+                    below.
+                  </p>
+                )}
+                {combineState === "error" && (
+                  <p className="mt-3 text-xs text-red-600 dark:text-red-400">
+                    Combine failed. Row data expires after 2 hours - try again
+                    or start a new batch.
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* Per-file queue rows */}
             <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800">
@@ -1068,87 +1148,6 @@ export default function BatchPage() {
                 })}
               </ul>
             </div>
-
-            {/* ── Combine / Merge section ── */}
-            {canCombine && (
-              <div className="rounded-2xl border border-violet-200 bg-violet-50 p-5 shadow-sm dark:border-violet-800/50 dark:bg-violet-950/20">
-                <div className="flex flex-wrap items-center justify-between gap-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-violet-100 dark:bg-violet-900/50">
-                      <GitMerge className="h-4 w-4 text-violet-600 dark:text-violet-400" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-semibold text-violet-900 dark:text-violet-200">
-                        Merge Successful Extractions
-                      </p>
-                      <p className="mt-0.5 text-xs text-violet-600 dark:text-violet-400">
-                        Combine {jobStatus.succeeded} completed files into one
-                        Excel workbook
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    {/* Download merged file (shown after combine succeeds) */}
-                    {combineState === "ready" && combinedFileId && (
-                      <button
-                        onClick={() =>
-                          handleDownload(
-                            combinedFileId,
-                            "COMBINED_Extraction.xlsx"
-                          )
-                        }
-                        disabled={downloading === combinedFileId}
-                        className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:opacity-60"
-                      >
-                        {downloading === combinedFileId ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <Download className="h-3.5 w-3.5" />
-                        )}
-                        Download Combined Excel
-                      </button>
-                    )}
-
-                    {/* Combine trigger button */}
-                    {combineState !== "ready" && (
-                      <button
-                        onClick={handleCombine}
-                        disabled={combineState === "combining"}
-                        className="flex items-center gap-1.5 rounded-lg bg-violet-700 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-violet-800 disabled:opacity-60"
-                      >
-                        {combineState === "combining" ? (
-                          <>
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            Combining…
-                          </>
-                        ) : (
-                          <>
-                            <GitMerge className="h-3.5 w-3.5" />
-                            Combine All Successful Files ({jobStatus.succeeded})
-                          </>
-                        )}
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Status line */}
-                {combineState === "ready" && (
-                  <p className="mt-3 text-xs text-emerald-700 dark:text-emerald-400">
-                    Combined workbook ready: {jobStatus.succeeded} files merged
-                    into one Excel file. Individual downloads remain available
-                    above.
-                  </p>
-                )}
-                {combineState === "error" && (
-                  <p className="mt-3 text-xs text-red-600 dark:text-red-400">
-                    Combine failed. Row data expires after 2 hours - try again
-                    or start a new batch.
-                  </p>
-                )}
-              </div>
-            )}
           </>
         )}
       </div>
