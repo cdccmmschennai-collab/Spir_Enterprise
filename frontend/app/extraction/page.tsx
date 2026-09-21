@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, memo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, memo } from "react";
 import { useRouter } from "next/navigation";
 import {
   CloudUpload,
@@ -19,9 +19,12 @@ import {
   ChevronRight,
   ArrowUpRight,
   RefreshCw,
+  Maximize2,
+  Minimize2,
 } from "lucide-react";
 import { SidebarLayout } from "@/components/sidebar";
 import { UploadProgressCard, type UploadStage } from "@/components/upload-progress-card";
+import { ColumnFilter, compareValues, isNumericColumn, valueKey, type SortDir } from "@/components/column-filter";
 import { authHeaders } from "@/lib/auth";
 import { cn, formatBytes } from "@/lib/utils";
 import { saveSession, loadSession, clearSession, dismissSession } from "@/lib/extraction-session";
@@ -239,90 +242,133 @@ interface PreviewTableProps {
   cols: string[];
   rows: (string | number | null)[][];
   totalRows: number;
+  // Fullscreen workspace: every matching row renders in one vertically scrolling
+  // area (no 10-row pages). Filter/sort/page state is untouched by the switch.
+  expanded?: boolean;
 }
 
-const PreviewTable = memo(function PreviewTable({ cols, rows, totalRows }: PreviewTableProps) {
+const PreviewTable = memo(function PreviewTable({ cols, rows, totalRows, expanded = false }: PreviewTableProps) {
   const [page, setPage] = useState(1);
-  const [selected, setSelected] = useState<Set<number>>(new Set());
+  // Excel-style AutoFilter state: per-column selected value keys (absent = no filter) + one sort column.
+  const [filters, setFilters] = useState<Record<number, Set<string>>>({});
+  const [sort, setSort] = useState<{ col: number; dir: SortDir } | null>(null);
 
-  const totalPages = Math.max(1, Math.ceil(rows.length / ROWS_PER_PAGE));
-  const start = (page - 1) * ROWS_PER_PAGE;
-  const pageRows = rows.slice(start, start + ROWS_PER_PAGE);
+  // New dataset → drop filter/sort state that referred to the previous columns.
+  useEffect(() => {
+    setFilters({});
+    setSort(null);
+    setPage(1);
+  }, [cols, rows]);
+
+  const numericCols = useMemo(
+    () => cols.map((_, ci) => isNumericColumn(rows.map((r) => r[ci]))),
+    [cols, rows]
+  );
+
+  const filterEntries = useMemo(
+    () => Object.entries(filters).map(([ci, set]) => [Number(ci), set] as const),
+    [filters]
+  );
+
+  // Filters run over the complete dataset held by the frontend, then sort (stable), then paginate.
+  const visibleRows = useMemo(() => {
+    let out = filterEntries.length
+      ? rows.filter((row) => filterEntries.every(([ci, set]) => set.has(valueKey(row[ci]))))
+      : rows;
+    if (sort) {
+      const { col, dir } = sort;
+      out = [...out].sort((a, b) => compareValues(a[col], b[col], numericCols[col], dir));
+    }
+    return out;
+  }, [rows, filterEntries, sort, numericCols]);
+
+  // Values offered in a column's filter menu = rows passing every OTHER column's filter (Excel semantics).
+  const valuesFor = useCallback(
+    (col: number) =>
+      rows
+        .filter((row) => filterEntries.every(([ci, set]) => ci === col || set.has(valueKey(row[ci]))))
+        .map((row) => row[col]),
+    [rows, filterEntries]
+  );
+
+  const totalPages = Math.max(1, Math.ceil(visibleRows.length / ROWS_PER_PAGE));
+  const safePage = Math.min(page, totalPages); // filtering can shrink the page count under the current page
+  const start = (safePage - 1) * ROWS_PER_PAGE;
+  const pageRows = visibleRows.slice(start, start + ROWS_PER_PAGE);
+  // `page` is left alone in fullscreen, so exiting lands back on the same page
+  // (clamped by safePage if a filter shrank the set meanwhile).
+  const rowsToRender = expanded ? visibleRows : pageRows;
+  const isFiltered = filterEntries.length > 0;
 
   // Detect if an error/status column exists so we can append a STATUS badge column
   const errorColIdx = cols.findIndex((c) => c.toUpperCase() === "ERROR" || c.toUpperCase() === "STATUS");
 
-  function toggleAll() {
-    if (selected.size === pageRows.length) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(pageRows.map((_, i) => start + i)));
-    }
-  }
-
-  const colCount = cols.length + 2; // +1 checkbox, status badge appended if error col exists
-
   return (
-    <div className="space-y-3">
-      <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
+    <div className={expanded ? "flex min-h-0 flex-1 flex-col gap-3" : "space-y-3"}>
+      {/* Fullscreen: this wrapper is the Excel-style viewport — it owns both scroll
+          axes, the header row sticks, and overscroll-contain stops the page behind
+          from scrolling once the table hits its end. */}
+      <div
+        className={cn(
+          "rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm",
+          expanded ? "min-h-0 flex-1 overflow-auto overscroll-contain" : "overflow-x-auto"
+        )}
+      >
         <table className="min-w-full text-xs">
           <thead>
             <tr className="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
-              {/* Checkbox */}
-              <th className="w-10 px-3 py-3 sticky left-0 bg-slate-50 dark:bg-slate-800">
-                <input
-                  type="checkbox"
-                  checked={selected.size === pageRows.length && pageRows.length > 0}
-                  onChange={toggleAll}
-                  className="h-3.5 w-3.5 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
-                />
-              </th>
               {/* All actual Excel column headers */}
-              {cols.map((col) => (
+              {cols.map((col, ci) => (
                 <th
                   key={col}
-                  className="whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wide text-[10px]"
+                  className={cn(
+                    "whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wide text-[10px]",
+                    expanded && "sticky top-0 z-10 bg-slate-50 dark:bg-slate-800 shadow-[inset_0_-1px_0_0_theme(colors.slate.200)] dark:shadow-[inset_0_-1px_0_0_theme(colors.slate.700)]"
+                  )}
                 >
-                  {col}
+                  <div className="flex items-center justify-between gap-3">
+                    <span>{col}</span>
+                    <ColumnFilter
+                      label={col}
+                      numeric={numericCols[ci]}
+                      selected={filters[ci] ?? null}
+                      sortDir={sort?.col === ci ? sort.dir : null}
+                      getValues={() => valuesFor(ci)}
+                      onApply={(sel) => {
+                        setFilters((prev) => {
+                          const next = { ...prev };
+                          if (sel) next[ci] = sel;
+                          else delete next[ci];
+                          return next;
+                        });
+                        setPage(1);
+                      }}
+                      onSort={(dir) => {
+                        setSort({ col: ci, dir });
+                        setPage(1);
+                      }}
+                    />
+                  </div>
                 </th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-700 bg-white dark:bg-slate-900">
-            {pageRows.length === 0 ? (
+            {rowsToRender.length === 0 ? (
               <tr>
-                <td colSpan={colCount} className="px-4 py-8 text-center text-slate-400 dark:text-slate-500">
-                  No data rows
+                <td colSpan={cols.length} className="px-4 py-8 text-center text-slate-400 dark:text-slate-500">
+                  {isFiltered ? "No rows match the current filters" : "No data rows"}
                 </td>
               </tr>
             ) : (
-              pageRows.map((row, ri) => {
-                const globalIdx = start + ri;
-                const isSelected = selected.has(globalIdx);
+              rowsToRender.map((row, ri) => {
                 const status = getRowStatus(row, cols);
 
                 return (
                   <tr
                     key={ri}
-                    className={cn(
-                      "transition-colors hover:bg-slate-50 dark:hover:bg-slate-800",
-                      isSelected && "bg-violet-50/40 dark:bg-violet-950/20"
-                    )}
+                    className="transition-colors hover:bg-slate-50 dark:hover:bg-slate-800"
                   >
-                    {/* Checkbox */}
-                    <td className="w-10 px-3 py-2.5 sticky left-0 bg-inherit">
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => {
-                          const next = new Set(selected);
-                          if (isSelected) next.delete(globalIdx);
-                          else next.add(globalIdx);
-                          setSelected(next);
-                        }}
-                        className="h-3.5 w-3.5 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
-                      />
-                    </td>
                     {/* All actual cell values */}
                     {cols.map((col, ci) => (
                       <td
@@ -343,30 +389,35 @@ const PreviewTable = memo(function PreviewTable({ cols, rows, totalRows }: Previ
         </table>
       </div>
 
-      {/* Pagination footer */}
-      <div className="flex items-center justify-between px-1">
+      {/* Footer: entry counts always; the page controls only in normal mode (fullscreen
+          scrolls the whole matching set instead of paging it). */}
+      <div className="flex shrink-0 items-center justify-between px-1">
         <p className="text-xs text-slate-500 dark:text-slate-400">
-          {totalRows.toLocaleString()} Total Entries · {rows.length} preview rows · {cols.length} columns
+          {isFiltered
+            ? `${visibleRows.length.toLocaleString()} Filtered Entries · ${rows.length} preview rows · ${cols.length} columns`
+            : `${totalRows.toLocaleString()} Total Entries · ${rows.length} preview rows · ${cols.length} columns`}
         </p>
+        {!expanded && (
         <div className="flex items-center gap-2">
           <button
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            disabled={page === 1}
-            className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 transition-colors"
+            onClick={() => setPage(Math.max(1, safePage - 1))}
+            disabled={safePage === 1}
+            className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 text-violet-700 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-950/30 disabled:opacity-40 transition-colors"
           >
             <ChevronLeft className="h-3.5 w-3.5" />
           </button>
           <span className="text-xs font-medium text-slate-600 dark:text-slate-400">
-            {page} / {totalPages}
+            {safePage} / {totalPages}
           </span>
           <button
-            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            disabled={page === totalPages}
-            className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 transition-colors"
+            onClick={() => setPage(Math.min(totalPages, safePage + 1))}
+            disabled={safePage === totalPages}
+            className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 text-violet-700 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-950/30 disabled:opacity-40 transition-colors"
           >
             <ChevronRight className="h-3.5 w-3.5" />
           </button>
         </div>
+        )}
       </div>
     </div>
   );
@@ -395,6 +446,26 @@ export default function ExtractionPage() {
   // null once the body has been delivered — the file is then "processing".
   const [upload, setUpload] = useState<{ loaded: number; total: number; phase: "uploading" | "finalizing" } | null>(null);
   const uploadAbortRef = useRef<AbortController | null>(null);
+  // Data Preview fullscreen. Only the card's container styling changes — the
+  // PreviewTable stays mounted in the same tree position, so its filter/sort/
+  // page state carries across enter/exit untouched.
+  const [previewExpanded, setPreviewExpanded] = useState(false);
+
+  // Escape exits fullscreen. Listening on window (not document) runs after the
+  // filter menu's document listener, which preventDefaults when it consumes Escape.
+  useEffect(() => {
+    if (!previewExpanded) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape" && !e.defaultPrevented) setPreviewExpanded(false);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [previewExpanded]);
+
+  // The card unmounts with the result; don't let a new result open in fullscreen.
+  useEffect(() => {
+    if (!result) setPreviewExpanded(false);
+  }, [result]);
 
   // Async polling refs — stable across renders, cleaned up on unmount.
   // The token is a fresh object per polling run so that a stale in-flight
@@ -1004,9 +1075,18 @@ export default function ExtractionPage() {
             </div>
           )}
 
-          {/* Data Preview */}
-          <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5 shadow-sm">
-            <div className="mb-4 flex items-center justify-between">
+          {/* Data Preview — same card either way; fullscreen swaps the container
+              classes and tells the table to render every matching row
+              (z-40 keeps the body-portaled z-50 filter menu above it). */}
+          <div
+            className={cn(
+              "border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5 shadow-sm",
+              previewExpanded
+                ? "fixed inset-0 z-40 flex flex-col overflow-hidden rounded-none"
+                : "rounded-2xl"
+            )}
+          >
+            <div className="mb-4 flex shrink-0 items-center justify-between">
               <div>
                 <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                   Data Preview
@@ -1015,12 +1095,33 @@ export default function ExtractionPage() {
                   Showing preview of {result.preview_rows.length} rows · {result.preview_cols.length} columns total
                 </p>
               </div>
+              <button
+                type="button"
+                onClick={() => setPreviewExpanded((v) => !v)}
+                aria-pressed={previewExpanded}
+                aria-label={previewExpanded ? "Exit fullscreen" : "Expand data preview to fullscreen"}
+                title={previewExpanded ? "Exit fullscreen (Esc)" : "Expand to fullscreen"}
+                className={cn(
+                  "flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/40",
+                  previewExpanded
+                    ? "border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-300 dark:hover:bg-violet-950/60"
+                    : "border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-violet-700 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-violet-400"
+                )}
+              >
+                {previewExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                {previewExpanded ? "Exit Fullscreen" : "Expand"}
+              </button>
             </div>
-            <PreviewTable
-              cols={result.preview_cols}
-              rows={result.preview_rows}
-              totalRows={result.total_rows}
-            />
+            {/* In fullscreen this wrapper hands the remaining height to PreviewTable,
+                whose table viewport then scrolls on both axes. */}
+            <div className={previewExpanded ? "flex min-h-0 flex-1 flex-col" : undefined}>
+              <PreviewTable
+                cols={result.preview_cols}
+                rows={result.preview_rows}
+                totalRows={result.total_rows}
+                expanded={previewExpanded}
+              />
+            </div>
           </div>
         </div>
       )}

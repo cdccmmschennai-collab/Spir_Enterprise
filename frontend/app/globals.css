@@ -63,6 +63,21 @@
 .admin-nav-item { display: none !important; }
 [data-admin="1"] .admin-nav-item { display: flex !important; }
 
+/* Collapsed sidebar before hydration: the statically prerendered HTML is always
+   expanded, so the inline script sets html[data-sidebar="collapsed"] from
+   localStorage before first paint and this renders the rail immediately —
+   no expanded→collapsed shrink on refresh. SidebarProvider removes the
+   attribute once React has restored the state, after which the component's
+   own classes take over. */
+html[data-sidebar="collapsed"] #app-sidebar { width: 68px; }
+html[data-sidebar="collapsed"] #app-sidebar .sb-expanded-only { display: none; }
+html[data-sidebar="collapsed"] #app-sidebar .sb-row {
+  justify-content: center;
+  gap: 0;
+  padding-left: 0;
+  padding-right: 0;
+}
+
 /* Profile avatar: show cached initials via CSS before React loads.
    Inline script sets --user-initials on :root from localStorage.
    The ::before is an absolute overlay that covers the button content so the
@@ -76,7 +91,7 @@
   z-index: 10;
   display: grid;
   place-items: center;
-  background-color: #7c3aed; /* violet-600 — matches button bg */
+  background-color: #8E2F81; /* violet-600 (CDC INT brand scale) — matches button bg */
   color: white;
   font-size: 0.75rem;
   font-weight: 700;

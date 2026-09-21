@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useLayoutEffect, useRef, useCallback, memo } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useContext, createContext, memo } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import {
   FileSpreadsheet,
@@ -10,7 +10,8 @@ import {
   X,
   History,
   Settings,
-  Search,
+  PanelLeftClose,
+  PanelLeftOpen,
   ShieldCheck,
   User,
   Pencil,
@@ -42,15 +43,82 @@ const baseNavItems: NavItem[] = [
   { label: "Settings",    href: "/settings",     icon: Settings },
 ];
 
+// ─── Sidebar collapse state ───────────────────────────────────────────────────
+//
+// Every page renders its own <SidebarLayout>, so that component unmounts and
+// remounts on each route change. State kept inside it would reset on every
+// navigation. The collapse state therefore lives in this provider, mounted
+// once in app/layout.tsx — the only tree node that survives navigation.
+
+const SIDEBAR_COLLAPSED_KEY = "sidebar_collapsed";
+
+interface SidebarState {
+  collapsed: boolean;
+  toggle: () => void;
+  // False until after the first paint; the width transition is only enabled
+  // once true, so restoring a saved "collapsed" on page load never animates.
+  animate: boolean;
+}
+
+const SidebarContext = createContext<SidebarState>({ collapsed: false, toggle: () => {}, animate: false });
+
+export function SidebarProvider({ children }: { children: React.ReactNode }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const [animate, setAnimate] = useState(false);
+
+  // Layout effect: restored before React's first paint. The prerendered HTML
+  // was already forced into the rail by the inline script in app/layout.tsx
+  // (html[data-sidebar] + globals.css); drop that hook now that state owns it.
+  useIsomorphicLayoutEffect(() => {
+    try {
+      if (localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1") setCollapsed(true);
+    } catch {
+      // storage unavailable — stay expanded
+    }
+    document.documentElement.removeAttribute("data-sidebar");
+  }, []);
+
+  // Passive effect: runs after that first paint.
+  useEffect(() => setAnimate(true), []);
+
+  const toggle = useCallback(() => {
+    setCollapsed((c) => {
+      const next = !c;
+      try {
+        localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? "1" : "0");
+      } catch {
+        // storage unavailable — in-memory state still persists across routes
+      }
+      return next;
+    });
+  }, []);
+
+  return (
+    <SidebarContext.Provider value={{ collapsed, toggle, animate }}>
+      {children}
+    </SidebarContext.Provider>
+  );
+}
+
 // ─── Sidebar Content ──────────────────────────────────────────────────────────
 
 interface SidebarContentProps {
   pathname: string;
   onNavigate?: () => void;
   isAdmin?: boolean;
+  // Icon-only rail (desktop). Labels stay in the DOM and fade/shrink so the
+  // width transition is smooth; `title` carries the label as a tooltip.
+  collapsed?: boolean;
+  // Header toggle; omitted in the mobile drawer (it has its own close button).
+  onToggle?: () => void;
 }
 
-const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, isAdmin }: SidebarContentProps) {
+// Labels and the brand block share one fade + shrink so nothing wraps mid-transition.
+const LABEL_TRANSITION = "overflow-hidden whitespace-nowrap transition-[max-width,opacity] duration-200 ease-in-out";
+const LABEL_OPEN = "max-w-[160px] opacity-100";
+const LABEL_CLOSED = "max-w-0 opacity-0";
+
+const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, isAdmin, collapsed = false, onToggle }: SidebarContentProps) {
   const router = useRouter();
   const adminIsActive = pathname === "/admin" || pathname.startsWith("/admin/");
 
@@ -59,11 +127,55 @@ const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, isAd
     onNavigate?.();
   }
 
+  const navButtonClass = (active: boolean) =>
+    cn(
+      "sb-row flex w-full min-h-[40px] items-center rounded-lg py-2 text-sm font-medium transition-all duration-200",
+      collapsed ? "justify-center gap-0 px-0" : "gap-3 px-3",
+      active
+        ? "bg-violet-50 text-violet-700 dark:bg-violet-950/50 dark:text-violet-400"
+        : "text-slate-600 hover:bg-slate-50 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
+    );
+
+  // Collapsed rail: only the logo shows. Hovering the header (or tapping it on
+  // touch, or keyboard-focusing the button) crossfades the logo out and the
+  // expand icon in, in the same spot. Hover is state-driven rather than CSS
+  // :hover so that right after clicking "collapse" — with the pointer still
+  // over the header — the logo shows; hover re-arms once the pointer leaves.
+  const [revealed, setRevealed] = useState(false);
+  const [hoverArmed, setHoverArmed] = useState(true);
+  useEffect(() => setRevealed(false), [collapsed]);
+
+  const headerEvents = collapsed
+    ? {
+        onMouseEnter: () => { if (hoverArmed) setRevealed(true); },
+        onMouseLeave: () => { setRevealed(false); setHoverArmed(true); },
+        onPointerDown: (e: React.PointerEvent) => { if (e.pointerType !== "mouse") setRevealed(true); },
+      }
+    : undefined;
+
   return (
     <div className="flex h-full flex-col">
-      {/* Logo */}
-      <div className="flex h-16 items-center gap-3 border-b border-slate-100 dark:border-slate-700 px-4">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-100">
+      {/* Header: logo + brand + icon-only toggle. Collapsed: the toggle is
+          absolutely centered over the logo, so revealing it changes no
+          dimensions — the h-16 border stays level with the navbar. */}
+      <div
+        className={cn(
+          "sb-row group relative flex h-16 shrink-0 items-center border-b border-slate-100 dark:border-slate-700",
+          collapsed ? "justify-center" : "gap-3 px-4"
+        )}
+        {...headerEvents}
+      >
+        <div
+          className={cn(
+            "flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-100",
+            collapsed && cn(
+              // Keyboard focus only (focus-visible): a mouse click that collapses
+              // the sidebar leaves the button focused, but must not hide the logo.
+              "transition-opacity duration-150 ease-out motion-reduce:transition-none group-has-[:focus-visible]:opacity-0",
+              revealed && "opacity-0"
+            )
+          )}
+        >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/cdc_logo.jpg"
@@ -71,18 +183,50 @@ const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, isAd
             className="h-full w-full object-contain"
           />
         </div>
-        <div className="flex flex-col flex-1 min-w-0">
-          <span className="text-sm font-bold leading-tight text-slate-900 dark:text-white tracking-wide uppercase">
-            SPIR TOOL
-          </span>
-          <span className="text-[10px] leading-tight text-slate-400 dark:text-slate-500 tracking-wide">
-            Extraction Platform
-          </span>
-        </div>
+        {!collapsed && (
+          <div className="sb-expanded-only flex min-w-0 flex-1 flex-col">
+            <span className="truncate text-sm font-bold leading-tight text-slate-900 dark:text-white tracking-wide uppercase">
+              SPIR TOOL
+            </span>
+            <span className="truncate text-[10px] leading-tight text-slate-400 dark:text-slate-500 tracking-wide">
+              Extraction Platform
+            </span>
+          </div>
+        )}
+        {onToggle && (
+          <button
+            type="button"
+            onClick={() => {
+              // Pointer is still over the header after this click; don't let
+              // that count as a hover until it has left once.
+              setHoverArmed(false);
+              setRevealed(false);
+              onToggle();
+            }}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-expanded={!collapsed}
+            aria-controls="app-sidebar"
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className={cn(
+              "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 hover:text-violet-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/40 dark:text-slate-500 dark:hover:text-violet-300",
+              collapsed
+                ? cn(
+                    // Stacked exactly over the centered 32px logo; hidden until revealed.
+                    "absolute left-1/2 top-1/2 h-8 w-8 -translate-x-1/2 -translate-y-1/2",
+                    "transition-opacity duration-150 ease-out motion-reduce:transition-none",
+                    "focus-visible:pointer-events-auto focus-visible:opacity-100",
+                    revealed ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+                  )
+                : "sb-expanded-only transition-colors"
+            )}
+          >
+            {collapsed ? <PanelLeftOpen className="h-5 w-5" /> : <PanelLeftClose className="h-5 w-5" />}
+          </button>
+        )}
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 space-y-0.5 p-3 overflow-y-auto">
+      <nav className="flex-1 space-y-0.5 p-3 overflow-y-auto overflow-x-hidden">
         {baseNavItems.map((item) => {
           const Icon = item.icon;
           const isActive =
@@ -93,12 +237,10 @@ const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, isAd
             <button
               key={item.label}
               onClick={() => navigate(item.href)}
-              className={cn(
-                "flex w-full min-h-[40px] items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150",
-                isActive
-                  ? "bg-violet-50 text-violet-700 dark:bg-violet-950/50 dark:text-violet-400"
-                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
-              )}
+              aria-label={item.label}
+              aria-current={isActive ? "page" : undefined}
+              title={collapsed ? item.label : undefined}
+              className={navButtonClass(isActive)}
             >
               <Icon
                 className={cn(
@@ -106,9 +248,9 @@ const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, isAd
                   isActive ? "text-violet-600 dark:text-violet-400" : "text-slate-400 dark:text-slate-500"
                 )}
               />
-              {item.label}
-              {isActive && (
-                <span className="ml-auto h-1.5 w-1.5 rounded-full bg-amber-500" />
+              <span className={cn("sb-expanded-only", LABEL_TRANSITION, collapsed ? LABEL_CLOSED : LABEL_OPEN)}>{item.label}</span>
+              {isActive && !collapsed && (
+                <span className="sb-expanded-only ml-auto h-1.5 w-1.5 rounded-full bg-amber-500" />
               )}
             </button>
           );
@@ -118,12 +260,10 @@ const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, isAd
           onClick={() => navigate("/admin")}
           aria-hidden={!isAdmin}
           tabIndex={isAdmin ? 0 : -1}
-          className={cn(
-            "admin-nav-item flex w-full min-h-[40px] items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150",
-            adminIsActive
-              ? "bg-violet-50 text-violet-700 dark:bg-violet-950/50 dark:text-violet-400"
-              : "text-slate-600 hover:bg-slate-50 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
-          )}
+          aria-label="Admin"
+          aria-current={adminIsActive ? "page" : undefined}
+          title={collapsed ? "Admin" : undefined}
+          className={cn("admin-nav-item", navButtonClass(adminIsActive))}
         >
           <ShieldCheck
             className={cn(
@@ -131,9 +271,9 @@ const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, isAd
               adminIsActive ? "text-violet-600 dark:text-violet-400" : "text-slate-400 dark:text-slate-500"
             )}
           />
-          Admin
-          {adminIsActive && (
-            <span className="ml-auto h-1.5 w-1.5 rounded-full bg-amber-500" />
+          <span className={cn("sb-expanded-only", LABEL_TRANSITION, collapsed ? LABEL_CLOSED : LABEL_OPEN)}>Admin</span>
+          {adminIsActive && !collapsed && (
+            <span className="sb-expanded-only ml-auto h-1.5 w-1.5 rounded-full bg-amber-500" />
           )}
         </button>
       </nav>
@@ -238,26 +378,18 @@ const TopNavbar = memo(function TopNavbar({
   const avatarSrc = avatarUrl ? `${API_URL}${avatarUrl}` : "";
 
   return (
-    <header className="flex h-14 items-center gap-3 border-b border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 px-4 lg:px-6">
+    // h-16 matches the sidebar header so the two borders sit on one line.
+    <header className="flex h-16 items-center gap-3 border-b border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 px-4 lg:px-6">
       {/* Mobile menu */}
       {onMenuClick && (
         <button
           onClick={onMenuClick}
+          aria-label="Open navigation menu"
           className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200 lg:hidden"
         >
           <Menu className="h-5 w-5" />
         </button>
       )}
-
-      {/* Search */}
-      <div className="relative flex-1 max-w-xs">
-        <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
-        <input
-          type="text"
-          placeholder="Search data points..."
-          className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 pl-8 pr-3 text-sm text-slate-700 placeholder:text-slate-400 focus:border-violet-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-violet-400/20 transition-colors dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:placeholder:text-slate-500 dark:focus:bg-slate-800"
-        />
-      </div>
 
       <div className="ml-auto flex items-center">
         {/* User avatar + profile dropdown */}
@@ -408,6 +540,9 @@ interface SidebarProps {
 
 export function SidebarLayout({ children }: SidebarProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  // Desktop rail state comes from SidebarProvider (root layout) — see the note
+  // there for why it can't live in this per-page component.
+  const { collapsed: sidebarCollapsed, toggle: toggleSidebar, animate: animateSidebar } = useContext(SidebarContext);
   const [darkMode, setDarkMode] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [userInitials, setUserInitials] = useState("");
@@ -531,12 +666,23 @@ export function SidebarLayout({ children }: SidebarProps) {
 
   const handleMenuClick = useCallback(() => setMobileOpen(true), []);
   const handleCloseMobile = useCallback(() => setMobileOpen(false), []);
-
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50 dark:bg-slate-950">
-      {/* Desktop sidebar */}
-      <aside className="hidden w-60 shrink-0 border-r border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 lg:flex lg:flex-col">
-        <SidebarContent pathname={pathname} isAdmin={mounted && isAdmin} />
+      {/* Desktop sidebar — width animates; the flex-1 main column follows it */}
+      <aside
+        id="app-sidebar"
+        className={cn(
+          "hidden shrink-0 overflow-hidden border-r border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 lg:flex lg:flex-col",
+          animateSidebar && "transition-[width] duration-200 ease-in-out",
+          sidebarCollapsed ? "w-[68px]" : "w-60"
+        )}
+      >
+        <SidebarContent
+          pathname={pathname}
+          isAdmin={mounted && isAdmin}
+          collapsed={sidebarCollapsed}
+          onToggle={toggleSidebar}
+        />
       </aside>
 
       {/* Mobile overlay */}

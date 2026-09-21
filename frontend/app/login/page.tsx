@@ -144,7 +144,7 @@ function ForgotPasswordForm({ onBack }: { onBack: () => void }) {
         <button
           type="submit"
           disabled={loading}
-          className="mt-1 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-700 to-purple-700 text-sm font-semibold text-white shadow-md shadow-purple-300/50 transition-all hover:from-violet-800 hover:to-purple-800 disabled:opacity-60"
+          className="mt-1 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-700 to-violet-600 text-sm font-semibold text-white shadow-md shadow-violet-300/50 transition-all hover:from-violet-800 hover:to-violet-700 disabled:opacity-60"
         >
           {loading ? (
             <>
@@ -238,7 +238,7 @@ export default function LoginPage() {
 
       {/* Overlays */}
       <div className="absolute inset-0 bg-black/50" />
-      <div className="absolute inset-0 bg-gradient-to-br from-purple-950/40 to-transparent" />
+      <div className="absolute inset-0 bg-gradient-to-br from-violet-950/40 to-transparent" />
 
       {/* Content */}
       <div className="relative z-10 w-full max-w-sm">
@@ -246,7 +246,7 @@ export default function LoginPage() {
         <div className="mb-8 flex flex-col items-center gap-4 text-center">
           <div className="relative flex h-20 w-20 items-center justify-center">
             <div className="absolute inset-0 rounded-3xl bg-white/20 blur-xl" />
-            <div className="relative h-20 w-20 overflow-hidden rounded-2xl bg-white shadow-2xl shadow-purple-900/50">
+            <div className="relative h-20 w-20 overflow-hidden rounded-2xl bg-white shadow-2xl shadow-violet-900/50">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src="/cdc_logo.jpg"
@@ -361,7 +361,7 @@ export default function LoginPage() {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="mt-2 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-700 to-purple-700 text-sm font-semibold text-white shadow-md shadow-purple-300/50 transition-all hover:from-violet-800 hover:to-purple-800 disabled:opacity-60"
+                  className="mt-2 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-700 to-violet-600 text-sm font-semibold text-white shadow-md shadow-violet-300/50 transition-all hover:from-violet-800 hover:to-violet-700 disabled:opacity-60"
                 >
                   {loading ? (
                     <>
