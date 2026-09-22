@@ -229,6 +229,26 @@ class Settings(BaseSettings):
     # directory. Never a durable storage area.
     worker_scratch_dir: str = ""   # env: WORKER_SCRATCH_DIR
 
+    # Currency conversion (unit price -> QAR). Daily rates come from the free
+    # Frankfurter API (no key, no quota) via services/currency_service.py; the
+    # rates are fetched once per processing job and frozen for that job.
+    currency_api_base_url: str = "https://api.frankfurter.dev"   # env: CURRENCY_API_BASE_URL
+    # Socket timeout (connect + each read) for one rate request — never lets a
+    # provider outage hang an extraction thread or Celery worker.
+    currency_api_timeout_seconds: float = 10.0                    # env: CURRENCY_API_TIMEOUT_SECONDS
+    # How long a fetched daily quote is reused in-process before the provider
+    # is asked again (a batch of files should not repeat identical lookups).
+    # 0 disables the cache. Expired quotes are never served as a fallback.
+    currency_rate_cache_ttl_seconds: int = 3600                   # env: CURRENCY_RATE_CACHE_TTL_SECONDS
+
+    @field_validator("currency_api_base_url", mode="after")
+    @classmethod
+    def _validate_currency_api_base_url(cls, v: str) -> str:
+        v = (v or "").strip().rstrip("/")
+        if not v.startswith(("http://", "https://")):
+            raise ValueError("CURRENCY_API_BASE_URL must start with http:// or https://")
+        return v
+
     # Avatar image directory. Deliberately NOT anchored to _PROJECT_ROOT: the
     # avatar endpoints have always used the CWD-relative "storage/avatars"
     # (Docker/production run from the project root), and Phase 3B keeps that

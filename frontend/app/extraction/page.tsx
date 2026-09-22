@@ -68,6 +68,33 @@ interface ExtractResult {
   preview_rows: (string | number | null)[][];
   file_id: string;
   filename: string;
+  currency_rates?: CurrencyRateSnapshot | null;
+}
+
+// Frozen exchange-rate snapshot the backend converted UNIT PRICE (QAR) with.
+interface CurrencyRateEntry {
+  source_currency: string;
+  target_currency: string;
+  exchange_rate: number | null;
+  rate_date: string | null;
+  fetched_at: string | null;
+  provider: string;
+  status: "ok" | "unsupported" | "unavailable";
+  // live = today's API rate; cached = last successful rate (API was down);
+  // fallback = static table (API down, nothing cached).
+  source?: "live" | "cached" | "fallback" | null;
+  fallback_reason?: string;
+  error?: string;
+}
+
+interface CurrencyRateSnapshot {
+  job_id: string | null;
+  target_currency: string;
+  provider: string;
+  created_at: string;
+  fallback_used?: boolean;
+  rates: CurrencyRateEntry[];
+  unrecognized: string[];
 }
 
 function normalizeResult(data: Partial<ExtractResult>): ExtractResult {
@@ -90,6 +117,7 @@ function normalizeResult(data: Partial<ExtractResult>): ExtractResult {
     preview_rows: [],
     file_id: "",
     filename: "",
+    currency_rates: null,
     ...data,
   };
 }
@@ -1065,6 +1093,37 @@ export default function ExtractionPage() {
                 ) : null
               )}
             </div>
+
+            {/* Exchange rates frozen for this extraction (UNIT PRICE -> UNIT PRICE (QAR)) */}
+            {result.currency_rates && result.currency_rates.rates.length > 0 && (
+              <div className="mt-4 border-t border-slate-100 dark:border-slate-700 pt-3">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                  Exchange rates used · {result.currency_rates.provider}
+                </p>
+                <div className="mt-1.5 flex flex-wrap gap-x-5 gap-y-1 text-xs">
+                  {result.currency_rates.rates.map((r) =>
+                    r.status === "ok" && r.exchange_rate !== null ? (
+                      <span key={r.source_currency} className="text-slate-600 dark:text-slate-300">
+                        <span className="font-semibold text-slate-800 dark:text-slate-200">
+                          1 {r.source_currency} = {r.exchange_rate.toFixed(5)} {r.target_currency}
+                        </span>
+                        {r.rate_date && (
+                          <span className="text-slate-400 dark:text-slate-500"> · rate date {r.rate_date}</span>
+                        )}
+                      </span>
+                    ) : (
+                      <span
+                        key={r.source_currency}
+                        className="text-amber-700 dark:text-amber-400"
+                        title={r.error ?? undefined}
+                      >
+                        {r.source_currency} → {r.target_currency}: rate {r.status} — not converted
+                      </span>
+                    )
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Download error */}

@@ -348,6 +348,7 @@ async def batch_single_result(
             "sap_count": 0,
             "preview_cols": [],
             "preview_rows": [],
+            "currency_rates": None,
         }
 
     raw_bytes, _ = entry
@@ -375,6 +376,7 @@ async def batch_single_result(
         "sap_count": payload.get("sap_count", 0),
         "preview_cols": payload.get("cols", []),
         "preview_rows": payload.get("rows", []),
+        "currency_rates": payload.get("currency_rates"),
     }
 
 

@@ -137,6 +137,7 @@ async def log_extraction(
     manufacturer = result.get("manufacturer")
     supplier = result.get("supplier")
     file_id = result.get("file_id")
+    currency_rates = result.get("currency_rates")
 
     # Do not silently invent defaults here; if pipeline didn't provide counts,
     # we fail the history write (extraction still succeeds).
@@ -183,6 +184,7 @@ async def log_extraction(
                 supplier=supplier,
                 file_id=file_id,
                 json_path=json_path,
+                currency_rates=currency_rates,
                 # Keep the existing user-facing history API working
                 tag_count=total_tags,
                 spare_count=spare_items,
@@ -210,6 +212,13 @@ async def log_extraction(
             except Exception as e:
                 await db.rollback()
                 log.error("history.save_failed", exc_message=str(e))
+            else:
+                if currency_rates:
+                    log.info(
+                        "currency.snapshot_saved",
+                        history_id=history.id, job_id=currency_rates.get("job_id"),
+                        currencies=[r.get("source_currency") for r in currency_rates.get("rates", [])],
+                    )
     except Exception as exc:
         log.exception("history.write_failed", exc_message=str(exc))
 
@@ -327,6 +336,7 @@ def log_extraction_worker(
             supplier=result.get("supplier"),
             file_id=result.get("file_id"),
             json_path=json_path,
+            currency_rates=result.get("currency_rates"),
             tag_count=total_tags,
             spare_count=spare_items,
             created_at=now,
@@ -349,6 +359,13 @@ def log_extraction_worker(
 
         session.commit()
         log.info("history.written", user_id=user_id, filename=original_filename, rows=total_rows, tags=total_tags)
+        _rates = result.get("currency_rates")
+        if _rates:
+            log.info(
+                "currency.snapshot_saved",
+                history_id=history.id, job_id=_rates.get("job_id"),
+                currencies=[r.get("source_currency") for r in _rates.get("rates", [])],
+            )
 
     except Exception as exc:
         session.rollback()

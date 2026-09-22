@@ -177,6 +177,12 @@ class ExtractionHistory(Base):
     output_filename: Mapped[str | None] = mapped_column(String(500), nullable=True)
     json_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     result_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Frozen exchange-rate snapshot this extraction converted prices with:
+    # {job_id, target_currency, provider, created_at,
+    #  rates: [{source_currency, target_currency, exchange_rate, rate_date,
+    #           fetched_at, provider, status, error?}], unrecognized: [...]}
+    # Source of truth for reproducibility — never recomputed from later rates.
+    currency_rates: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     tag_count: Mapped[int] = mapped_column(Integer, nullable=False)
     spare_count: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

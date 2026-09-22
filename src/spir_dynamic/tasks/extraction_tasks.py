@@ -257,6 +257,7 @@ def process_file_task(
                 "total_rows": result.get("total_rows", 0),
                 "dup1_count": result.get("dup1_count", 0),
                 "sap_count": result.get("sap_count", 0),
+                "currency_rates": result.get("currency_rates"),
             }).encode("utf-8")
             _storage = _get_storage()
             _storage.put(

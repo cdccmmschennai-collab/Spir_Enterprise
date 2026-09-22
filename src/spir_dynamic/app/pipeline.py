@@ -28,7 +28,13 @@ from spir_dynamic.extraction.output_schema import (
 from spir_dynamic.extraction.post_processor import post_process_rows
 from spir_dynamic.services.excel_builder import build_xlsx
 from spir_dynamic.services.duplicate_checker import deduplicate_rows, analyse_duplicates
-from spir_dynamic.services.currency_service import get_rates_to_qar, _extract_code
+from spir_dynamic.services.currency_service import (
+    CurrencyConversionError,
+    CurrencyRateService,
+    RateSnapshot,
+    get_currency_rate_service,
+    normalize_currency_code,
+)
 from spir_dynamic.services.storage import get_storage
 from spir_dynamic.app.config import get_settings
 from spir_dynamic.utils.logging import timed
@@ -130,8 +136,12 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
             if spir_col < len(row) and row[spir_col] is None and spir_no:
                 row[spir_col] = spir_no
 
-        # Step 5: Currency conversion
-        _apply_currency_conversion(output_rows)
+        # The result's file_id doubles as the processing-job id the currency
+        # snapshot is recorded against (extraction_history stores both).
+        file_id = str(uuid.uuid4())
+
+        # Step 5: Currency conversion — one frozen rate snapshot per job.
+        currency_snapshot = _apply_currency_conversion(output_rows, job_id=file_id)
 
         # Step 6: Post-process (position numbers + SPF numbers)
         # Pass ordered sheet_profiles so SheetTracker can pre-map every sheet
@@ -162,7 +172,6 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
         xlsx_bytes = build_xlsx(output_rows, spir_no)
 
         # Step 9: Store result
-        file_id = str(uuid.uuid4())
         # Use the original input filename (stem only) as the download name so that
         # the user sees their own file naming convention in the frontend.
         safe_stem = re.sub(r'[\r\n\t/\\:*?"<>|]+', ' ', Path(original_filename).stem).strip()
@@ -194,6 +203,8 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
             "preview_cols": OUTPUT_COLS,
             "preview_rows": preview_rows,
             "sheet_profiles": result.get("sheet_profiles", []),
+            # Rate snapshot this job converted with (None = no priced rows).
+            "currency_rates": currency_snapshot.to_dict() if currency_snapshot else None,
         }
 
         try:
@@ -230,45 +241,100 @@ def retrieve_result(file_id: str) -> Optional[tuple[bytes, str]]:
     return get_storage().get(file_id)
 
 
-def _apply_currency_conversion(rows: list[list]) -> None:
-    """Convert unit_price to QAR where currency is available."""
+def _apply_currency_conversion(
+    rows: list[list],
+    job_id: Optional[str] = None,
+    service: Optional[CurrencyRateService] = None,
+) -> Optional[RateSnapshot]:
+    """
+    Convert UNIT PRICE to UNIT PRICE (QAR) using one frozen rate snapshot.
+
+    1. Scan the rows once and collect the ISO codes that actually need a rate
+       (rows with a currency AND a price; QAR itself needs none).
+    2. Ask the CurrencyRateService for those rates ONCE (build_snapshot). Each
+       rate comes from the live API, else the persisted last-success store,
+       else the static table — the snapshot says which.
+    3. Convert every row from the snapshot — the provider is never touched
+       again for this job, so a mid-job upstream change cannot leak in.
+
+    Rows whose currency is unrecognised or rejected by the provider as invalid
+    keep an empty QAR cell, as they always did. A currency that needs a rate
+    but has none anywhere fails the job (CurrencyConversionError) — blank or
+    invented financial values are never produced for that reason. Returns the
+    snapshot (None when no row needed conversion) so the caller can persist it.
+    """
     currency_col = CI.get("CURRENCY")
     price_col = CI.get("UNIT PRICE")
     qar_col = CI.get("UNIT PRICE (QAR)")
 
     if currency_col is None or price_col is None or qar_col is None:
-        return
+        return None
 
-    # Fetch rate table ONCE for the entire batch.
-    # Previously to_qar() was called per-row, each invoking get_rates_to_qar()
-    # which — when the network is unavailable — retried all 3 APIs on every
-    # call (no fallback caching), producing ~477 HTTP round-trips per file.
-    rates = get_rates_to_qar()
     min_col = max(currency_col, price_col, qar_col)
 
+    # Pass 1 — which currencies does this file need?
+    needed: set[str] = set()
+    unrecognized: set[str] = set()
+    priced_rows = 0
     for row in rows:
         if len(row) <= min_col:
             continue
-
         currency = row[currency_col]
-        price    = row[price_col]
-
+        price = row[price_col]
         if not currency or price is None:
             continue
+        priced_rows += 1
+        code = normalize_currency_code(currency)
+        if code:
+            needed.add(code)
+        elif len(unrecognized) < 10:
+            unrecognized.add(str(currency).strip().upper()[:12])
 
+    if priced_rows == 0:
+        return None
+
+    # Pass 2 — one lookup per currency, frozen for the whole job.
+    svc = service or get_currency_rate_service()
+    snapshot = svc.build_snapshot(needed, job_id=job_id, unrecognized=unrecognized)
+
+    if snapshot.unavailable:
+        # Live API down AND nothing in the fallback chain for these codes.
+        # Fail loudly: a blank or made-up QAR column would be wrong financial
+        # data. The sync route reports this message; Celery retries with backoff.
+        details = "; ".join(e.error or e.source_currency for e in snapshot.unavailable)
+        codes = ", ".join(e.source_currency for e in snapshot.unavailable)
+        log.error("currency.conversion_failed", job_id=job_id, currencies=codes, details=details)
+        raise CurrencyConversionError(
+            f"Currency conversion failed — no exchange rate available for {codes} -> "
+            f"{snapshot.target_currency}. The live rate service could not be reached and no "
+            f"previously successful or fallback rate exists for this currency. Retry once the "
+            f"rate service is reachable, or process a file that already has QAR prices. "
+            f"Details: {details}"
+        )
+
+    # Pass 3 — convert from the snapshot only (same arithmetic/rounding as before).
+    for row in rows:
+        if len(row) <= min_col:
+            continue
+        currency = row[currency_col]
+        price = row[price_col]
+        if not currency or price is None:
+            continue
         try:
-            code = _extract_code(str(currency))
+            code = normalize_currency_code(currency)
             if not code:
                 continue
             flt_price = float(price)
-            if code == "QAR":
+            if code == snapshot.target_currency:
                 row[qar_col] = round(flt_price, 2)
             else:
-                rate = rates.get(code)
+                rate = snapshot.rate_for(code)
                 if rate is not None:
                     row[qar_col] = round(flt_price * rate, 2)
         except (ValueError, TypeError):
             pass
+
+    return snapshot
 
 
 def _jsonify(v: Any) -> Any:
