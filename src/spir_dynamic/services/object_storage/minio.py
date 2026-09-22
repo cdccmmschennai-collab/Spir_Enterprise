@@ -21,9 +21,20 @@ URLs are signed by a *second* client bound to `public_endpoint` — the address
 the browser can reach (e.g. http://localhost:9000 locally, an HTTPS host in
 production) — because a SigV4 signature covers the Host the request is sent
 to. The server-side client keeps talking to `endpoint` (http://minio:9000 in
-Compose). Optionally the URLs are signed with a separate, scoped credential
-(`presign_access_key` / `presign_secret_key`) so the access-key id that
-appears in every presigned URL is never the root user's.
+Compose).
+
+Two identities, two audiences
+-----------------------------
+`access_key` / `secret_key` sign every call this process makes itself: reading
+a source object back for extraction, deleting it when the extraction succeeded,
+listing and deleting the stale ones. `presign_access_key` / `presign_secret_key`
+sign the URLs handed to a browser, whose key id is visible in the query string
+of every one of them. They are deliberately different MinIO users: only the
+first may delete. Giving the browser identity DeleteObject would let anyone
+holding a leaked URL's key id erase source objects; giving the server identity
+no DeleteObject — the production failure this split fixes — leaves every
+processed upload in the bucket forever. `from_settings` resolves both and
+refuses the combination that would leak the backend key id into a URL.
 
 Connection settings come from the MINIO_* settings only; this module never
 reads the environment itself.
@@ -139,15 +150,39 @@ class MinioObjectStorage:
 
     @classmethod
     def from_settings(cls, settings: Settings, *, prefix: str = "") -> "MinioObjectStorage":
+        """
+        Build the backend from the MINIO_* settings, binding each of the two
+        identities to its own audience:
+
+            server-side calls  ->  MINIO_BACKEND_* (falls back to MINIO_*)
+            presigned URLs     ->  MINIO_PRESIGN_* (falls back to MINIO_*)
+
+        Both fall back to the same base credential, which is exactly the
+        single-identity setup this class started with. What must never happen
+        is the reverse: a deployment that went to the trouble of provisioning a
+        delete-capable backend user, and then hands that user's key id to a
+        browser because no presign credential was configured. That is refused
+        here rather than silently privileging the browser.
+        """
         if not settings.minio_configured:
             raise StorageConfigError(
-                "MINIO_ENDPOINT, MINIO_ACCESS_KEY and MINIO_SECRET_KEY must all be set "
-                "for the minio storage backend"
+                "MINIO_ENDPOINT and a server-side credential (MINIO_BACKEND_ACCESS_KEY / "
+                "MINIO_BACKEND_SECRET_KEY, or MINIO_ACCESS_KEY / MINIO_SECRET_KEY) must all "
+                "be set for the minio storage backend"
             )
+        server_key = settings.minio_server_access_key
+        browser_key = settings.minio_browser_access_key
+        if settings.minio_backend_access_key and settings.minio_public_endpoint:
+            if not browser_key or browser_key == server_key:
+                raise StorageConfigError(
+                    "MINIO_BACKEND_ACCESS_KEY is set and direct browser uploads are configured, "
+                    "so MINIO_PRESIGN_ACCESS_KEY / MINIO_PRESIGN_SECRET_KEY must name a separate, "
+                    "upload-only MinIO user; presigned URLs must never carry the backend key id"
+                )
         return cls(
             endpoint=settings.minio_endpoint,
-            access_key=settings.minio_access_key,
-            secret_key=settings.minio_secret_key,
+            access_key=server_key,
+            secret_key=settings.minio_server_secret_key,
             bucket=settings.minio_bucket,
             secure=settings.minio_secure,
             prefix=prefix,
@@ -156,8 +191,23 @@ class MinioObjectStorage:
             presign_secret_key=settings.minio_presign_secret_key,
         )
 
+    @property
+    def access_key_id(self) -> str:
+        """Key id used for every server-side call. The secret is never exposed."""
+        return self._access_key
+
+    @property
+    def presign_key_id(self) -> str:
+        """Key id that appears in presigned URLs. The secret is never exposed."""
+        return self._presign_access_key
+
     def __repr__(self) -> str:
-        return f"MinioObjectStorage(endpoint={self.endpoint_url!r}, bucket={self.bucket!r}, prefix={self.prefix!r})"
+        # Key ids only — a secret must never reach a log line or a repr.
+        return (
+            f"MinioObjectStorage(endpoint={self.endpoint_url!r}, bucket={self.bucket!r}, "
+            f"prefix={self.prefix!r}, access_key_id={self._access_key!r}, "
+            f"presign_key_id={self._presign_access_key!r})"
+        )
 
     # ── client / error translation (botocore stays inside these helpers) ─────
 

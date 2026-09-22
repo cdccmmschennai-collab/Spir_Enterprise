@@ -87,6 +87,15 @@ CLEANUP_DURATION = Histogram(
     buckets=[1, 5, 10, 30, 60, 120, 300],
 )
 
+# A source object that could not be removed stays in the bucket and is billed
+# as storage forever, so every failed delete is counted — an AccessDenied from
+# a mis-scoped backend identity shows up here long before the disk fills.
+SOURCE_DELETE_FAILURES = Counter(
+    "source_delete_failures_total",
+    "Source-object deletions that failed, by the path that attempted them",
+    ["stage"],  # "task" (immediate, after extraction) | "cleanup" (stale sweep)
+)
+
 # ── Sanitizer metrics ─────────────────────────────────────────────────────────
 
 SANITIZER_RUNS = Counter(
