@@ -9,7 +9,7 @@ load_dotenv()
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 # config.py lives at src/spir_dynamic/app/config.py — project root is 4 levels up.
@@ -120,6 +120,20 @@ class Settings(BaseSettings):
     # When true, cleanup task logs what would be deleted but skips actual deletion.
     # Useful for a manual dry-run verification before the first production run.
     cleanup_dry_run: bool = False
+    # Queue Beat publishes lifecycle_cleanup to. It must be a queue a running
+    # worker consumes: with no route the task lands on Celery's default
+    # "celery" queue, which the extraction workers (-Q normal,heavy / giant)
+    # do not read, so Beat would enqueue a cleanup every night that nothing
+    # ever executes. "normal" is the queue every deployment runs a worker for.
+    cleanup_queue: str = "normal"   # env: CLEANUP_QUEUE
+
+    @field_validator("cleanup_queue", mode="after")
+    @classmethod
+    def _validate_cleanup_queue(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("CLEANUP_QUEUE must name a queue a worker consumes")
+        return v
 
     # Celery / Redis
     redis_url: str = "redis://localhost:6379/0"
@@ -137,9 +151,61 @@ class Settings(BaseSettings):
     minio_bucket: str = "spir-files"    # env: MINIO_BUCKET
     minio_secure: bool = False          # env: MINIO_SECURE (https when true)
 
+    # Dedicated server-side identity. Everything the API, the Celery workers
+    # and the lifecycle cleanup do against the bucket themselves — reading a
+    # source object back for extraction, deleting it afterwards, sweeping the
+    # stale ones — is signed with this credential. It is a different MinIO user
+    # from the one whose key id travels to a browser in a presigned URL
+    # (MINIO_PRESIGN_* below), because only this one may delete. Empty falls
+    # back to MINIO_ACCESS_KEY / MINIO_SECRET_KEY, which is how single-identity
+    # deployments worked before the split; see minio_identities_separated.
+    minio_backend_access_key: str = ""   # env: MINIO_BACKEND_ACCESS_KEY
+    minio_backend_secret_key: str = ""   # env: MINIO_BACKEND_SECRET_KEY
+
+    @model_validator(mode="after")
+    def _validate_backend_credentials(self) -> "Settings":
+        if bool(self.minio_backend_access_key) != bool(self.minio_backend_secret_key):
+            raise ValueError(
+                "MINIO_BACKEND_ACCESS_KEY and MINIO_BACKEND_SECRET_KEY must be set together"
+            )
+        return self
+
+    # ── Resolved MinIO identities ────────────────────────────────────────────
+    # Two credentials, two audiences. Never log or expose the secrets; the key
+    # ids are safe to log (a presigned URL carries its own in the clear).
+
+    @property
+    def minio_server_access_key(self) -> str:
+        """Key id every server-side S3 call is signed with (read + delete)."""
+        return self.minio_backend_access_key or self.minio_access_key
+
+    @property
+    def minio_server_secret_key(self) -> str:
+        return self.minio_backend_secret_key or self.minio_secret_key
+
+    @property
+    def minio_browser_access_key(self) -> str:
+        """Key id embedded in the presigned URLs the browser uses (upload only)."""
+        return self.minio_presign_access_key or self.minio_access_key
+
+    @property
+    def minio_browser_secret_key(self) -> str:
+        return self.minio_presign_secret_key or self.minio_secret_key
+
+    @property
+    def minio_identities_separated(self) -> bool:
+        """True when the browser signs with a different MinIO user than the server does."""
+        return bool(
+            self.minio_server_access_key
+            and self.minio_browser_access_key
+            and self.minio_server_access_key != self.minio_browser_access_key
+        )
+
     @property
     def minio_configured(self) -> bool:
-        return bool(self.minio_endpoint and self.minio_access_key and self.minio_secret_key)
+        return bool(
+            self.minio_endpoint and self.minio_server_access_key and self.minio_server_secret_key
+        )
 
     # Direct browser-to-MinIO upload (Phase 3D). MINIO_ENDPOINT above is the
     # container-to-container address (http://minio:9000) and stays exactly

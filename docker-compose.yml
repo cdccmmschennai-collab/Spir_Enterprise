@@ -63,6 +63,10 @@ x-backend-env: &backend-env
   CLEANUP_JSON_RETENTION_DAYS: "14"
   CLEANUP_UPLOAD_STALE_HOURS: "24"
   CLEANUP_DRY_RUN: ${CLEANUP_DRY_RUN:-true}
+  # Queue Beat publishes lifecycle_cleanup to. Must be one a worker consumes:
+  # worker-normal below reads `normal`. Celery's default queue ("celery") is
+  # NOT read by the production workers, which is why the route is explicit.
+  CLEANUP_QUEUE: ${CLEANUP_QUEUE:-normal}
   # Object storage (Phase 3A) — connection settings. Compose service name +
   # container port, never localhost.
   MINIO_ENDPOINT: http://minio:9000
@@ -70,6 +74,15 @@ x-backend-env: &backend-env
   MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-spir_minio_dev_password}
   MINIO_BUCKET: ${MINIO_BUCKET:-spir-files}
   MINIO_SECURE: "false"
+  # Server-side identity. Every call the API/workers/cleanup make themselves
+  # — read a source object, delete it after extraction, sweep the stale ones —
+  # is signed with this user, whose policy (spir-backend, created by
+  # minio-init) grants read + delete on batch_uploads/* and nothing else. It is
+  # NOT the identity used for presigned browser URLs below, which has no
+  # DeleteObject: only the server may delete. Leaving these empty falls back to
+  # MINIO_ACCESS_KEY / MINIO_SECRET_KEY (single-identity mode).
+  MINIO_BACKEND_ACCESS_KEY: ${MINIO_BACKEND_USER:-spir_backend}
+  MINIO_BACKEND_SECRET_KEY: ${MINIO_BACKEND_PASSWORD:-spir_backend_dev_password}
   # Phase 3C: the uploads handed to the Celery workers (large single files,
   # every batch file) are stored in MinIO under batch_uploads/<key>; workers
   # download them to a temp file for openpyxl. Extracted rows and avatars stay
@@ -357,6 +370,14 @@ services:
   # (or the key id every presigned URL carries) can never read, list or
   # delete anything. `user add` / `policy create` overwrite idempotently;
   # `policy attach` errors when already attached, hence the info check.
+  #
+  # It also provisions the SECOND identity, `spir_backend`, which the API,
+  # the workers and the lifecycle cleanup sign their own calls with. That one
+  # is the only identity allowed to delete, and only under batch_uploads/.
+  # Keeping them apart is the point: the uploader never gains DeleteObject,
+  # and the backend never has to borrow a key that a browser has seen.
+  # The policy documents live in deploy/minio/ and are the source of truth for
+  # production; the here-doc below is the same JSON for the local stack.
   minio-init:
     image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
     restart: "no"
@@ -366,6 +387,8 @@ services:
       MINIO_BUCKET: ${MINIO_BUCKET:-spir-files}
       MINIO_UPLOADER_USER: ${MINIO_UPLOADER_USER:-spir_uploader}
       MINIO_UPLOADER_PASSWORD: ${MINIO_UPLOADER_PASSWORD:-spir_uploader_dev_password}
+      MINIO_BACKEND_USER: ${MINIO_BACKEND_USER:-spir_backend}
+      MINIO_BACKEND_PASSWORD: ${MINIO_BACKEND_PASSWORD:-spir_backend_dev_password}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -376,6 +399,8 @@ services:
         # bucket exits non-zero, which is the verification we need.
         mc ls "spir/$$MINIO_BUCKET" > /dev/null
         echo "minio-init: bucket '$$MINIO_BUCKET' ready"
+
+        # ── Browser identity: upload only, no read, no list, no delete ──────
         printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:PutObject","s3:AbortMultipartUpload","s3:ListMultipartUploadParts"],"Resource":["arn:aws:s3:::'"$$MINIO_BUCKET"'/batch_uploads/*"]}]}' > /tmp/spir-uploader.json
         mc admin policy create spir spir-uploader /tmp/spir-uploader.json
         mc admin user add spir "$$MINIO_UPLOADER_USER" "$$MINIO_UPLOADER_PASSWORD"
@@ -384,6 +409,18 @@ services:
           *) mc admin policy attach spir spir-uploader --user "$$MINIO_UPLOADER_USER" ;;
         esac
         echo "minio-init: uploader '$$MINIO_UPLOADER_USER' ready (policy spir-uploader)"
+
+        # ── Backend identity: read + delete + complete uploads, batch_uploads/ only ──
+        # ListBucket is bucket-scoped in S3, so it is fenced with an s3:prefix
+        # condition instead: the cleanup sweep lists batch_uploads/, nothing else.
+        printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:AbortMultipartUpload","s3:ListMultipartUploadParts"],"Resource":["arn:aws:s3:::'"$$MINIO_BUCKET"'/batch_uploads/*"]},{"Effect":"Allow","Action":["s3:ListBucket"],"Resource":["arn:aws:s3:::'"$$MINIO_BUCKET"'"],"Condition":{"StringLike":{"s3:prefix":["batch_uploads/*","batch_uploads/"]}}}]}' > /tmp/spir-backend.json
+        mc admin policy create spir spir-backend /tmp/spir-backend.json
+        mc admin user add spir "$$MINIO_BACKEND_USER" "$$MINIO_BACKEND_PASSWORD"
+        case "$$(mc admin user info spir "$$MINIO_BACKEND_USER" --json)" in
+          *spir-backend*) ;;
+          *) mc admin policy attach spir spir-backend --user "$$MINIO_BACKEND_USER" ;;
+        esac
+        echo "minio-init: backend '$$MINIO_BACKEND_USER' ready (policy spir-backend)"
     depends_on:
       minio:
         condition: service_healthy

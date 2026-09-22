@@ -28,6 +28,11 @@ Phase 3 — Stale batch uploads
   UPLOAD_STORAGE_BACKEND=minio) the same rule is applied to the source
   objects through the ObjectStorage contract (list_objects / delete) — only
   objects under that area's prefix, never the bucket or anything else.
+  Those calls are signed with the server-side MinIO identity
+  (MINIO_BACKEND_ACCESS_KEY), the only one allowed to delete; a refused
+  delete is counted and logged per object and reported as "failed" in the
+  phase summary, so a sweep that deleted nothing because it was denied is
+  never mistaken for a sweep that found nothing stale.
   If that backend also takes direct browser uploads (Phase 3D), multipart
   uploads under the same prefix that were started more than
   CLEANUP_UPLOAD_STALE_HOURS ago and never completed or aborted (browser
@@ -39,10 +44,17 @@ Phase 4 — Disk metrics
   size (or the total size of the source objects on an object backend) so
   Grafana always shows current storage state.
 
+Queue:
+  Beat publishes this task to CLEANUP_QUEUE ("normal" by default), routed in
+  celery_app.py.  Without an explicit route it would go to Celery's default
+  "celery" queue, which the deployed workers (-Q normal,heavy / -Q giant) do
+  not consume — the cleanup would be enqueued nightly and never run.
+
 Dry-run mode:
   Set CLEANUP_DRY_RUN=true in .env, or pass dry_run=True when triggering
   manually via Celery CLI.  All phases log what would be deleted but make
-  no filesystem changes.
+  no filesystem changes.  It is a verification aid, not a resting state:
+  left on, nothing is ever reclaimed.
 
 Audit:
   All actions logged via structlog to the system journal.
@@ -487,13 +499,14 @@ def _purge_stale_source_objects(storage, stale_hours: int, dry_run: bool) -> dic
     to the area prefix, so nothing outside it can be listed or deleted.
     """
     from datetime import datetime, timezone
-    from spir_dynamic.monitoring.metrics import CLEANUP_DELETED_FILES
+    from spir_dynamic.monitoring.metrics import CLEANUP_DELETED_FILES, SOURCE_DELETE_FAILURES
 
     now         = datetime.now(timezone.utc)
     cutoff_s    = now.timestamp() - (stale_hours * 3600)
     safe_guard  = now.timestamp() - 3600
     deleted     = 0
     skipped     = 0
+    failed      = 0
     bytes_freed = 0
 
     for obj in list(storage.list_objects()):
@@ -515,7 +528,19 @@ def _purge_stale_source_objects(storage, stale_hours: int, dry_run: bool) -> dic
                         deleted += 1
                         bytes_freed += obj.size
                 except Exception as exc:
-                    log.warning("cleanup.uploads.delete_failed", key=obj.key, exc_message=str(exc))
+                    # One bad object must not stop the sweep, but a run that
+                    # deleted nothing because every delete was refused has to
+                    # be distinguishable from a run that found nothing stale.
+                    failed += 1
+                    SOURCE_DELETE_FAILURES.labels(stage="cleanup").inc()
+                    log.error(
+                        "cleanup.uploads.delete_failed",
+                        key=obj.key,
+                        age_h=age_h,
+                        backend=storage.backend,
+                        error_type=type(exc).__name__,
+                        exc_message=str(exc),
+                    )
 
     mb_freed = round(bytes_freed / (1024 * 1024), 2)
     log.info(
@@ -523,6 +548,7 @@ def _purge_stale_source_objects(storage, stale_hours: int, dry_run: bool) -> dic
         backend=storage.backend,
         deleted=deleted,
         skipped_recent=skipped,
+        failed=failed,
         mb_freed=mb_freed,
         stale_hours=stale_hours,
         dry_run=dry_run,
@@ -531,6 +557,7 @@ def _purge_stale_source_objects(storage, stale_hours: int, dry_run: bool) -> dic
         "backend": storage.backend,
         "deleted": deleted,
         "skipped_recent": skipped,
+        "failed": failed,
         "mb_freed": mb_freed,
         "stale_hours": stale_hours,
     }

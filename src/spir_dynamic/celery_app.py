@@ -58,6 +58,17 @@ celery_app.conf.update(
     enable_utc=True,
     result_expires=_settings.batch_ttl_seconds,
 
+    # Lifecycle cleanup has no caller to pick a queue for it the way
+    # batch_router does for extractions, so without a route it goes to Celery's
+    # default "celery" queue. The deployed workers consume the extraction
+    # queues (-Q normal,heavy and -Q giant) — nothing reads "celery", so Beat
+    # enqueued a cleanup every night that was never executed and stale source
+    # objects accumulated. Route it to CLEANUP_QUEUE ("normal" by default),
+    # which every deployment runs a worker for.
+    task_routes={
+        "spir_dynamic.tasks.lifecycle_cleanup": {"queue": _settings.cleanup_queue},
+    },
+
     # Imported at worker boot only — not at Python import time of this module
     include=[
         "spir_dynamic.tasks.base",
@@ -75,6 +86,13 @@ celery_app.conf.beat_schedule = {
     "lifecycle-cleanup-daily": {
         "task": "spir_dynamic.tasks.lifecycle_cleanup",
         "schedule": crontab(hour=2, minute=0),  # 02:00 UTC every day
+        # dry_run=False means "do not force dry-run from the schedule"; the
+        # task still honours CLEANUP_DRY_RUN, which is what actually decides
+        # whether a production run deletes (cleanup_tasks.lifecycle_cleanup_task).
         "kwargs": {"dry_run": False},
+        # Explicit, and identical to the task_routes entry above: a schedule
+        # entry that carries no queue is only as good as the route, and this is
+        # the one task whose queue has to be right or it silently never runs.
+        "options": {"queue": _settings.cleanup_queue},
     },
 }

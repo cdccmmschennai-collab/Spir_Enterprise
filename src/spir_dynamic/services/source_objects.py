@@ -111,17 +111,35 @@ def store_source_upload(temp_path: Path, key: str, storage: ObjectStorage | None
 
 def discard_source_object(key: str, *, log_context: str = "", storage: ObjectStorage | None = None) -> bool:
     """
-    Delete the durable source object. Never raises — the storage equivalent of
-    cleanup.safe_delete(). True if it existed and was removed.
+    Delete the durable source object with the server-side credentials. Never
+    raises — the storage equivalent of cleanup.safe_delete(): an extraction
+    that produced rows is a success even if its source could not be removed,
+    and the stale sweep will catch the leftover.
+
+    Never raising is not the same as staying quiet. A failure is logged at
+    error level with the key, the calling context and the backend, and counted
+    in SOURCE_DELETE_FAILURES, because the silent version of this is how 8 GB
+    of processed uploads accumulated behind an AccessDenied nobody was
+    watching. True if the object existed and was removed.
     """
+    st: ObjectStorage | None = None
     try:
         st = storage or get_source_storage()
         removed = st.delete(key)
     except Exception as exc:
-        log.warning("source.delete_failed", key=key, context=log_context, exc_message=str(exc))
+        from spir_dynamic.monitoring.metrics import SOURCE_DELETE_FAILURES
+        SOURCE_DELETE_FAILURES.labels(stage="task").inc()
+        log.error(
+            "source.delete_failed",
+            key=key,
+            context=log_context,
+            backend=getattr(st, "backend", "unknown"),
+            error_type=type(exc).__name__,
+            exc_message=str(exc),
+        )
         return False
     if removed:
-        log.info("source.deleted", key=key, context=log_context)
+        log.info("source.deleted", key=key, context=log_context, backend=st.backend)
     else:
         log.debug("source.absent", key=key, context=log_context)
     return removed
