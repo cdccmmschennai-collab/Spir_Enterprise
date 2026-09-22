@@ -5,7 +5,7 @@ Rules are applied independently and a row may carry multiple labels:
 
   sap mismatch -N   — same PART NUMBER appears with different SAP NUMBER values
   sap duplicate -N  — same SAP NUMBER appears with different PART NUMBER values
-  spare duplicate -N — same TAG NO + PART NUMBER repeats
+  spare duplicate -N — same PART NUMBER + same DESCRIPTION repeats under different OMN
 
 Each distinct issue group gets one stable counter value shared by every row in
 that same group. Counters increment only when a new issue group appears.
@@ -197,21 +197,25 @@ def deduplicate_rows(rows: list[list], CI: dict) -> list[list]:
                 row_labels[row_idx].append(label)
             sap_duplicate_counter += 1
 
-    # Rule 3 — SPARE DUPLICATE: same PART NUMBER, different OMN identity
+    # Rule 3 — SPARE DUPLICATE: same PART NUMBER + same DESCRIPTION, different OMN identity
+    # A part number that repeats with a *different* description is a different spare,
+    # not a duplicate — both must match for the rows to be grouped.
     omn_col_idx = CI.get("OLD MATERIAL NUMBER/SPF NUMBER")
     item_col_idx = CI.get("ITEM NUMBER")
     sheet_col_idx = CI.get("SHEET")
+    desc_col_idx = CI.get("DESCRIPTION OF PARTS")
 
     if part_col is not None:
         sheet_idx_map = _build_sheet_idx_map(rows, sheet_col_idx)
 
-        # part → { identity_key: [row_indices] }
+        # (part, desc) → { identity_key: [row_indices] }
         # identity_key = OMN string (primary); fallback = "SHEETNAME|ITEM" when OMN absent
-        part_to_identity: dict[str, dict] = defaultdict(lambda: defaultdict(list))
+        part_to_identity: dict[tuple[str, str], dict] = defaultdict(lambda: defaultdict(list))
         for idx, row in enumerate(rows):
             part = _get(row, part_col)
             if not part:
                 continue
+            desc = _get(row, desc_col_idx) if desc_col_idx is not None else ""
             omn = _get(row, omn_col_idx) if omn_col_idx is not None else ""
             if omn:
                 identity = omn
@@ -221,10 +225,10 @@ def deduplicate_rows(rows: list[list], CI: dict) -> list[list]:
                     continue  # no identity → header row, skip
                 sname = _get(row, sheet_col_idx) if sheet_col_idx is not None else ""
                 identity = f"{sname}|{item_str}"
-            part_to_identity[part][identity].append(idx)
+            part_to_identity[(part, desc)][identity].append(idx)
 
-        for part in sorted(part_to_identity):
-            identities = part_to_identity[part]
+        for part_key in sorted(part_to_identity):
+            identities = part_to_identity[part_key]
             if len(identities) <= 1:
                 continue  # all same OMN identity → not a duplicate
 
