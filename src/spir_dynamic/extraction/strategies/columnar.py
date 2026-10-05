@@ -309,11 +309,12 @@ class ColumnarStrategy:
                         "_annex_col": col,
                     }
 
-                    # Build NEW DESCRIPTION = desc + part_no + supplier
+                    # Build NEW DESCRIPTION = desc + part_no + supplier + material spec
                     parts = [
                         detail_row.get("desc"),
                         detail_row.get("mfr_part_no"),
                         detail_row.get("supplier_name"),
+                        clean_str(detail_row.get("material_spec")),
                     ]
                     new_parts = [p for p in parts if p]
                     if new_parts:

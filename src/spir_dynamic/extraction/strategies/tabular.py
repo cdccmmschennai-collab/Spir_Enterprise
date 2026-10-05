@@ -179,11 +179,12 @@ class TabularStrategy:
                 if row.get("total_price") is None and qty and price:
                     row["total_price"] = round(qty * price, 4)
 
-                # Build new_desc from desc + part + supplier
+                # Build new_desc from desc + part + supplier + material spec
                 parts = [
                     row.get("desc"),
                     row.get("mfr_part_no"),
                     row.get("supplier_name"),
+                    clean_str(row.get("material_spec")),
                 ]
                 new_desc_parts = [p for p in parts if p]
                 if new_desc_parts:
