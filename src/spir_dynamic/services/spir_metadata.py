@@ -149,4 +149,12 @@ COLUMN_METADATA: dict[str, dict] = {
         "spir_field": "VENDOR COUNTRY",
         "display_limit": 255,
     },
+    "PLANT": {
+        "spir_field": "NA",
+        "display_limit": 4,
+    },
+    "PLANT DESCRIPTION": {
+        "spir_field": "NA",
+        "display_limit": 255,
+    },
 }

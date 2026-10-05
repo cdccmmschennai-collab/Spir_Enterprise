@@ -349,6 +349,9 @@ async def batch_single_result(
             "preview_cols": [],
             "preview_rows": [],
             "currency_rates": None,
+            "plant": None,
+            "plant_description": None,
+            "plant_classification": None,
         }
 
     raw_bytes, _ = entry
@@ -377,6 +380,9 @@ async def batch_single_result(
         "preview_cols": payload.get("cols", []),
         "preview_rows": payload.get("rows", []),
         "currency_rates": payload.get("currency_rates"),
+        "plant": payload.get("plant"),
+        "plant_description": payload.get("plant_description"),
+        "plant_classification": payload.get("plant_classification"),
     }
 
 

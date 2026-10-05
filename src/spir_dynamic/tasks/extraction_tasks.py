@@ -258,6 +258,9 @@ def process_file_task(
                 "dup1_count": result.get("dup1_count", 0),
                 "sap_count": result.get("sap_count", 0),
                 "currency_rates": result.get("currency_rates"),
+                "plant": result.get("plant"),
+                "plant_description": result.get("plant_description"),
+                "plant_classification": result.get("plant_classification"),
             }).encode("utf-8")
             _storage = _get_storage()
             _storage.put(

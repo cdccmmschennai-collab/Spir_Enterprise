@@ -36,6 +36,11 @@ from spir_dynamic.services.currency_service import (
     normalize_currency_code,
 )
 from spir_dynamic.services.storage import get_storage
+from spir_dynamic.services.plant_classifier import (
+    STATUS_RESOLVED,
+    PlantClassification,
+    classify_plant,
+)
 from spir_dynamic.app.config import get_settings
 from spir_dynamic.utils.logging import timed
 from spir_dynamic.monitoring.metrics import (
@@ -112,6 +117,8 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
         try:
             # Step 3: Extract
             result = extract_workbook(wb, original_filename)
+            # Step 3b: Workbook-level plant (project-level labels only; never raises)
+            plant = classify_plant(wb)
         finally:
             wb.close()
             # Explicitly release the parsed workbook for large files to reclaim RAM
@@ -135,6 +142,9 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
         for row in output_rows:
             if spir_col < len(row) and row[spir_col] is None and spir_no:
                 row[spir_col] = spir_no
+
+        # Step 4c: Stamp PLANT / PLANT DESCRIPTION (left blank unless resolved)
+        _apply_plant(output_rows, plant)
 
         # The result's file_id doubles as the processing-job id the currency
         # snapshot is recorded against (extraction_history stores both).
@@ -205,6 +215,10 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
             "sheet_profiles": result.get("sheet_profiles", []),
             # Rate snapshot this job converted with (None = no priced rows).
             "currency_rates": currency_snapshot.to_dict() if currency_snapshot else None,
+            # Plant code/description (None unless confidently resolved) + audit trail.
+            "plant": plant.plant,
+            "plant_description": plant.plant_description,
+            "plant_classification": plant.to_dict(),
         }
 
         try:
@@ -239,6 +253,20 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
 def retrieve_result(file_id: str) -> Optional[tuple[bytes, str]]:
     """Retrieve stored extraction result."""
     return get_storage().get(file_id)
+
+
+def _apply_plant(rows: list[list], plant: PlantClassification) -> None:
+    """Write the workbook's plant onto every row — only when RESOLVED."""
+    if plant.status != STATUS_RESOLVED:
+        return
+    plant_col = CI.get("PLANT")
+    desc_col = CI.get("PLANT DESCRIPTION")
+    if plant_col is None or desc_col is None:
+        return
+    for row in rows:
+        if len(row) > max(plant_col, desc_col):
+            row[plant_col] = plant.plant
+            row[desc_col] = plant.plant_description
 
 
 def _apply_currency_conversion(

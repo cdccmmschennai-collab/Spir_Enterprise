@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { Upload, Cpu, ClipboardList, Layers, Download, ArrowRight, BookOpen } from "lucide-react";
+import { Upload, Cpu, ClipboardList, Layers, Download, ArrowRight, ArrowLeft, BookOpen } from "lucide-react";
 import { SidebarLayout } from "@/components/sidebar";
 
 const steps = [
@@ -54,6 +54,14 @@ export default function GuidePage() {
       <div className="mx-auto max-w-2xl space-y-6 p-6 lg:p-10">
         {/* Header */}
         <div>
+          <button
+            type="button"
+            onClick={() => (window.history.length > 1 ? router.back() : router.push("/extraction"))}
+            className="mb-3 flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            Back
+          </button>
           <div className="flex items-center gap-2 mb-1">
             <BookOpen className="h-5 w-5 text-violet-600" />
             <h1 className="text-lg font-bold text-slate-900 dark:text-slate-100 tracking-tight">
