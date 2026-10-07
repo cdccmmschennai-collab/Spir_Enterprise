@@ -36,11 +36,7 @@ from spir_dynamic.services.currency_service import (
     normalize_currency_code,
 )
 from spir_dynamic.services.storage import get_storage
-from spir_dynamic.services.plant_classifier import (
-    STATUS_RESOLVED,
-    PlantClassification,
-    classify_plant,
-)
+from spir_dynamic.services.planning_plant import InvalidPlanningPlant, PlanningPlant
 from spir_dynamic.app.config import get_settings
 from spir_dynamic.utils.logging import timed
 from spir_dynamic.monitoring.metrics import (
@@ -55,7 +51,11 @@ _SLOW_EXTRACTION_WARN_SECONDS = 120
 
 
 @timed
-def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict[str, Any]:
+def run_pipeline(
+    file_input: Union[bytes, Path],
+    original_filename: str,
+    planning_plant: PlanningPlant,
+) -> dict[str, Any]:
     """
     Full extraction pipeline: validate -> extract -> post-process -> build xlsx.
 
@@ -63,8 +63,15 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
     (new streaming path). When given a Path, the workbook is opened directly from
     disk — no raw-bytes copy is held in memory during extraction.
 
+    `planning_plant` is the user-selected plant (validated by the caller via
+    resolve_planning_plant); it is written to PLANNING PLANT / PLANNING PLANT DESCRIPTION on every
+    row. Workbook content is never consulted for the plant.
+
     Returns a metadata dict with file_id, preview_rows, statistics, etc.
     """
+    if not isinstance(planning_plant, PlanningPlant):
+        raise InvalidPlanningPlant("planning_plant is required — select a Planning Plant")
+
     # ── cProfile — opt-in via SPIR_PROFILE=true (disabled in production) ────
     import os as _os
     _profile_enabled = _os.environ.get("SPIR_PROFILE", "").lower() in ("1", "true", "yes")
@@ -117,8 +124,6 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
         try:
             # Step 3: Extract
             result = extract_workbook(wb, original_filename)
-            # Step 3b: Workbook-level plant (project-level labels only; never raises)
-            plant = classify_plant(wb)
         finally:
             wb.close()
             # Explicitly release the parsed workbook for large files to reclaim RAM
@@ -143,8 +148,8 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
             if spir_col < len(row) and row[spir_col] is None and spir_no:
                 row[spir_col] = spir_no
 
-        # Step 4c: Stamp PLANT / PLANT DESCRIPTION (left blank unless resolved)
-        _apply_plant(output_rows, plant)
+        # Step 4c: Stamp the user-selected PLANNING PLANT / DESCRIPTION on every row
+        _apply_plant(output_rows, planning_plant)
 
         # The result's file_id doubles as the processing-job id the currency
         # snapshot is recorded against (extraction_history stores both).
@@ -215,10 +220,9 @@ def run_pipeline(file_input: Union[bytes, Path], original_filename: str) -> dict
             "sheet_profiles": result.get("sheet_profiles", []),
             # Rate snapshot this job converted with (None = no priced rows).
             "currency_rates": currency_snapshot.to_dict() if currency_snapshot else None,
-            # Plant code/description (None unless confidently resolved) + audit trail.
-            "plant": plant.plant,
-            "plant_description": plant.plant_description,
-            "plant_classification": plant.to_dict(),
+            # User-selected Planning Plant (the same values stamped on every row).
+            "plant": planning_plant.code,
+            "plant_description": planning_plant.description,
         }
 
         try:
@@ -255,18 +259,16 @@ def retrieve_result(file_id: str) -> Optional[tuple[bytes, str]]:
     return get_storage().get(file_id)
 
 
-def _apply_plant(rows: list[list], plant: PlantClassification) -> None:
-    """Write the workbook's plant onto every row — only when RESOLVED."""
-    if plant.status != STATUS_RESOLVED:
-        return
-    plant_col = CI.get("PLANT")
-    desc_col = CI.get("PLANT DESCRIPTION")
+def _apply_plant(rows: list[list], plant: PlanningPlant) -> None:
+    """Write the user-selected Planning Plant onto every row, unconditionally."""
+    plant_col = CI.get("PLANNING PLANT")
+    desc_col = CI.get("PLANNING PLANT DESCRIPTION")
     if plant_col is None or desc_col is None:
         return
     for row in rows:
         if len(row) > max(plant_col, desc_col):
-            row[plant_col] = plant.plant
-            row[desc_col] = plant.plant_description
+            row[plant_col] = plant.code
+            row[desc_col] = plant.description
 
 
 def _apply_currency_conversion(

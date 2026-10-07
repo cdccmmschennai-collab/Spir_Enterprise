@@ -56,6 +56,8 @@ export interface DirectUploadOptions {
   // Batch slot registered via /api/batch/register; omit for the single-file page.
   jobId?: string;
   fileIdx?: number;
+  // Extra JSON fields for /api/uploads/initiate (e.g. the selected Planning Plant).
+  fields?: Record<string, string>;
   onProgress?: (uploadedBytes: number, totalBytes: number) => void;
   onPhase?: (phase: "uploading" | "finalizing") => void;
   // Reveals the job id as soon as the server created it (single-file page).
@@ -184,6 +186,7 @@ export async function directUpload(file: File, opts: DirectUploadOptions = {}): 
       body: JSON.stringify({
         filename: file.name,
         size: file.size,
+        ...opts.fields,
         ...(opts.jobId !== undefined ? { job_id: opts.jobId, file_idx: opts.fileIdx ?? 0 } : {}),
       }),
     });

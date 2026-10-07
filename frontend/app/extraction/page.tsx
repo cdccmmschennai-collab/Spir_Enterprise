@@ -14,7 +14,6 @@ import {
   Tag,
   Layers,
   AlertTriangle,
-  BookOpen,
   ChevronLeft,
   ChevronRight,
   ArrowUpRight,
@@ -30,6 +29,8 @@ import { cn, formatBytes } from "@/lib/utils";
 import { saveSession, loadSession, clearSession, dismissSession } from "@/lib/extraction-session";
 import { directUpload, cancelDirectUpload } from "@/lib/direct-upload";
 import { postExtract, ExtractRequestCancelled } from "@/lib/extract-request";
+import { PlanningPlantError, PlanningPlantSelect } from "@/components/planning-plant-select";
+import { planningPlantFields, type PlanningPlant } from "@/lib/planning-plants";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const ACCEPTED = ".xlsx,.xlsm,.xls";
@@ -461,6 +462,10 @@ const PreviewTable = memo(function PreviewTable({ cols, rows, totalRows, expande
 export default function ExtractionPage() {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
+  // Mandatory before extraction; chosen by the user, never auto-detected.
+  const [planningPlant, setPlanningPlant] = useState<PlanningPlant | null>(null);
+  const [plantMissing, setPlantMissing] = useState(false);
+  const plantSelectRef = useRef<HTMLButtonElement>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ExtractResult | null>(null);
@@ -677,7 +682,8 @@ export default function ExtractionPage() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleExtract = useCallback(async () => {
-    if (!file) return;
+    if (!file || !planningPlant) return;
+    const plantFields = planningPlantFields(planningPlant);
     setLoading(true);
     setError(null);
     setResult(null);
@@ -710,6 +716,7 @@ export default function ExtractionPage() {
     setUpload({ loaded: 0, total: file.size, phase: "uploading" });
     const outcome = await directUpload(file, {
       signal: controller.signal,
+      fields: plantFields,
       onJob: (job_id) => {
         if (live()) saveSession({ status: "loading", ...base, savedAt: Date.now(), job_id, phase: "uploading" });
       },
@@ -751,6 +758,7 @@ export default function ExtractionPage() {
     // to "processing" once the body has been delivered.
     const form = new FormData();
     form.append("file", file);
+    for (const [k, v] of Object.entries(plantFields)) form.append(k, v);
     setUpload({ loaded: 0, total: file.size, phase: "uploading" });
     try {
       const res = await postExtract(form, {
@@ -800,7 +808,17 @@ export default function ExtractionPage() {
       }
       setLoading(false);
     }
-  }, [file, startPolling, stopPolling]);
+  }, [file, planningPlant, startPolling, stopPolling]);
+
+  // Run Extraction: Planning Plant is mandatory — flag the field instead of starting.
+  const handleRunClick = useCallback(() => {
+    if (!planningPlant) {
+      setPlantMissing(true);
+      plantSelectRef.current?.focus();
+      return;
+    }
+    handleExtract();
+  }, [planningPlant, handleExtract]);
 
   const handleDownload = useCallback(async () => {
     if (!result) return;
@@ -892,6 +910,29 @@ export default function ExtractionPage() {
       {/* ── Dashboard / Upload State ── */}
       {!result && (
         <div className="mx-auto max-w-3xl space-y-6 p-4 sm:p-6 lg:p-8">
+          {/* Top bar: Planning Plant (mandatory) · Open Guide — required message right below */}
+          <div className="space-y-2">
+          <div className="rounded-2xl border border-emerald-200 dark:border-emerald-800/50 bg-white dark:bg-slate-800 p-3 shadow-sm flex items-center gap-4">
+            <PlanningPlantSelect
+              ref={plantSelectRef}
+              value={planningPlant}
+              onChange={(p) => { setPlanningPlant(p); setPlantMissing(false); }}
+              invalid={plantMissing}
+              disabled={loading}
+              describedBy={plantMissing ? "planning-plant-error" : undefined}
+              className="min-w-0 flex-1"
+            />
+            <button
+              onClick={() => router.push("/guide")}
+              className="flex shrink-0 items-center gap-1.5 pr-2 text-xs font-semibold text-emerald-700 hover:text-emerald-800 dark:text-emerald-400 dark:hover:text-emerald-300 transition-colors"
+            >
+              Open Guide
+              <ArrowUpRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          {plantMissing && <PlanningPlantError id="planning-plant-error" />}
+          </div>
+
           {/* Recovery banner — extraction completed on backend while page was away */}
           {recoveredToHistory && !loading && (
             <div className="flex items-start gap-3 rounded-xl border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-3.5 text-sm text-emerald-700 dark:text-emerald-400">
@@ -951,7 +992,7 @@ export default function ExtractionPage() {
               {file && (
                 <div className="flex justify-center">
                   <button
-                    onClick={handleExtract}
+                    onClick={handleRunClick}
                     className="flex h-11 items-center gap-2 rounded-xl bg-violet-700 px-8 text-sm font-semibold text-white shadow-md shadow-violet-200 transition-all hover:bg-violet-800"
                   >
                     <FileSpreadsheet className="h-4 w-4" />
@@ -962,25 +1003,6 @@ export default function ExtractionPage() {
             </>
           )}
 
-          {/* System Guide card */}
-          <div className="rounded-2xl border border-emerald-200 dark:border-emerald-800/50 bg-white dark:bg-slate-800 p-5 shadow-sm flex items-center gap-4">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-50 dark:bg-emerald-950/50">
-              <BookOpen className="h-4.5 w-4.5 h-[18px] w-[18px] text-emerald-600 dark:text-emerald-400" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">System Guide</h3>
-              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                Step-by-step workflow: upload, extract, combine, download.
-              </p>
-            </div>
-            <button
-              onClick={() => router.push("/guide")}
-              className="flex shrink-0 items-center gap-1.5 text-xs font-semibold text-emerald-700 hover:text-emerald-800 dark:text-emerald-400 dark:hover:text-emerald-300 transition-colors"
-            >
-              Open Guide
-              <ArrowUpRight className="h-3.5 w-3.5" />
-            </button>
-          </div>
         </div>
       )}
 

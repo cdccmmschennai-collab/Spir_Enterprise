@@ -34,6 +34,9 @@ _P_FILE_RESULT = "spir_dynamic.services.job_store.FileResult"
 _P_SETTINGS    = "spir_dynamic.app.config.get_settings"
 _P_SRC_STORAGE = "spir_dynamic.services.source_objects.get_source_storage"
 _P_PIPELINE    = "spir_dynamic.app.pipeline.run_pipeline"
+
+# User-selected Planning Plant — mandatory on every extraction path.
+_PLANT_FIELDS = {"planning_plant": "2400", "planning_plant_description": "NGL Mesaieed"}
 _P_SANITIZER   = "spir_dynamic.extraction.sanitizer.sanitize_workbook"
 _P_SAFE_DELETE = "spir_dynamic.services.cleanup.safe_delete"
 _P_AUDIT       = "spir_dynamic.services.audit_service.log_extraction_worker"
@@ -134,6 +137,7 @@ def _run(tmp_path: Path, delivery_count: int, **ctx_kw):
 
     with _task_context(str(upload_file), delivery_count, **ctx_kw) as (task, *_):
         return task.run(
+                **_PLANT_FIELDS,
             job_id="job-1", file_idx=0,
             source_key=upload_file.name,
             filename="test_upload.xlsx",
@@ -180,6 +184,7 @@ class TestDeliveryCapGuard:
 
         with _task_context(str(upload_file), delivery_count=7) as (task, store, *_):
             task.run(
+                **_PLANT_FIELDS,
                 job_id="job-1", file_idx=0,
                 source_key=upload_file.name, filename="test_upload.xlsx",
             )
@@ -200,6 +205,7 @@ class TestDeliveryCapGuard:
             extra_patches=[patch(_P_CAP_HITS, mock_counter)],
         ) as (task, *_):
             task.run(
+                **_PLANT_FIELDS,
                 job_id="job-1", file_idx=0,
                 source_key=upload_file.name, filename="test_upload.xlsx",
             )
@@ -213,6 +219,7 @@ class TestDeliveryCapGuard:
 
         with _task_context(str(upload_file), delivery_count=1) as (task, _, redis_stub, _m):
             task.run(
+                **_PLANT_FIELDS,
                 job_id="job-1", file_idx=0,
                 source_key=upload_file.name, filename="my_special_upload.xlsx",
             )
@@ -228,6 +235,7 @@ class TestDeliveryCapGuard:
 
         with _task_context(str(upload_file), delivery_count=1) as (task, _, redis_stub, _m):
             task.run(
+                **_PLANT_FIELDS,
                 job_id="job-1", file_idx=0,
                 source_key=upload_file.name, filename="expire_test.xlsx",
             )
@@ -247,6 +255,7 @@ class TestDeliveryCapGuard:
             str(upload_file), delivery_count=0, redis_side_effect=_raise
         ) as (task, *_):
             result = task.run(
+                **_PLANT_FIELDS,
                 job_id="job-1", file_idx=0,
                 source_key=upload_file.name, filename="redis_down.xlsx",
             )
@@ -260,6 +269,7 @@ class TestDeliveryCapGuard:
 
         with _task_context(str(upload_file), delivery_count=9) as (task, *_):
             task.run(
+                **_PLANT_FIELDS,
                 job_id="job-1", file_idx=0,
                 source_key=upload_file.name, filename="cap_delete.xlsx",
             )

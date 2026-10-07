@@ -91,6 +91,7 @@ from spir_dynamic.services.object_storage import (
     UploadedPart,
     reset_object_storage,
 )
+from spir_dynamic.services.planning_plant import PlanningPlant
 from spir_dynamic.services.source_objects import source_object_key
 from tests.test_source_objects import MemoryObjectStorage, _compose_config, _minio_target
 
@@ -561,6 +562,9 @@ class BodyMeter:
         await self.app(scope, rx, send)
 
 
+# User-selected Planning Plant — mandatory on every extraction path.
+_PLANT_FIELDS = {"planning_plant": "2400", "planning_plant_description": "NGL Mesaieed"}
+
 _P = SimpleNamespace(
     settings="spir_dynamic.app.upload_router.get_settings",
     storage="spir_dynamic.app.upload_router.direct_upload_storage",
@@ -612,7 +616,7 @@ def api(tmp_path):
 
 
 def _initiate(api, size=11 * MB, name="big.xlsm", **extra):
-    return api.client.post("/api/uploads/initiate", json={"filename": name, "size": size, **extra})
+    return api.client.post("/api/uploads/initiate", json={"filename": name, "size": size, **_PLANT_FIELDS, **extra})
 
 
 def _upload_all(api, plan, payload: bytes):
@@ -725,7 +729,10 @@ class TestDirectFlow:
         assert api.storage.objects[key] == b"x" * (11 * MB) and api.storage.uploads == {}
         api.dispatch.assert_called_once()
         _job, file_data, _cfg, user_id = api.dispatch.call_args.args
-        assert _job == job_id and user_id == "user-1" and api.dispatch.call_args.kwargs == {"idx_offset": 0}
+        assert _job == job_id and user_id == "user-1"
+        # the Planning Plant chosen at initiate is what the worker receives
+        assert api.dispatch.call_args.kwargs == {
+            "idx_offset": 0, "planning_plant": PlanningPlant("2400", "NGL Mesaieed")}
         assert file_data == [(key, "../../etc/VEN big:file.xlsm", 11 * MB)]      # Phase 3C contract
         assert api.store.get(job_id).results[0].status == "pending"
         assert api.store.get_upload(job_id, 0) is None
@@ -747,7 +754,7 @@ class TestDirectFlow:
         assert r["status"] == "processing" and r["phase"] == "uploading"
 
     def test_batch_slot_uses_registered_name_and_marks_slot(self, api):
-        reg = api.client.post("/api/batch/register", json={"filenames": ["s.xlsx", "registered.xlsm"]})
+        reg = api.client.post("/api/batch/register", json={"filenames": ["s.xlsx", "registered.xlsm"], **_PLANT_FIELDS})
         job_id = reg.json()["job_id"]
         r = _initiate(api, size=11 * MB, name="client-says-otherwise.xlsm", job_id=job_id, file_idx=1)
         assert r.status_code == 200 and r.json()["filename"] == "registered.xlsm"
@@ -756,12 +763,13 @@ class TestDirectFlow:
         d = api.store.get(job_id).to_dict()
         assert d["results"][1]["status"] == "uploading" and d["results"][0]["queue_position"] == 1
         # the classic batch upload refuses the slot while the direct upload owns it
-        up = api.client.post(f"/api/batch/{job_id}/upload", data={"file_idx": "1"},
+        up = api.client.post(f"/api/batch/{job_id}/upload", data={"file_idx": "1", **_PLANT_FIELDS},
                              files={"file": ("registered.xlsm", b"x", "application/octet-stream")})
         assert up.status_code == 409
         _upload_all(api, r.json(), b"y" * (11 * MB))
         assert api.client.post(f"/api/uploads/{job_id}/1/complete").status_code == 202
-        assert api.dispatch.call_args.kwargs == {"idx_offset": 1}
+        assert api.dispatch.call_args.kwargs == {
+            "idx_offset": 1, "planning_plant": PlanningPlant("2400", "NGL Mesaieed")}
         assert api.dispatch.call_args.args[1] == [(key, "registered.xlsm", 11 * MB)]
 
     def test_batch_slot_not_pending_is_conflict(self, api):
@@ -885,7 +893,7 @@ class TestExistingWorkflowsUnchanged:
                "total_rows": 1, "total_tags": 1, "preview_cols": [], "preview_rows": []}
 
     def _post(self, api, size):
-        return api.client.post("/api/extract", files={"file": ("f.xlsm", b"x" * size, "application/octet-stream")})
+        return api.client.post("/api/extract", data=_PLANT_FIELDS, files={"file": ("f.xlsm", b"x" * size, "application/octet-stream")})
 
     def test_small_stays_sync(self, api):
         with patch(_P.routes_settings, return_value=api.cfg), \
@@ -909,11 +917,11 @@ class TestExistingWorkflowsUnchanged:
         assert len(api.storage.objects) == 1
 
     def test_batch_upload_endpoint_unchanged(self, api):
-        job_id = api.client.post("/api/batch/register", json={"filenames": ["a.xlsx"]}).json()["job_id"]
+        job_id = api.client.post("/api/batch/register", json={"filenames": ["a.xlsx"], **_PLANT_FIELDS}).json()["job_id"]
         task = MagicMock()
         with patch("spir_dynamic.tasks.extraction_tasks.process_file_task", task), \
              patch("spir_dynamic.monitoring.metrics.GIANT_FILES_ROUTED"):
-            r = api.client.post(f"/api/batch/{job_id}/upload", data={"file_idx": "0"},
+            r = api.client.post(f"/api/batch/{job_id}/upload", data={"file_idx": "0", **_PLANT_FIELDS},
                                 files={"file": ("a.xlsx", b"x" * 10, "application/octet-stream")})
         assert r.status_code == 200 and r.json()["status"] == "queued"
         assert task.apply_async.call_args.kwargs["queue"] == "normal"
@@ -1196,10 +1204,10 @@ class TestDockerEndToEnd:
 
     def test_small_file_still_synchronous(self, e2e_user):
         st, data = _json("POST", "/api/uploads/initiate", e2e_user.token,
-                         {"filename": WORKBOOK_SMALL.name, "size": WORKBOOK_SMALL.stat().st_size})
+                         {"filename": WORKBOOK_SMALL.name, "size": WORKBOOK_SMALL.stat().st_size, **_PLANT_FIELDS})
         assert st == 200 and data == {"mode": "api", "reason": "small_file", "queue": "normal"}
         from tests.test_source_objects import _multipart
-        body, ctype = _multipart({}, "file", WORKBOOK_SMALL.name, WORKBOOK_SMALL)
+        body, ctype = _multipart(dict(_PLANT_FIELDS), "file", WORKBOOK_SMALL.name, WORKBOOK_SMALL)
         st, _, resp = _http("POST", "/api/extract", token=e2e_user.token, body=body, content_type=ctype)
         assert st == 200 and json.loads(resp)["status"] == "done", resp[:300]
 
@@ -1211,7 +1219,7 @@ class TestDockerEndToEnd:
         t0 = time.perf_counter()
 
         # 1. small control request
-        st, plan = _json("POST", "/api/uploads/initiate", e2e_user.token, {"filename": WORKBOOK_223.name, "size": size})
+        st, plan = _json("POST", "/api/uploads/initiate", e2e_user.token, {"filename": WORKBOOK_223.name, "size": size, **_PLANT_FIELDS})
         assert st == 200 and plan["mode"] == "direct" and plan["queue"] == "heavy", plan
         job_id = plan["job_id"]
         key = source_object_key(job_id, 0, WORKBOOK_223.name)
@@ -1263,7 +1271,7 @@ class TestDockerEndToEnd:
 
     def test_abort_leaves_nothing_behind(self, e2e_user):
         size = WORKBOOK_223.stat().st_size
-        st, plan = _json("POST", "/api/uploads/initiate", e2e_user.token, {"filename": "abort.xlsm", "size": size})
+        st, plan = _json("POST", "/api/uploads/initiate", e2e_user.token, {"filename": "abort.xlsm", "size": size, **_PLANT_FIELDS})
         assert st == 200 and plan["mode"] == "direct"
         with WORKBOOK_223.open("rb") as fh:
             assert _put(plan["parts"][0]["url"], fh.read(plan["part_size"]))[0] == 200

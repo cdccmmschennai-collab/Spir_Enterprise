@@ -121,6 +121,9 @@ class UploadSession:
     queue: str
     state: str = STATE_UPLOADING
     created_at: float = 0.0
+    # User-selected Planning Plant, validated at initiate; handed to the worker on complete.
+    planning_plant: str = ""
+    planning_plant_description: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -231,6 +234,8 @@ def plan_upload(
     queue: str,
     part_size: int,
     url_ttl: int,
+    planning_plant: str = "",
+    planning_plant_description: str = "",
 ) -> tuple[UploadSession, list[dict]]:
     """
     Create the multipart upload for slot (job_id, file_idx) and sign every
@@ -251,7 +256,8 @@ def plan_upload(
     session = UploadSession(
         job_id=job_id, file_idx=file_idx, filename=filename, size=size, source_key=key,
         upload_id=upload_id, part_size=part_size, part_count=n, user_id=user_id, queue=queue,
-        created_at=time.time(),
+        created_at=time.time(), planning_plant=planning_plant,
+        planning_plant_description=planning_plant_description,
     )
     return session, urls
 

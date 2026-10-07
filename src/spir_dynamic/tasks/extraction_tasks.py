@@ -64,6 +64,8 @@ def process_file_task(
     source_key: str,
     filename: str,
     user_id: str = "",
+    planning_plant: str = "",
+    planning_plant_description: str = "",
 ) -> dict:
     """
     Extract a single SPIR file as part of a batch job.
@@ -74,6 +76,10 @@ def process_file_task(
         source_key:  Key of the source object in the BATCH_UPLOADS storage area
                      (stored there by the API). Never a host filesystem path.
         filename:    Original upload filename (used for pipeline and error reporting).
+        planning_plant / planning_plant_description:
+                     The user-selected Planning Plant (validated by the API,
+                     re-validated here). Missing/invalid fails the file — there
+                     is no automatic plant detection to fall back to.
 
     Returns:
         Dict with status + result metadata (mirrors run_pipeline output keys).
@@ -83,6 +89,7 @@ def process_file_task(
     from spir_dynamic.services.cleanup import safe_delete
     from spir_dynamic.services.job_store import FileResult, get_job_store
     from spir_dynamic.services.object_storage import ObjectNotFound
+    from spir_dynamic.services.planning_plant import InvalidPlanningPlant, resolve_planning_plant
     from spir_dynamic.services.source_objects import (
         discard_source_object,
         scratch_dir,
@@ -107,6 +114,16 @@ def process_file_task(
     _cfg = _get_settings()
 
     store = get_job_store()
+
+    # ── Planning Plant — required; not retryable, so fail the slot right away ──
+    try:
+        plant = resolve_planning_plant(planning_plant, planning_plant_description)
+    except InvalidPlanningPlant as exc:
+        log.error("extraction.invalid_planning_plant", planning_plant=planning_plant, exc_message=str(exc))
+        discard_source_object(source_key, log_context=f"invalid-plant {_log_ctx}")
+        store.update_result(job_id, file_idx, FileResult(filename=filename, status="error", error=str(exc)))
+        return {"status": "error", "job_id": job_id, "file_idx": file_idx, "error": str(exc)}
+    structlog.contextvars.bind_contextvars(planning_plant=plant.code)
 
     # ── Broker delivery cap — guard against infinite OOM re-delivery loop ────
     # self.retry() increments self.request.retries (capped at max_retries=3).
@@ -191,7 +208,7 @@ def process_file_task(
         # after extraction regardless of success or failure, while the outer
         # except block preserves the source object for retry attempts.
         try:
-            return run_pipeline(_effective_path, filename)
+            return run_pipeline(_effective_path, filename, plant)
         finally:
             # Always clean up the sanitized copy; original upload is untouched.
             if _san.sanitized_path is not None:
@@ -260,7 +277,6 @@ def process_file_task(
                 "currency_rates": result.get("currency_rates"),
                 "plant": result.get("plant"),
                 "plant_description": result.get("plant_description"),
-                "plant_classification": result.get("plant_classification"),
             }).encode("utf-8")
             _storage = _get_storage()
             _storage.put(

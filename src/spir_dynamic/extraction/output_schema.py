@@ -75,9 +75,9 @@ OUTPUT_COLUMNS: list[dict] = [
     {"col": "VENDOR CONTACT NO", "field": "vendor_contact", "default": None, "width": 30},
     {"col": "VENDOR COUNTRY",     "field": "vendor_country", "default": None, "width": 20},
 
-    # -- Workbook-level plant (services/plant_classifier; blank when unresolved) --
-    {"col": "PLANT",             "field": "plant",             "default": None, "width": 10},
-    {"col": "PLANT DESCRIPTION", "field": "plant_description", "default": None, "width": 30},
+    # -- User-selected Planning Plant (services/planning_plant; same on every row) --
+    {"col": "PLANNING PLANT",             "field": "plant",             "default": None, "width": 16},
+    {"col": "PLANNING PLANT DESCRIPTION", "field": "plant_description", "default": None, "width": 30},
 ]
 
 

@@ -446,6 +446,8 @@ _RESULT = {
     "equipment": "", "manufacturer": "", "supplier": "", "spir_type": None, "eqpt_qty": 0,
     "spare_items": 0, "annexure_count": 0, "dup1_count": 0, "sap_count": 0,
 }
+# User-selected Planning Plant — mandatory on every extraction path.
+_PLANT_FIELDS = {"planning_plant": "2400", "planning_plant_description": "NGL Mesaieed"}
 _NOOP_SAN = SimpleNamespace(
     sanitized_path=None, used_fallback=False, skip_reason="skipped",
     original_size_mb=0.1, sanitized_size_mb=0.1, reduction_pct=0, duration_s=0.01,
@@ -499,7 +501,7 @@ class TestWorkerTask:
         st.put_bytes(self.KEY, b"wb")
         seen: dict = {}
 
-        def fake_pipeline(path, filename):
+        def fake_pipeline(path, filename, plant):
             seen["path"] = Path(path)
             seen["existed"] = Path(path).exists()
             seen["content"] = Path(path).read_bytes()
@@ -507,7 +509,7 @@ class TestWorkerTask:
 
         san = MagicMock(return_value=_NOOP_SAN)
         with worker_ctx(tmp_path, st, pipeline=MagicMock(side_effect=fake_pipeline), sanitizer=san) as (task, store, _):
-            out = task.run(job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm", user_id="u")
+            out = task.run(**_PLANT_FIELDS, job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm", user_id="u")
 
         assert out["status"] == "ok" and out["file_id"] == "fid-1" and out["total_rows"] == 7
         # the existing pipeline received a real local file in the scratch dir
@@ -526,7 +528,7 @@ class TestWorkerTask:
         st = MemoryObjectStorage()
         with worker_ctx(tmp_path, st) as (task, store, pipeline):
             with patch.object(task, "retry") as retry:
-                out = task.run(job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
+                out = task.run(**_PLANT_FIELDS, job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
         assert out["status"] == "error" and "not found" in out["error"]
         retry.assert_not_called()
         pipeline.assert_not_called()
@@ -543,7 +545,7 @@ class TestWorkerTask:
         with worker_ctx(tmp_path, st) as (task, store, pipeline):
             with patch.object(task, "retry", side_effect=Retry("retrying")) as retry:
                 with pytest.raises(Retry):
-                    task.run(job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
+                    task.run(**_PLANT_FIELDS, job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
         retry.assert_called_once()
         assert isinstance(retry.call_args.kwargs["exc"], StorageUnavailable)
         assert [u.status for u in _slot_updates(store)] == ["running"]
@@ -552,7 +554,7 @@ class TestWorkerTask:
         # last attempt: retries exhausted -> controlled error on the slot
         with worker_ctx(tmp_path, st, retries=3) as (task, store, _):
             with patch.object(task, "retry", side_effect=MaxRetriesExceededError()):
-                out = task.run(job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
+                out = task.run(**_PLANT_FIELDS, job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
         assert out["status"] == "error" and "minio down" in out["error"]
         assert _slot_updates(store)[-1].status == "error"
 
@@ -563,7 +565,7 @@ class TestWorkerTask:
         with worker_ctx(tmp_path, st, pipeline=MagicMock(side_effect=ValueError("bad sheet"))) as (task, store, _):
             with patch.object(task, "retry", side_effect=Retry("retrying")) as retry:
                 with pytest.raises(Retry):
-                    task.run(job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
+                    task.run(**_PLANT_FIELDS, job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
         retry.assert_called_once()
         assert self.KEY in st.objects                                  # retry can re-download
         assert list((tmp_path / "scratch").iterdir()) == []            # temp gone
@@ -575,7 +577,7 @@ class TestWorkerTask:
         st.put_bytes(self.KEY, b"wb")
         with worker_ctx(tmp_path, st, pipeline=MagicMock(side_effect=ValueError("bad sheet")), retries=3) as (task, store, _):
             with patch.object(task, "retry", side_effect=MaxRetriesExceededError()):
-                out = task.run(job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
+                out = task.run(**_PLANT_FIELDS, job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
         assert out["status"] == "error"
         assert self.KEY not in st.objects
         assert _slot_updates(store)[-1].status == "error"
@@ -585,7 +587,7 @@ class TestWorkerTask:
         st.put_bytes(self.KEY, b"wb")
         calls = {"n": 0}
 
-        def flaky(path, filename):
+        def flaky(path, filename, plant):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise ValueError("transient")
@@ -594,9 +596,9 @@ class TestWorkerTask:
         from celery.exceptions import Retry
         with worker_ctx(tmp_path, st, pipeline=MagicMock(side_effect=flaky)) as (task, *_):
             with patch.object(task, "retry", side_effect=Retry("r")), pytest.raises(Retry):
-                task.run(job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
+                task.run(**_PLANT_FIELDS, job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
         with worker_ctx(tmp_path, st, pipeline=MagicMock(side_effect=flaky), retries=1) as (task, *_):
-            out = task.run(job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
+            out = task.run(**_PLANT_FIELDS, job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
         assert out["status"] == "ok"
         assert st.get_file_calls == 2 and st.objects == {}            # downloaded twice, one object, now gone
 
@@ -605,7 +607,7 @@ class TestWorkerTask:
         st = MemoryObjectStorage()
         st.put_bytes(self.KEY, b"wb")
         with worker_ctx(tmp_path, st, pipeline=MagicMock(side_effect=SoftTimeLimitExceeded())) as (task, store, _):
-            out = task.run(job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
+            out = task.run(**_PLANT_FIELDS, job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
         assert out["status"] == "error" and "timed out" in out["error"]
         assert self.KEY not in st.objects
         assert list((tmp_path / "scratch").iterdir()) == []
@@ -617,7 +619,7 @@ class TestWorkerTask:
             with patch(_P.redis) as redis_factory:
                 r = redis_factory.return_value
                 r.incr.return_value = 1
-                task.run(job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
+                task.run(**_PLANT_FIELDS, job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
         assert r.incr.call_args.args[0] == f"spir:dlv:{self.KEY}"
 
     def test_filesystem_backend_unchanged_in_place(self, tmp_path):
@@ -627,12 +629,12 @@ class TestWorkerTask:
         st.put_bytes(self.KEY, b"wb")
         seen = {}
 
-        def fake_pipeline(path, filename):
+        def fake_pipeline(path, filename, plant):
             seen["path"] = Path(path)
             return dict(_RESULT)
 
         with worker_ctx(tmp_path, st, pipeline=MagicMock(side_effect=fake_pipeline)) as (task, *_):
-            out = task.run(job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
+            out = task.run(**_PLANT_FIELDS, job_id="job-1", file_idx=0, source_key=self.KEY, filename="big.xlsm")
         assert out["status"] == "ok"
         assert seen["path"] == uploads / self.KEY
         assert not (uploads / self.KEY).exists()                        # deleted after success
@@ -734,7 +736,7 @@ class TestSingleFileEndpoint:
              patch("spir_dynamic.monitoring.metrics.GIANT_FILES_ROUTED"), \
              patch("spir_dynamic.app.routes.get_job_store", return_value=store), \
              patch("spir_dynamic.app.routes._persist_job_to_db", new=AsyncMock()):
-            res = api.client.post("/api/extract", files={"file": ("big.xlsm", b"x" * 10, "application/octet-stream")})
+            res = api.client.post("/api/extract", data=_PLANT_FIELDS, files={"file": ("big.xlsm", b"x" * 10, "application/octet-stream")})
 
         assert res.status_code == 202
         body = res.json()
@@ -752,7 +754,7 @@ class TestSingleFileEndpoint:
         with patch("spir_dynamic.app.routes.get_settings", return_value=api.cfg), \
              patch("spir_dynamic.app.routes.run_pipeline", return_value=dict(_RESULT)) as pipeline, \
              patch("spir_dynamic.app.routes._dispatch_celery") as dispatch:
-            res = api.client.post("/api/extract", files={"file": ("small.xlsx", b"x" * 10, "application/octet-stream")})
+            res = api.client.post("/api/extract", data=_PLANT_FIELDS, files={"file": ("small.xlsx", b"x" * 10, "application/octet-stream")})
         assert res.status_code == 200 and res.json()["file_id"] == "fid-1"
         pipeline.assert_called_once()
         dispatch.assert_not_called()
@@ -764,7 +766,7 @@ class TestSingleFileEndpoint:
         with patch("spir_dynamic.app.routes.get_settings", return_value=cfg), \
              patch("spir_dynamic.app.routes.run_pipeline") as pipeline, \
              patch("spir_dynamic.app.routes._dispatch_celery") as dispatch:
-            res = api.client.post("/api/extract", files={"file": ("big.xlsm", b"x" * 10, "application/octet-stream")})
+            res = api.client.post("/api/extract", data=_PLANT_FIELDS, files={"file": ("big.xlsm", b"x" * 10, "application/octet-stream")})
         assert res.status_code == 503 and "minio down" in res.json()["detail"]
         pipeline.assert_not_called()
         dispatch.assert_not_called()
@@ -777,7 +779,7 @@ class TestSingleFileEndpoint:
              patch("spir_dynamic.app.routes.run_pipeline"), \
              patch("spir_dynamic.app.routes._dispatch_celery", side_effect=RuntimeError("broker down")), \
              patch("spir_dynamic.app.routes.get_job_store", return_value=store):
-            res = api.client.post("/api/extract", files={"file": ("big.xlsm", b"x" * 10, "application/octet-stream")})
+            res = api.client.post("/api/extract", data=_PLANT_FIELDS, files={"file": ("big.xlsm", b"x" * 10, "application/octet-stream")})
         assert res.status_code == 503
         assert api.storage.objects == {}                              # stored then discarded
         _jid, idx, result = store.update_result.call_args.args
@@ -796,7 +798,7 @@ class TestBatchEndpoints:
         with patch("spir_dynamic.app.batch_router.get_settings", return_value=api.cfg), \
              patch("spir_dynamic.app.batch_router.get_job_store", return_value=store), \
              patch("spir_dynamic.app.batch_router._persist_job_to_db", new=AsyncMock()):
-            res = api.client.post("/api/batch/register", json={"filenames": names})
+            res = api.client.post("/api/batch/register", json={"filenames": names, **_PLANT_FIELDS})
         assert res.status_code == 200
         return res.json()["job_id"]
 
@@ -812,7 +814,7 @@ class TestBatchEndpoints:
              patch("spir_dynamic.app.batch_router.get_job_store", return_value=store), \
              patch("spir_dynamic.tasks.extraction_tasks.process_file_task", task), \
              patch("spir_dynamic.monitoring.metrics.GIANT_FILES_ROUTED"):
-            res = api.client.post(f"/api/batch/{job_id}/upload", data={"file_idx": "0"},
+            res = api.client.post(f"/api/batch/{job_id}/upload", data={"file_idx": "0", **_PLANT_FIELDS},
                                   files={"file": ("a.xlsx", b"y" * 5, "application/octet-stream")})
         assert res.status_code == 200 and res.json()["status"] == "queued"
         key = source_object_key(job_id, 0, "a.xlsx")
@@ -834,7 +836,7 @@ class TestBatchEndpoints:
                  patch("spir_dynamic.app.batch_router.get_job_store", return_value=store), \
                  patch("spir_dynamic.tasks.extraction_tasks.process_file_task", task), \
                  patch("spir_dynamic.monitoring.metrics.GIANT_FILES_ROUTED"):
-                res = api.client.post(f"/api/batch/{job_id}/upload", data={"file_idx": str(idx)},
+                res = api.client.post(f"/api/batch/{job_id}/upload", data={"file_idx": str(idx), **_PLANT_FIELDS},
                                       files={"file": ("f.xlsm", b"z" * 10, "application/octet-stream")})
             assert res.status_code == 200
         calls = task.apply_async.call_args_list
@@ -851,7 +853,7 @@ class TestBatchEndpoints:
         with patch("spir_dynamic.app.batch_router.get_settings", return_value=api.cfg), \
              patch("spir_dynamic.app.batch_router.get_job_store", return_value=store), \
              patch("spir_dynamic.app.batch_router._dispatch_celery") as dispatch:
-            res = api.client.post(f"/api/batch/{job_id}/upload", data={"file_idx": "0"},
+            res = api.client.post(f"/api/batch/{job_id}/upload", data={"file_idx": "0", **_PLANT_FIELDS},
                                   files={"file": ("a.xlsx", b"y", "application/octet-stream")})
         assert res.status_code == 503 and "minio down" in res.json()["detail"]
         dispatch.assert_not_called()
@@ -868,7 +870,7 @@ class TestBatchEndpoints:
              patch("spir_dynamic.app.batch_router.get_job_store", return_value=store), \
              patch("spir_dynamic.tasks.extraction_tasks.process_file_task", task), \
              patch("spir_dynamic.monitoring.metrics.GIANT_FILES_ROUTED"):
-            res = api.client.post(f"/api/batch/{job_id}/upload", data={"file_idx": "0"},
+            res = api.client.post(f"/api/batch/{job_id}/upload", data={"file_idx": "0", **_PLANT_FIELDS},
                                   files={"file": ("a.xlsx", b"y", "application/octet-stream")})
         assert res.status_code == 503
         assert api.storage.objects == {}
@@ -884,7 +886,7 @@ class TestBatchEndpoints:
              patch("spir_dynamic.app.batch_router._persist_job_to_db", new=AsyncMock()), \
              patch("spir_dynamic.tasks.extraction_tasks.process_file_task", task), \
              patch("spir_dynamic.monitoring.metrics.GIANT_FILES_ROUTED"):
-            res = api.client.post("/api/batch/extract", files=[
+            res = api.client.post("/api/batch/extract", data=_PLANT_FIELDS, files=[
                 ("files", ("a.xlsx", b"1", "application/octet-stream")),
                 ("files", ("b.xlsx", b"2", "application/octet-stream")),
                 ("files", ("c.xlsx", b"3", "application/octet-stream")),
@@ -904,7 +906,7 @@ class TestBatchEndpoints:
              patch("spir_dynamic.app.batch_router.get_job_store", return_value=store), \
              patch("spir_dynamic.app.batch_router._process_batch_from_storage", fallback), \
              patch("spir_dynamic.app.batch_router._dispatch_celery") as dispatch:
-            res = api.client.post(f"/api/batch/{job_id}/upload", data={"file_idx": "0"},
+            res = api.client.post(f"/api/batch/{job_id}/upload", data={"file_idx": "0", **_PLANT_FIELDS},
                                   files={"file": ("a.xlsx", b"AAA", "application/octet-stream")})
         assert res.status_code == 200
         dispatch.assert_not_called()
@@ -917,6 +919,7 @@ def test_fallback_processes_from_storage_and_discards(tmp_path):
     """celery_enabled=False path: the same staging bridge feeds run_pipeline, then the object goes."""
     import asyncio
     from spir_dynamic.app.batch_router import _process_batch_from_storage
+    from spir_dynamic.services.planning_plant import PlanningPlant
     from spir_dynamic.services.job_store import JobStore
 
     storage = MemoryObjectStorage()
@@ -926,7 +929,7 @@ def test_fallback_processes_from_storage_and_discards(tmp_path):
     store.create("job", ["a.xlsx", "b.xlsx"])
     seen = {}
 
-    def fake_pipeline(path, filename):
+    def fake_pipeline(path, filename, plant):
         seen[filename] = (Path(path).read_bytes(), Path(path).parent)
         if filename == "b.xlsx":
             raise ValueError("bad workbook")
@@ -938,6 +941,7 @@ def test_fallback_processes_from_storage_and_discards(tmp_path):
          patch("spir_dynamic.services.source_objects.scratch_dir", return_value=tmp_path / "scratch"):
         asyncio.run(_process_batch_from_storage(
             "job", [("job_000_a.xlsx", "a.xlsx", 3), ("job_001_b.xlsx", "b.xlsx", 3)],
+            planning_plant=PlanningPlant("2400", "NGL Mesaieed"),
         ))
 
     assert seen["a.xlsx"][0] == b"AAA" and seen["a.xlsx"][1] == tmp_path / "scratch"
@@ -1208,7 +1212,7 @@ class TestDockerEndToEnd:
 
     def test_small_file_is_synchronous(self, e2e_user):
         assert WORKBOOK_SMALL.exists()
-        body, ctype = _multipart({}, "file", WORKBOOK_SMALL.name, WORKBOOK_SMALL)
+        body, ctype = _multipart(dict(_PLANT_FIELDS), "file", WORKBOOK_SMALL.name, WORKBOOK_SMALL)
         status, _, resp = _http("POST", "/api/extract", token=e2e_user.token, body=body, content_type=ctype)
         assert status == 200, resp[:300]
         data = json.loads(resp)
@@ -1220,7 +1224,7 @@ class TestDockerEndToEnd:
     def test_large_file_through_minio_heavy_queue(self, e2e_user):
         assert WORKBOOK_223.exists() and WORKBOOK_223.stat().st_size > 100 * MB
         since = "60m"
-        body, ctype = _multipart({}, "file", WORKBOOK_223.name, WORKBOOK_223)
+        body, ctype = _multipart(dict(_PLANT_FIELDS), "file", WORKBOOK_223.name, WORKBOOK_223)
         status, _, resp = _http("POST", "/api/extract", token=e2e_user.token, body=body, content_type=ctype)
         assert status == 202, resp[:300]
         queued = json.loads(resp)
@@ -1261,7 +1265,7 @@ class TestDockerEndToEnd:
         assert st == 200, resp
         job_id = json.loads(resp)["job_id"]
         for idx, wb in enumerate((WORKBOOK_SMALL, WORKBOOK_223)):
-            body, ctype = _multipart({"file_idx": str(idx)}, "file", wb.name, wb)
+            body, ctype = _multipart({"file_idx": str(idx), **_PLANT_FIELDS}, "file", wb.name, wb)
             st, _, resp = _http("POST", f"/api/batch/{job_id}/upload", token=e2e_user.token, body=body, content_type=ctype)
             assert st == 200 and json.loads(resp)["status"] == "queued", resp[:300]
 

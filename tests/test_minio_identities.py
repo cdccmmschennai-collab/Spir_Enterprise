@@ -376,7 +376,7 @@ class TestSourceDeletion:
 
     def test_failed_cleanup_does_not_fail_a_successful_extraction(self, tmp_path):
         """Rows were extracted; a bucket that refuses the delete does not undo that."""
-        from tests.test_source_objects import _RESULT, _slot_updates, worker_ctx
+        from tests.test_source_objects import _PLANT_FIELDS, _RESULT, _slot_updates, worker_ctx
 
         st = MemoryObjectStorage()
         st.put(self.KEY, b"workbook")
@@ -385,7 +385,7 @@ class TestSourceDeletion:
         with patch("spir_dynamic.monitoring.metrics.SOURCE_DELETE_FAILURES"):
             with worker_ctx(tmp_path, st, pipeline=MagicMock(return_value=dict(_RESULT))) as (task, store, _):
                 out = task.run(job_id="job-1", file_idx=0, source_key=self.KEY,
-                               filename="big.xlsm", user_id="u")
+                               filename="big.xlsm", user_id="u", **_PLANT_FIELDS)
 
         assert out["status"] == "ok" and out["total_rows"] == 7
         assert [u.status for u in _slot_updates(store)] == ["running", "ok"]

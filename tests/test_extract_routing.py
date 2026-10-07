@@ -28,10 +28,13 @@ from spir_dynamic.app.batch_router import (
     route_queue,
 )
 from spir_dynamic.services.object_storage import LocalFilesystemStorage
+from spir_dynamic.services.planning_plant import PlanningPlant
 from spir_dynamic.services.source_objects import source_object_key
 
 MB = 1024 * 1024
 _CFG = SimpleNamespace(large_file_threshold_mb=100, giant_file_threshold_mb=500)
+_PLANT = PlanningPlant("2400", "NGL Mesaieed")
+_PLANT_FIELDS = {"planning_plant": "2400", "planning_plant_description": "NGL Mesaieed"}
 
 
 # ── route_queue: the single size → queue authority ───────────────────────────
@@ -87,7 +90,7 @@ class TestDispatchCelery:
         ]
         with patch("spir_dynamic.tasks.extraction_tasks.process_file_task", task), \
              patch("spir_dynamic.monitoring.metrics.GIANT_FILES_ROUTED") as giant_metric:
-            queues = _dispatch_celery("job-1", files, _CFG, user_id="u1")
+            queues = _dispatch_celery("job-1", files, _CFG, user_id="u1", planning_plant=_PLANT)
 
         assert queues == ["normal", "heavy", "giant"]
         sent = [c.kwargs["queue"] for c in task.apply_async.call_args_list]
@@ -95,13 +98,17 @@ class TestDispatchCelery:
         # args carry job_id, idx, source object key, filename, user_id
         assert task.apply_async.call_args_list[1].kwargs["args"] == ["job-1", 1, "job-1_001_b.xlsm", "b.xlsm", "u1"]
         assert task.apply_async.call_args_list[1].kwargs["soft_time_limit"] == _HEAVY_SOFT_LIMIT
+        # every file carries the same user-selected Planning Plant
+        for call in task.apply_async.call_args_list:
+            assert call.kwargs["kwargs"] == _PLANT_FIELDS
         giant_metric.inc.assert_called_once()
 
     def test_idx_offset_respected(self):
         task = MagicMock()
         with patch("spir_dynamic.tasks.extraction_tasks.process_file_task", task), \
              patch("spir_dynamic.monitoring.metrics.GIANT_FILES_ROUTED"):
-            _dispatch_celery("job-2", [("job-2_003_x.xlsx", "x.xlsx", 1)], _CFG, idx_offset=3)
+            _dispatch_celery("job-2", [("job-2_003_x.xlsx", "x.xlsx", 1)], _CFG, idx_offset=3,
+                             planning_plant=_PLANT)
         assert task.apply_async.call_args.kwargs["args"][1] == 3
 
     def test_broker_failure_reports_failing_slot(self):
@@ -111,7 +118,7 @@ class TestDispatchCelery:
         with patch("spir_dynamic.tasks.extraction_tasks.process_file_task", task), \
              patch("spir_dynamic.monitoring.metrics.GIANT_FILES_ROUTED"), \
              pytest.raises(DispatchError) as exc_info:
-            _dispatch_celery("j", files, _CFG)
+            _dispatch_celery("j", files, _CFG, planning_plant=_PLANT)
         assert exc_info.value.file_idx == 1              # first file was queued, second failed
         assert "broker down" in str(exc_info.value)
         assert task.apply_async.call_count == 2          # nothing after the failure is sent
@@ -154,8 +161,9 @@ _FAKE_RESULT = {
 }
 
 
-def _post(client, name: str, size: int):
-    return client.post("/api/extract", files={"file": (name, b"x" * size, "application/octet-stream")})
+def _post(client, name: str, size: int, plant: dict | None = None):
+    return client.post("/api/extract", data=_PLANT_FIELDS if plant is None else plant,
+                       files={"file": (name, b"x" * size, "application/octet-stream")})
 
 
 class TestExtractEndpointRouting:
@@ -170,6 +178,7 @@ class TestExtractEndpointRouting:
         assert res.status_code == 200
         assert res.json()["file_id"] == "fid-1"
         pipeline.assert_called_once()                 # extraction ran in-process
+        assert pipeline.call_args.args[2] == _PLANT   # with the user-selected plant
         dispatch.assert_not_called()                  # nothing enqueued
         job_store.assert_not_called()                 # no job created
         assert not (api.tmp / "uploads").exists()     # nothing staged for a worker
@@ -202,6 +211,7 @@ class TestExtractEndpointRouting:
         dispatch.assert_called_once()
         _job, file_data, _cfg, user_id = dispatch.call_args.args
         assert _job == job_id and user_id == "user-1"
+        assert dispatch.call_args.kwargs["planning_plant"] == _PLANT
         (source_key, filename, size_bytes), = file_data
         assert filename == "big.xlsm" and size_bytes == 10
         assert source_key == source_object_key(job_id, 0, "big.xlsm")
@@ -226,6 +236,7 @@ class TestExtractEndpointRouting:
         assert res.json()["queue"] == "giant"
         assert task.apply_async.call_args.kwargs["queue"] == "giant"
         assert task.apply_async.call_args.kwargs["soft_time_limit"] == _GIANT_SOFT_LIMIT
+        assert task.apply_async.call_args.kwargs["kwargs"] == _PLANT_FIELDS
         pipeline.assert_not_called()
 
     def test_celery_disabled_keeps_sync_for_large(self, api):
@@ -257,3 +268,42 @@ class TestExtractEndpointRouting:
         assert idx == 0 and result.status == "error"
         # moved upload removed again
         assert not list((api.tmp / "uploads").glob("*"))
+
+
+# ── Planning Plant is mandatory on /api/extract (no automatic detection) ─────
+
+class TestExtractPlanningPlant:
+    @pytest.mark.parametrize("plant", [
+        {},                                                                   # missing entirely
+        {"planning_plant_description": "NGL Mesaieed"},                       # code missing
+        {"planning_plant": "", "planning_plant_description": "NGL Mesaieed"},  # blank code
+        {"planning_plant": "2400"},                                           # description missing
+    ])
+    def test_missing_planning_plant_rejected(self, api, plant):
+        with patch("spir_dynamic.app.routes.run_pipeline") as pipeline, \
+             patch("spir_dynamic.app.routes._dispatch_celery") as dispatch:
+            res = _post(api.client, "small.xlsx", 10, plant=plant)
+        assert res.status_code == 422
+        pipeline.assert_not_called()
+        dispatch.assert_not_called()
+
+    @pytest.mark.parametrize("plant", [
+        {"planning_plant": "9999", "planning_plant_description": "NGL Mesaieed"},   # unknown code
+        {"planning_plant": "2400", "planning_plant_description": "Dukhan Fields"},  # mismatched desc
+        {"planning_plant": "2400", "planning_plant_description": "Anything"},       # arbitrary desc
+    ])
+    def test_invalid_planning_plant_rejected(self, api, plant):
+        with patch("spir_dynamic.app.routes.run_pipeline") as pipeline:
+            res = _post(api.client, "small.xlsx", 10, plant=plant)
+        assert res.status_code == 422
+        assert "planning_plant" in res.json()["detail"]
+        pipeline.assert_not_called()
+
+    def test_selected_plant_reaches_pipeline(self, api):
+        cfg = api.cfg.model_copy(update={"celery_enabled": False})
+        with patch("spir_dynamic.app.routes.get_settings", return_value=cfg), \
+             patch("spir_dynamic.app.routes.run_pipeline", return_value=dict(_FAKE_RESULT)) as pipeline:
+            res = _post(api.client, "small.xlsx", 10,
+                        plant={"planning_plant": "2300", "planning_plant_description": "Dukhan Fields"})
+        assert res.status_code == 200
+        assert pipeline.call_args.args[2] == PlanningPlant("2300", "Dukhan Fields")

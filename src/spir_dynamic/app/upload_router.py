@@ -44,6 +44,7 @@ from spir_dynamic.app.batch_router import (
     _dispatch_celery,
     _persist_job_to_db,
     max_upload_bytes,
+    planning_plant_or_422,
     route_queue,
 )
 from spir_dynamic.app.config import get_settings
@@ -62,6 +63,7 @@ from spir_dynamic.services.direct_upload import (
 )
 from spir_dynamic.services.job_store import FileResult, get_job_store
 from spir_dynamic.services.object_storage import StorageError
+from spir_dynamic.services.planning_plant import InvalidPlanningPlant, resolve_planning_plant
 from spir_dynamic.services.source_objects import discard_source_object
 
 log = structlog.stdlib.get_logger(__name__)
@@ -78,6 +80,9 @@ class InitiateRequest(BaseModel):
     # the single-file extraction page (a one-file job is created here).
     job_id: str | None = None
     file_idx: int | None = None
+    # User-selected Planning Plant — required (validated against the controlled master).
+    planning_plant: str | None = None
+    planning_plant_description: str | None = None
 
 
 class PartsRequest(BaseModel):
@@ -119,8 +124,10 @@ async def initiate_upload(
     """
     Decide how this file should be uploaded. Small files (and any deployment
     without direct upload) get {"mode": "api"}; large files get a multipart
-    plan with one presigned PUT URL per part.
+    plan with one presigned PUT URL per part. A Planning Plant is required
+    either way: no extraction may start without one.
     """
+    plant = planning_plant_or_422(body.planning_plant, body.planning_plant_description)
     cfg = get_settings()
     t0 = time.perf_counter()
     user_id = td.user_id or ""
@@ -177,6 +184,7 @@ async def initiate_upload(
                 storage, job_id=job_id, file_idx=file_idx, filename=filename, size=body.size,
                 user_id=user_id, queue=queue, part_size=cfg.direct_upload_part_size_mb * 1024 * 1024,
                 url_ttl=cfg.direct_upload_url_ttl_seconds,
+                planning_plant=plant.code, planning_plant_description=plant.description,
             ),
         )
     except ValueError as exc:
@@ -320,9 +328,15 @@ async def complete_upload(
     store.update_result(job_id, file_idx, FileResult(filename=session.filename, status="pending"))
     queue, _ = route_queue(info.size, cfg)
     try:
+        plant = resolve_planning_plant(session.planning_plant, session.planning_plant_description)
         queues = _dispatch_celery(job_id, [(session.source_key, session.filename, info.size)], cfg, user_id,
-                                  idx_offset=file_idx)
+                                  idx_offset=file_idx, planning_plant=plant)
         queue = queues[0]
+    except InvalidPlanningPlant as exc:
+        # Session recorded without a valid plant (e.g. started before this was required).
+        discard_source_object(session.source_key, log_context=f"invalid-plant job={job_id} idx={file_idx}")
+        store.update_result(job_id, file_idx, FileResult(filename=session.filename, status="error", error=str(exc)))
+        raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
         # Verified but never queued: drop the object and fail the slot so the
         # poller never stalls on "pending" and nothing is left behind.

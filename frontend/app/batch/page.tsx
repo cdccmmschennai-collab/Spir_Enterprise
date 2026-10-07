@@ -14,7 +14,6 @@ import {
   Files,
   Layers,
   Plus,
-  Zap,
   ChevronDown,
   ChevronRight,
   GitMerge,
@@ -23,6 +22,13 @@ import { SidebarLayout } from "@/components/sidebar";
 import { authHeaders } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import { directUpload } from "@/lib/direct-upload";
+import { PlanningPlantError, PlanningPlantSelect } from "@/components/planning-plant-select";
+import {
+  findPlanningPlant,
+  planningPlantFields,
+  planningPlantLabel,
+  type PlanningPlant,
+} from "@/lib/planning-plants";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const ACCEPTED = ".xlsx,.xlsm,.xls";
@@ -133,7 +139,25 @@ function loadSession(): { jobId: string; status: BatchJob } | null {
 function clearSession(): void {
   try {
     localStorage.removeItem(getSessionKey());
+    localStorage.removeItem(`${getSessionKey()}-plant`);
   } catch {}
+}
+
+// The Planning Plant the active batch was started with (shown read-only in the
+// header). Stored beside the job session so it survives a reload; only a code
+// from the controlled list is ever restored.
+function saveSessionPlant(plant: PlanningPlant): void {
+  try {
+    localStorage.setItem(`${getSessionKey()}-plant`, plant.code);
+  } catch {}
+}
+
+function loadSessionPlant(): PlanningPlant | null {
+  try {
+    return findPlanningPlant(localStorage.getItem(`${getSessionKey()}-plant`));
+  } catch {
+    return null;
+  }
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -208,6 +232,12 @@ export default function BatchPage() {
   const [hydrated, setHydrated] = useState(false);
 
   const [files, setFiles] = useState<File[]>([]);
+  // Mandatory before a batch starts; applies to every file in the batch.
+  const [planningPlant, setPlanningPlant] = useState<PlanningPlant | null>(null);
+  const [plantMissing, setPlantMissing] = useState(false);
+  // Plant the current batch job was started with — fixed for that job.
+  const [jobPlant, setJobPlant] = useState<PlanningPlant | null>(null);
+  const plantSelectRef = useRef<HTMLButtonElement>(null);
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -310,6 +340,7 @@ export default function BatchPage() {
     const session = loadSession();
     if (session?.jobId) {
       setJobId(session.jobId);
+      setJobPlant(loadSessionPlant());
       if (session.status) setJobStatus(session.status);
       // Always start polling on restore — immediately fetches latest backend state.
       // For terminal jobs this fires once and stops; for in-progress jobs it runs continuously.
@@ -349,6 +380,12 @@ export default function BatchPage() {
 
   const handleUpload = useCallback(async () => {
     if (files.length === 0) return;
+    if (!planningPlant) {
+      setPlantMissing(true);
+      plantSelectRef.current?.focus();
+      return;
+    }
+    const plantFields = planningPlantFields(planningPlant);
     setUploading(true);
     setUploadProgress(null);
     setUploadingFileIdx(null);
@@ -365,7 +402,7 @@ export default function BatchPage() {
       const regRes = await fetch(`${API_URL}/api/batch/register`, {
         method: "POST",
         headers: { ...authHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({ filenames: files.map((f) => f.name) }),
+        body: JSON.stringify({ filenames: files.map((f) => f.name), ...plantFields }),
       });
       if (regRes.status === 401) {
         setError("Session expired. Please log in again.");
@@ -378,6 +415,8 @@ export default function BatchPage() {
       }
       const { job_id } = await regRes.json();
       setJobId(job_id);
+      setJobPlant(planningPlant);
+      saveSessionPlant(planningPlant);
       setUploadProgress({ done: 0, total: files.length });
       // Start polling immediately so session is saved within the first tick and
       // live Celery updates appear in the queue UI while remaining files upload.
@@ -393,6 +432,7 @@ export default function BatchPage() {
         const outcome = await directUpload(files[idx], {
           jobId: job_id,
           fileIdx: idx,
+          fields: plantFields,
           onProgress: (loaded, total) => setDirectPct(total > 0 ? Math.round((loaded / total) * 100) : 0),
         });
         if (outcome.kind !== "api") {
@@ -408,6 +448,7 @@ export default function BatchPage() {
         const form = new FormData();
         form.append("file", files[idx]);
         form.append("file_idx", String(idx));
+        for (const [k, v] of Object.entries(plantFields)) form.append(k, v);
 
         const upRes = await fetch(`${API_URL}/api/batch/${job_id}/upload`, {
           method: "POST",
@@ -432,7 +473,7 @@ export default function BatchPage() {
       setUploadingFileIdx(null); // upload phase always ends here
       setDirectPct(null);
     }
-  }, [files, startPolling, stopPolling]);
+  }, [files, planningPlant, startPolling, stopPolling]);
 
   // ── Download ─────────────────────────────────────────────────────────────────
   // Root cause of Excel corruption: r.filename is the original upload name
@@ -533,6 +574,7 @@ export default function BatchPage() {
     stopPolling();
     clearSession();
     setJobId(null);
+    setJobPlant(null);
     setJobStatus(null);
     setFiles([]);
     setError(null);
@@ -578,16 +620,46 @@ export default function BatchPage() {
               </p>
             </div>
           </div>
+          {!jobId && (
+            <div className="flex w-full flex-col gap-2 sm:w-80">
+              <PlanningPlantSelect
+                ref={plantSelectRef}
+                value={planningPlant}
+                onChange={(p) => { setPlanningPlant(p); setPlantMissing(false); }}
+                invalid={plantMissing}
+                disabled={uploading}
+                describedBy={plantMissing ? "batch-planning-plant-error" : undefined}
+                className="w-full"
+              />
+              {plantMissing && <PlanningPlantError id="batch-planning-plant-error" />}
+            </div>
+          )}
           {jobId && (
             <button
               onClick={handleReset}
-              className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 shadow-sm transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+              className="flex shrink-0 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 shadow-sm transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
             >
               <Plus className="h-3.5 w-3.5" />
               New Batch
             </button>
           )}
         </div>
+
+        {/* Read-only: the plant this batch was started with (applies to every file).
+            Sits under the title; -mt-3 keeps it close to the header like a wrapped row. */}
+        {jobId && jobPlant && (
+          <div
+            className="-mt-3 flex w-fit max-w-full items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm dark:border-slate-700 dark:bg-slate-800"
+            title="Planning Plant applied to every file in this batch"
+          >
+            <span className="shrink-0 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+              Planning Plant
+            </span>
+            <span className="truncate text-sm font-semibold text-slate-800 dark:text-slate-200">
+              {planningPlantLabel(jobPlant)}
+            </span>
+          </div>
+        )}
 
         {/* ── Upload section (hidden while a job is active) ── */}
         {!jobId && (
@@ -705,7 +777,6 @@ export default function BatchPage() {
                         </>
                       ) : (
                         <>
-                          <Zap className="h-4 w-4" />
                           Start Extraction ({files.length} file
                           {files.length !== 1 ? "s" : ""})
                         </>
