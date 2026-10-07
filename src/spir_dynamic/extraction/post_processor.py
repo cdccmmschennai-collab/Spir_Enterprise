@@ -89,24 +89,33 @@ def _is_digit_only_segment(seg: str) -> bool:
     return bool(seg) and seg.isdigit()
 
 
-def _maybe_drop_location_segment(segments: list[str]) -> list[str]:
+def _type_identifier_segment(segments: list[str]) -> str | None:
     """
-    Numeric project + non-numeric middle (MTY, M4TY, RLCSF3, …) + numeric next
-    → drop the middle token.
-    2-char alphabetic class codes (VP, MT, …) are kept — they signal the
-    class-code format handled by _compact_class_code_spir.
+    Return the type identifier token (MTY, M4TY, DGEN, RLCSF3, …) when the
+    segments are numeric project + non-numeric middle + numeric next.
+    2-char alphabetic class codes (VP, MT, …) are not type identifiers — they
+    signal the class-code format handled by _compact_class_code_spir.
     """
     if len(segments) < 3:
-        return segments
+        return None
     proj, mid, nxt = segments[0], segments[1], segments[2]
     if not _is_digit_only_segment(proj):
-        return segments
+        return None
     if _is_digit_only_segment(mid):
-        return segments
-    # Keep short 2-char alpha class codes — _compact_class_code_spir handles them
+        return None
     if len(mid) == 2 and mid.isalpha():
-        return segments
+        return None
     if not _is_digit_only_segment(nxt):
+        return None
+    return mid
+
+
+def _maybe_drop_location_segment(segments: list[str]) -> list[str]:
+    """
+    Numeric project + type identifier (MTY, M4TY, RLCSF3, …) + numeric next
+    → drop the type token (see _type_identifier_segment).
+    """
+    if _type_identifier_segment(segments) is None:
         return segments
     return [segments[0]] + segments[2:]
 
@@ -181,6 +190,13 @@ def _drop_trailing_sheet_rev_letter(body: list[str]) -> list[str]:
     return body
 
 
+def _strip_vendor_prefix(segments: list[str]) -> list[str]:
+    body = list(segments)
+    if body and len(body[0]) <= 4 and body[0].upper() in _get_vendor_prefixes():
+        body = body[1:]
+    return body
+
+
 def _canonical_omn_body_segments(segments: list[str]) -> tuple[list[str], str]:
     """
     Vendor strip → location drop → VP fusion → digit normalize → drop trailing A.
@@ -188,9 +204,7 @@ def _canonical_omn_body_segments(segments: list[str]) -> tuple[list[str], str]:
     """
     if not segments:
         return [], ""
-    body = list(segments)
-    if len(body[0]) <= 4 and body[0].upper() in _get_vendor_prefixes():
-        body = body[1:]
+    body = _strip_vendor_prefix(segments)
     if not body:
         return [], ""
     project_token = body[0]
@@ -457,12 +471,98 @@ def _reformat_omn_strict(body_segs: list[str], sheet_idx: int, line_idx: int) ->
     return f"{proj}-{middle}-{suffix}"              # 4 + 1 + 7 + 1 + 5 = 18 chars exactly
 
 
+@functools.lru_cache(maxsize=256)
+def _warn_invalid_type_omn(spir_no: str, reason: str) -> None:
+    # Cached so a SPIR logs once per reason instead of once per spare row.
+    log.warning("OMN left blank for SPIR %r: %s", spir_no, reason)
+
+
+def _build_type_based_omn(
+    spir_no: str, type_id: str, rest: list[str], sheet_idx: int, line_idx: int
+) -> str:
+    """
+    Build an exactly-18-char OMN led by the type identifier:
+      {TYPE}[-]{DISC}[-]{SUBG}[-]{SEQ}[-]{sheet:02d}L{line:02d}
+
+    Source data (TYPE, DISC, SUBG, significant SEQ digits, suffix) is always
+    preserved; only formatting is adjusted, recalculating length each step:
+      1. over length  → strip non-significant leading zeros of SEQ
+      2. under length → add hyphens: TYPE|DISC, then SUBG|SEQ, then DISC|SUBG
+      3. over length  → drop the formatting hyphen before the suffix
+
+      DGTYP-5-43-1202           → DGTYP5431202-01L01
+      DGEN-5-43-0115            → DGEN-5430115-01L01
+      RLCSF3-4-43-0500          → RLCSF3443500-01L01
+      MTY-5-43-0115             → MTY-543-0115-01L01
+      RLCSF3-4-43-1500          → RLCSF3443150001L01
+      DGTYP-5-43-1202, line 100 → DGTYP543120201L100
+
+    Returns "" (and logs a warning) only when no lossless 18-char form
+    exists — never falls back to the project-number format or truncates.
+    """
+    target_len = _get_target_len()
+    if len(rest) < 3:
+        _warn_invalid_type_omn(spir_no, "missing discipline/subgroup/sequence")
+        return ""
+    disc, subg, seq_raw = rest[0], rest[1], rest[2]
+    if not (disc.isdigit() and len(disc) == 1
+            and subg.isdigit() and len(subg) == 2
+            and seq_raw.isdigit()):
+        _warn_invalid_type_omn(
+            spir_no, f"unrecognised discipline/subgroup/sequence {rest[:3]}"
+        )
+        return ""
+
+    suffix = f"{sheet_idx:02d}L{line_idx:02d}"
+    seq = seq_raw.zfill(4)
+    body_hyphens = 0          # 1: TYPE|DISC, 2: +SUBG|SEQ, 3: +DISC|SUBG
+    suffix_hyphen = True
+
+    def total_len() -> int:
+        return (len(type_id) + len(disc) + len(subg) + len(seq)
+                + body_hyphens + int(suffix_hyphen) + len(suffix))
+
+    while total_len() > target_len and len(seq) > 1 and seq[0] == "0":
+        seq = seq[1:]
+    while total_len() < target_len and body_hyphens < 3:
+        body_hyphens += 1
+    if total_len() > target_len:
+        suffix_hyphen = False
+
+    if total_len() != target_len:
+        _warn_invalid_type_omn(
+            spir_no, f"type {type_id!r} + sequence {seq_raw!r} cannot fit "
+                     f"{target_len} chars with a {len(suffix)}-char suffix"
+        )
+        return ""
+
+    def sep(n: int) -> str:
+        return "-" if body_hyphens >= n else ""
+
+    omn = (f"{type_id}{sep(1)}{disc}{sep(3)}{subg}{sep(2)}{seq}"
+           f"{'-' if suffix_hyphen else ''}{suffix}")
+
+    if len(omn) != target_len or seq.lstrip("0") != seq_raw.lstrip("0"):
+        _warn_invalid_type_omn(spir_no, f"generated OMN {omn!r} failed validation")
+        return ""
+    return omn
+
+
 def build_omn(spir_no: str, sheet_idx: int, line_idx: int,
               total_main_sheets: int = 1) -> str:
     raw_spir = spir_no
-    body_segs, project_token = _canonical_omn_body_segments(
-        _split_spir_segments(raw_spir)
-    )
+    segments = _split_spir_segments(raw_spir)
+
+    # Type-identifier SPIRs (VEN-4460-DGTYP-5-43-1202) always use the
+    # type-based OMN; there is no project-number fallback for them.
+    after_vendor = _strip_vendor_prefix(segments)
+    type_id = _type_identifier_segment(after_vendor)
+    if type_id is not None:
+        return _build_type_based_omn(
+            raw_spir, type_id, after_vendor[2:], sheet_idx, line_idx
+        )
+
+    body_segs, project_token = _canonical_omn_body_segments(segments)
 
     # Try strict 18-char format first
     strict = _reformat_omn_strict(body_segs, sheet_idx, line_idx)

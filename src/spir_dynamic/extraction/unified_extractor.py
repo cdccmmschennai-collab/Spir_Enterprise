@@ -644,6 +644,10 @@ def _get_strategy(profile: SheetProfile):
 # is NOT treated as "already has revision" — it needs to be appended from the clean form.
 _REV_IN_TOKEN_RE = re.compile(r"(?i)-rev\b")
 
+# Accidental repeated separators ("VEN-4460-DGTYP-4-43--0613") — collapsed
+# before the SPIR token is matched so the empty segment cannot cut it short.
+_REPEATED_HYPHEN_RE = re.compile(r"-{2,}")
+
 
 def _resolve_spir_no(profiles: list[SheetProfile], filename: str) -> str:
     """Resolve the SPIR number: sheet content is the authoritative source.
@@ -666,7 +670,7 @@ def _resolve_spir_no(profiles: list[SheetProfile], filename: str) -> str:
     for p in profiles:
         spir = p.metadata.get("spir_no")
         if spir:
-            spir_raw_original = str(spir).strip()
+            spir_raw_original = _REPEATED_HYPHEN_RE.sub("-", str(spir).strip())
             _m = re.search(r"[A-Z0-9][A-Z0-9]*(?:-[A-Z0-9]+){2,}", spir_raw_original, re.IGNORECASE)
             candidate = _m.group(0) if _m else spir_raw_original
             if len(candidate) >= 5 and re.search(r'[A-Z0-9]', candidate, re.I):
@@ -707,7 +711,7 @@ def _resolve_spir_no(profiles: list[SheetProfile], filename: str) -> str:
                 r"([A-Z0-9]{2,}-[A-Z0-9]{2,}-[A-Z0-9][A-Z0-9\-]*)",
                 r"(\d{4,}[\-_]\w+[\-_]\w+)",
             ]
-            name = filename.rsplit(".", 1)[0]
+            name = _REPEATED_HYPHEN_RE.sub("-", filename.rsplit(".", 1)[0])
             for pat in patterns:
                 m = re.search(pat, name, re.IGNORECASE)
                 if m:

@@ -53,7 +53,9 @@ def _build_sheet_idx_map(rows: list[list], sheet_col) -> dict[str, int]:
     return {name: i + 1 for i, name in enumerate(main_sheets)}
 
 
-_OMN_SUFFIX_RE = re.compile(r'(\d*)L(\d+)$', re.IGNORECASE)
+# Sheet part is at most 2 digits so a suffix fused to the sequence
+# (RLCSF3443150001L01) yields sheet 01, not the sequence digits.
+_OMN_SUFFIX_RE = re.compile(r'(\d{0,2})L(\d+)$', re.IGNORECASE)
 
 
 def _ref_from_omn(omn: str) -> str | None:
