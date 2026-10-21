@@ -33,12 +33,18 @@ from pydantic import BaseModel
 from spir_dynamic.app.auth import get_current_user, TokenData, SUPER_ADMIN
 from spir_dynamic.app.config import get_settings
 from spir_dynamic.app.pipeline import run_pipeline
+from spir_dynamic.extraction.output_schema import OUTPUT_COLS
 from spir_dynamic.services.job_store import FileResult, get_job_store
 from spir_dynamic.services.object_storage import StorageError
 from spir_dynamic.services.planning_plant import (
     InvalidPlanningPlant,
     PlanningPlant,
     resolve_planning_plant,
+)
+from spir_dynamic.services.extraction_mode import (
+    MODE_SAIPEM,
+    InvalidExtractionMode,
+    resolve_extraction_mode,
 )
 from spir_dynamic.services.source_objects import (
     discard_source_object,
@@ -66,6 +72,7 @@ async def batch_extract(
     files: Annotated[List[UploadFile], File(...)],
     planning_plant: str | None = Form(None),
     planning_plant_description: str | None = Form(None),
+    extraction_mode: str | None = Form(None),
     td: TokenData = Depends(get_current_user),
 ) -> dict[str, Any]:
     """
@@ -74,9 +81,10 @@ async def batch_extract(
 
     Files above large_file_threshold_mb are routed to the 'heavy' queue so
     normal jobs are never blocked by a single massive extraction. The selected
-    Planning Plant is required and applied to every file.
+    Planning Plant is required and, like the extraction mode, applied to every file.
     """
-    plant = planning_plant_or_422(planning_plant, planning_plant_description)
+    mode = extraction_mode_or_422(extraction_mode)
+    plant = request_plant_or_422(planning_plant, planning_plant_description, mode)
     cfg = get_settings()
     if len(files) > cfg.batch_max_files:
         raise HTTPException(
@@ -118,7 +126,7 @@ async def batch_extract(
 
     if cfg.celery_enabled:
         try:
-            _dispatch_celery(job_id, file_data, cfg, user_id, planning_plant=plant)
+            _dispatch_celery(job_id, file_data, cfg, user_id, planning_plant=plant, extraction_mode=mode)
         except DispatchError as exc:
             # Files before exc.file_idx are queued and belong to their workers.
             # The rest were stored but never queued: drop the objects and fail
@@ -132,7 +140,8 @@ async def batch_extract(
                 )
             log.exception("batch.enqueue_failed", exc_type=type(exc).__name__, exc_message=str(exc))
     else:
-        asyncio.create_task(_process_batch_from_storage(job_id, file_data, planning_plant=plant))
+        asyncio.create_task(_process_batch_from_storage(job_id, file_data, planning_plant=plant,
+                                                        extraction_mode=mode))
 
     asyncio.create_task(_persist_job_to_db(job_id, user_id, filenames, cfg.batch_ttl_seconds))
 
@@ -148,10 +157,12 @@ async def batch_register(
     Phase 1 of the sequential upload flow.
     Accepts filenames only (no file data), creates the job, returns job_id.
     File uploads follow via POST /api/batch/{job_id}/upload — one per file,
-    each carrying the batch's selected Planning Plant (validated here first so
-    a batch without one never starts).
+    each carrying the batch's selected Planning Plant and extraction mode
+    (validated here first so a batch without a plant, or with an unknown
+    mode, never starts).
     """
-    planning_plant_or_422(body.planning_plant, body.planning_plant_description)
+    mode = extraction_mode_or_422(body.extraction_mode)
+    request_plant_or_422(body.planning_plant, body.planning_plant_description, mode)
     cfg = get_settings()
     if not body.filenames:
         raise HTTPException(status_code=400, detail="filenames must not be empty")
@@ -179,6 +190,7 @@ async def batch_upload_file(
     file_idx: int = Form(...),
     planning_plant: str | None = Form(None),
     planning_plant_description: str | None = Form(None),
+    extraction_mode: str | None = Form(None),
     td: TokenData = Depends(get_current_user),
 ) -> dict[str, Any]:
     """
@@ -208,7 +220,8 @@ async def batch_upload_file(
     user_id = td.user_id or ""
 
     try:
-        plant = planning_plant_or_422(planning_plant, planning_plant_description)
+        mode = extraction_mode_or_422(extraction_mode)
+        plant = request_plant_or_422(planning_plant, planning_plant_description, mode)
     except HTTPException as exc:
         # Mark slot as error so polling never stalls on "pending"
         job_store.update_result(job_id, file_idx, FileResult(filename=filename, status="error", error=exc.detail))
@@ -239,7 +252,7 @@ async def batch_upload_file(
     if cfg.celery_enabled:
         try:
             _dispatch_celery(job_id, [(source_key, filename, size_bytes)], cfg, user_id,
-                             idx_offset=file_idx, planning_plant=plant)
+                             idx_offset=file_idx, planning_plant=plant, extraction_mode=mode)
         except Exception as exc:
             # Stored but never queued: drop the object and fail the slot so the
             # poller never stalls on "pending" and nothing is left behind.
@@ -253,7 +266,8 @@ async def batch_upload_file(
     else:
         asyncio.create_task(
             _process_batch_from_storage(job_id, [(source_key, filename, size_bytes)],
-                                        idx_offset=file_idx, planning_plant=plant)
+                                        idx_offset=file_idx, planning_plant=plant,
+                                        extraction_mode=mode)
         )
 
     return {"status": "queued", "file_idx": file_idx, "filename": filename}
@@ -314,6 +328,7 @@ class RegisterRequest(BaseModel):
     filenames: list[str]
     planning_plant: str | None = None
     planning_plant_description: str | None = None
+    extraction_mode: str | None = None
 
 
 # ── Single-file async result (frontend polling UX) ──────────────────────────────
@@ -404,6 +419,8 @@ async def batch_single_result(
         "currency_rates": payload.get("currency_rates"),
         "plant": payload.get("plant"),
         "plant_description": payload.get("plant_description"),
+        "extraction_mode": payload.get("extraction_mode"),
+        "warnings": payload.get("warnings", []),
     }
 
 
@@ -495,6 +512,8 @@ async def batch_combine(
         combined_file_id, out_filename, total_rows = await loop.run_in_executor(
             None, _do_combine, body.file_ids
         )
+    except CombineUnsupported as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
         log.exception("batch.combine_failed", job_id=job_id, exc_message=str(exc))
         raise HTTPException(status_code=500, detail=f"Combine failed: {exc}")
@@ -514,6 +533,25 @@ def planning_plant_or_422(code: str | None, description: str | None) -> Planning
     try:
         return resolve_planning_plant(code, description)
     except InvalidPlanningPlant as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+def request_plant_or_422(code: str | None, description: str | None, mode: str | None) -> PlanningPlant | None:
+    """
+    The Planning Plant a request needs for its (already resolved) mode:
+    Saipem files don't use one (None, whatever was sent); Standard — and
+    requests without a mode — require a valid plant exactly as before (422).
+    """
+    if mode == MODE_SAIPEM:
+        return None
+    return planning_plant_or_422(code, description)
+
+
+def extraction_mode_or_422(value: str | None) -> str | None:
+    """The submitted extraction mode ('standard' / 'saipem'), None when not sent, or HTTP 422."""
+    try:
+        return resolve_extraction_mode(value)
+    except InvalidExtractionMode as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
 
@@ -582,6 +620,24 @@ def max_upload_bytes(cfg, max_mb: int | None = None) -> int:
     return min(limit_mb, cfg.absolute_max_file_size_mb) * 1024 * 1024
 
 
+class CombineUnsupported(ValueError):
+    """A selected result cannot be combined (it was not a Standard extraction)."""
+
+
+def ensure_combinable(cols: list | None, name: str) -> None:
+    """
+    Combine concatenates rows and rebuilds them with the Standard builder, so
+    only rows in the Standard column layout may enter it. Saipem results (their
+    own columns and headers) are refused rather than mangled. Payloads without
+    stored columns predate this check and are Standard.
+    """
+    if cols and list(cols) != OUTPUT_COLS:
+        raise CombineUnsupported(
+            f"'{name}' was not extracted with the Standard template — "
+            "only Standard extractions can be combined."
+        )
+
+
 class DispatchError(RuntimeError):
     """_dispatch_celery could not enqueue file `file_idx`; earlier files were enqueued."""
 
@@ -628,12 +684,14 @@ def _dispatch_celery(
     user_id: str = "",
     idx_offset: int = 0,
     *,
-    planning_plant: PlanningPlant,
+    planning_plant: PlanningPlant | None,
+    extraction_mode: str | None = None,
 ) -> list[str]:
     """
     Enqueue one Celery task per (source_key, filename, size) file, routed by
     route_queue(). The task receives the source object key — never a host path —
-    and the user-selected Planning Plant (the same one for every file).
+    the user-selected Planning Plant and extraction mode (the same for every
+    file). The mode is a task kwarg, so Celery retries keep it.
 
     The API returns immediately; workers pick up tasks independently.
     Returns the queue name chosen for each file, in input order. Raises
@@ -651,13 +709,17 @@ def _dispatch_celery(
         if queue == "giant":
             GIANT_FILES_ROUTED.inc()
 
+        task_args = {}
+        if planning_plant is not None:   # None only for Saipem, which uses no plant
+            task_args["planning_plant"] = planning_plant.code
+            task_args["planning_plant_description"] = planning_plant.description
+        if extraction_mode:
+            # Only when selected — callers without a mode enqueue exactly as before.
+            task_args["extraction_mode"] = extraction_mode
         try:
             process_file_task.apply_async(
                 args=[job_id, idx, source_key, filename, user_id],
-                kwargs={
-                    "planning_plant": planning_plant.code,
-                    "planning_plant_description": planning_plant.description,
-                },
+                kwargs=task_args,
                 queue=queue,
                 **task_kwargs,
             )
@@ -697,6 +759,7 @@ def _do_combine(file_ids: list[str]) -> tuple[str, str, int]:
             continue
         raw_bytes, _ = entry
         payload = json.loads(raw_bytes.decode("utf-8"))
+        ensure_combinable(payload.get("cols"), payload.get("filename") or fid)
         all_rows.extend(payload.get("rows", []))
 
     if missing:
@@ -767,7 +830,8 @@ async def _process_batch_from_storage(
     file_data: list[tuple[str, str, int]],
     idx_offset: int = 0,
     *,
-    planning_plant: PlanningPlant,
+    planning_plant: PlanningPlant | None,
+    extraction_mode: str | None = None,
 ) -> None:
     """
     Fallback coroutine used when celery_enabled=False (dev/test mode).
@@ -782,7 +846,9 @@ async def _process_batch_from_storage(
 
     def _extract(source_key: str, filename: str) -> dict:
         with staged_source(source_key, log_context=f"fallback job={job_id}") as local_path:
-            return run_pipeline(local_path, filename, planning_plant)
+            # Mode only when selected — without one the call is exactly as before.
+            mode_kw = {"extraction_mode": extraction_mode} if extraction_mode else {}
+            return run_pipeline(local_path, filename, planning_plant, **mode_kw)
 
     for idx, (source_key, filename, _) in enumerate(file_data, start=idx_offset):
         try:

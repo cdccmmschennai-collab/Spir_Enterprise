@@ -124,6 +124,9 @@ class UploadSession:
     # User-selected Planning Plant, validated at initiate; handed to the worker on complete.
     planning_plant: str = ""
     planning_plant_description: str = ""
+    # User-selected extraction mode ("standard" / "saipem"); "" = none sent
+    # (sessions recorded before the selector existed read back as "").
+    extraction_mode: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -236,6 +239,7 @@ def plan_upload(
     url_ttl: int,
     planning_plant: str = "",
     planning_plant_description: str = "",
+    extraction_mode: str = "",
 ) -> tuple[UploadSession, list[dict]]:
     """
     Create the multipart upload for slot (job_id, file_idx) and sign every
@@ -258,6 +262,7 @@ def plan_upload(
         upload_id=upload_id, part_size=part_size, part_count=n, user_id=user_id, queue=queue,
         created_at=time.time(), planning_plant=planning_plant,
         planning_plant_description=planning_plant_description,
+        extraction_mode=extraction_mode,
     )
     return session, urls
 

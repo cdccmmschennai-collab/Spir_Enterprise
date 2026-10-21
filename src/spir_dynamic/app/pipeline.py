@@ -18,7 +18,17 @@ import openpyxl
 import structlog
 
 from spir_dynamic.extraction.file_validator import validate_file
+from spir_dynamic.extraction.xls_converter import convert_xls_to_xlsx, is_xls
 from spir_dynamic.extraction.unified_extractor import extract_workbook
+from spir_dynamic.extraction.saipem import detect_saipem_sheets
+from spir_dynamic.extraction.saipem.detector import explain_not_saipem
+from spir_dynamic.extraction.saipem.errors import NOT_SAIPEM_MESSAGE, SaipemFormError
+from spir_dynamic.extraction.saipem.service import run_saipem_pipeline
+from spir_dynamic.services.extraction_mode import (
+    MODE_SAIPEM,
+    MODE_STANDARD,
+    resolve_extraction_mode,
+)
 from spir_dynamic.extraction.output_schema import (
     CI,
     OUTPUT_COLS,
@@ -54,7 +64,8 @@ _SLOW_EXTRACTION_WARN_SECONDS = 120
 def run_pipeline(
     file_input: Union[bytes, Path],
     original_filename: str,
-    planning_plant: PlanningPlant,
+    planning_plant: Optional[PlanningPlant],
+    extraction_mode: Optional[str] = None,
 ) -> dict[str, Any]:
     """
     Full extraction pipeline: validate -> extract -> post-process -> build xlsx.
@@ -67,9 +78,15 @@ def run_pipeline(
     resolve_planning_plant); it is written to PLANNING PLANT / PLANNING PLANT DESCRIPTION on every
     row. Workbook content is never consulted for the plant.
 
+    `extraction_mode` is the user-selected template ('standard' / 'saipem');
+    None keeps the structural auto-detection used before the selector existed.
+    An invalid value raises InvalidExtractionMode.
+
     Returns a metadata dict with file_id, preview_rows, statistics, etc.
     """
-    if not isinstance(planning_plant, PlanningPlant):
+    mode = resolve_extraction_mode(extraction_mode)
+    # Saipem files use no Planning Plant; Standard (and no mode) require one.
+    if mode != MODE_SAIPEM and not isinstance(planning_plant, PlanningPlant):
         raise InvalidPlanningPlant("planning_plant is required — select a Planning Plant")
 
     # ── cProfile — opt-in via SPIR_PROFILE=true (disabled in production) ────
@@ -83,6 +100,7 @@ def run_pipeline(
 
     _pipeline_start = time.time()
     is_path = isinstance(file_input, Path)
+    xls_copy: Optional[Path] = None
 
     try:
         if is_path:
@@ -98,6 +116,12 @@ def run_pipeline(
 
         # Step 1: Validate
         validate_file(original_filename, file_input, cfg.max_file_size_mb)
+
+        # Step 1b: Legacy .xls — openpyxl cannot read it, so convert once to a
+        # temporary .xlsx and extract from that copy. Other formats skip this.
+        if is_xls(original_filename):
+            xls_copy = convert_xls_to_xlsx(file_input)
+            file_input, is_path = xls_copy, True
 
         # Step 2: Load workbook (not read_only — merged_cells.ranges used in column_mapper)
         # keep_links=False skips external link parsing, saving ~0.1s on link-heavy files.
@@ -119,6 +143,25 @@ def run_pipeline(
         _wb_dur = time.perf_counter() - _wb_start
         WORKBOOK_OPEN_DURATION.observe(_wb_dur)
         log.debug("workbook.loaded", duration_s=round(_wb_dur, 2), filename=original_filename)
+
+        # Step 2b: route by the selected template (services/extraction_mode).
+        #   standard → always the generic path below, whatever the workbook resembles
+        #   saipem   → the Saipem path, or a clear error — never a Standard fallback
+        #   None     → no mode sent (older callers): structural auto-detection
+        if mode == MODE_STANDARD:
+            saipem_sheets = []
+        else:
+            saipem_sheets = detect_saipem_sheets(wb)
+            if mode == MODE_SAIPEM and not saipem_sheets:
+                # Short message for the user; the per-sheet diagnosis is logged.
+                log.info("saipem.not_detected", filename=original_filename, detail=explain_not_saipem(wb))
+                wb.close()
+                raise SaipemFormError(NOT_SAIPEM_MESSAGE)
+        if saipem_sheets:
+            try:
+                return run_saipem_pipeline(wb, saipem_sheets, original_filename, planning_plant)
+            finally:
+                wb.close()
 
         _extract_start = time.perf_counter()
         try:
@@ -223,6 +266,7 @@ def run_pipeline(
             # User-selected Planning Plant (the same values stamped on every row).
             "plant": planning_plant.code,
             "plant_description": planning_plant.description,
+            "extraction_mode": MODE_STANDARD,
         }
 
         try:
@@ -244,6 +288,8 @@ def run_pipeline(
         return response
 
     finally:
+        if xls_copy is not None:
+            xls_copy.unlink(missing_ok=True)
         # ── cProfile report (remove after identifying bottlenecks) ──────────────
         if _profiler is not None:
             _profiler.disable()

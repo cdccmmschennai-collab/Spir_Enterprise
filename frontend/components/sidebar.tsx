@@ -294,7 +294,9 @@ const TopNavbar = memo(function TopNavbar({
   onLogout,
   onAvatarUploaded,
   onAvatarRemoved,
+  center,
 }: {
+  center?: React.ReactNode;
   onMenuClick?: () => void;
   userInitials: string;
   username: string;
@@ -379,7 +381,7 @@ const TopNavbar = memo(function TopNavbar({
 
   return (
     // h-16 matches the sidebar header so the two borders sit on one line.
-    <header className="flex h-16 items-center gap-3 border-b border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 px-4 lg:px-6">
+    <header className={cn("flex h-16 items-center gap-3 border-b border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 px-4 lg:px-6", center && "relative")}>
       {/* Mobile menu */}
       {onMenuClick && (
         <button
@@ -389,6 +391,15 @@ const TopNavbar = memo(function TopNavbar({
         >
           <Menu className="h-5 w-5" />
         </button>
+      )}
+
+      {/* Page-provided control (e.g. Standard | Saipem). Below lg it shares the
+          row between the menu button and the avatar; from lg it is centered in
+          the header, which then holds only the avatar on the right. */}
+      {center && (
+        <div className="flex min-w-0 flex-1 justify-center lg:absolute lg:left-1/2 lg:w-56 lg:-translate-x-1/2">
+          {center}
+        </div>
       )}
 
       <div className="ml-auto flex items-center">
@@ -536,9 +547,11 @@ const TopNavbar = memo(function TopNavbar({
 
 interface SidebarProps {
   children: React.ReactNode;
+  /** Optional control centered in the top header (only pages that pass one show it). */
+  headerCenter?: React.ReactNode;
 }
 
-export function SidebarLayout({ children }: SidebarProps) {
+export function SidebarLayout({ children, headerCenter }: SidebarProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   // Desktop rail state comes from SidebarProvider (root layout) — see the note
   // there for why it can't live in this per-page component.
@@ -726,6 +739,7 @@ export function SidebarLayout({ children }: SidebarProps) {
           onLogout={handleLogout}
           onAvatarUploaded={handleAvatarUploaded}
           onAvatarRemoved={handleAvatarRemoved}
+          center={headerCenter}
         />
         <main className="flex-1 overflow-y-auto">{children}</main>
       </div>

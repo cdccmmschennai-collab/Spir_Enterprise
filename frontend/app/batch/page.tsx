@@ -29,6 +29,14 @@ import {
   planningPlantLabel,
   type PlanningPlant,
 } from "@/lib/planning-plants";
+import { ExtractionModeToggle } from "@/components/extraction-mode-toggle";
+import {
+  DEFAULT_EXTRACTION_MODE,
+  extractionModeFields,
+  extractionModeLabel,
+  parseExtractionMode,
+  type ExtractionMode,
+} from "@/lib/extraction-mode";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const ACCEPTED = ".xlsx,.xlsm,.xls";
@@ -140,7 +148,24 @@ function clearSession(): void {
   try {
     localStorage.removeItem(getSessionKey());
     localStorage.removeItem(`${getSessionKey()}-plant`);
+    localStorage.removeItem(`${getSessionKey()}-mode`);
   } catch {}
+}
+
+// The extraction template the active batch was started with (read-only chip;
+// Combine is hidden for Saipem batches). Only a known mode is ever restored.
+function saveSessionMode(mode: ExtractionMode): void {
+  try {
+    localStorage.setItem(`${getSessionKey()}-mode`, mode);
+  } catch {}
+}
+
+function loadSessionMode(): ExtractionMode | null {
+  try {
+    return parseExtractionMode(localStorage.getItem(`${getSessionKey()}-mode`));
+  } catch {
+    return null;
+  }
 }
 
 // The Planning Plant the active batch was started with (shown read-only in the
@@ -237,6 +262,9 @@ export default function BatchPage() {
   const [plantMissing, setPlantMissing] = useState(false);
   // Plant the current batch job was started with — fixed for that job.
   const [jobPlant, setJobPlant] = useState<PlanningPlant | null>(null);
+  // Extraction template for the next batch, and the one the current job uses.
+  const [mode, setMode] = useState<ExtractionMode>(DEFAULT_EXTRACTION_MODE);
+  const [jobMode, setJobMode] = useState<ExtractionMode | null>(null);
   const plantSelectRef = useRef<HTMLButtonElement>(null);
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -341,6 +369,7 @@ export default function BatchPage() {
     if (session?.jobId) {
       setJobId(session.jobId);
       setJobPlant(loadSessionPlant());
+      setJobMode(loadSessionMode());
       if (session.status) setJobStatus(session.status);
       // Always start polling on restore — immediately fetches latest backend state.
       // For terminal jobs this fires once and stops; for in-progress jobs it runs continuously.
@@ -380,12 +409,20 @@ export default function BatchPage() {
 
   const handleUpload = useCallback(async () => {
     if (files.length === 0) return;
-    if (!planningPlant) {
+    // Planning Plant is mandatory for Standard; Saipem files don't use one.
+    const needsPlant = mode !== "saipem";
+    if (needsPlant && !planningPlant) {
       setPlantMissing(true);
       plantSelectRef.current?.focus();
       return;
     }
-    const plantFields = planningPlantFields(planningPlant);
+    const batchPlant = needsPlant ? planningPlant : null;
+    // Same plant (Standard) and template for every file in this batch.
+    const requestFields = {
+      ...(batchPlant ? planningPlantFields(batchPlant) : {}),
+      ...extractionModeFields(mode),
+    };
+    const batchMode = mode;
     setUploading(true);
     setUploadProgress(null);
     setUploadingFileIdx(null);
@@ -402,7 +439,7 @@ export default function BatchPage() {
       const regRes = await fetch(`${API_URL}/api/batch/register`, {
         method: "POST",
         headers: { ...authHeaders(), "Content-Type": "application/json" },
-        body: JSON.stringify({ filenames: files.map((f) => f.name), ...plantFields }),
+        body: JSON.stringify({ filenames: files.map((f) => f.name), ...requestFields }),
       });
       if (regRes.status === 401) {
         setError("Session expired. Please log in again.");
@@ -415,8 +452,10 @@ export default function BatchPage() {
       }
       const { job_id } = await regRes.json();
       setJobId(job_id);
-      setJobPlant(planningPlant);
-      saveSessionPlant(planningPlant);
+      setJobPlant(batchPlant);
+      if (batchPlant) saveSessionPlant(batchPlant);
+      setJobMode(batchMode);
+      saveSessionMode(batchMode);
       setUploadProgress({ done: 0, total: files.length });
       // Start polling immediately so session is saved within the first tick and
       // live Celery updates appear in the queue UI while remaining files upload.
@@ -432,7 +471,7 @@ export default function BatchPage() {
         const outcome = await directUpload(files[idx], {
           jobId: job_id,
           fileIdx: idx,
-          fields: plantFields,
+          fields: requestFields,
           onProgress: (loaded, total) => setDirectPct(total > 0 ? Math.round((loaded / total) * 100) : 0),
         });
         if (outcome.kind !== "api") {
@@ -448,7 +487,7 @@ export default function BatchPage() {
         const form = new FormData();
         form.append("file", files[idx]);
         form.append("file_idx", String(idx));
-        for (const [k, v] of Object.entries(plantFields)) form.append(k, v);
+        for (const [k, v] of Object.entries(requestFields)) form.append(k, v);
 
         const upRes = await fetch(`${API_URL}/api/batch/${job_id}/upload`, {
           method: "POST",
@@ -473,7 +512,7 @@ export default function BatchPage() {
       setUploadingFileIdx(null); // upload phase always ends here
       setDirectPct(null);
     }
-  }, [files, planningPlant, startPolling, stopPolling]);
+  }, [files, planningPlant, mode, startPolling, stopPolling]);
 
   // ── Download ─────────────────────────────────────────────────────────────────
   // Root cause of Excel corruption: r.filename is the original upload name
@@ -575,6 +614,7 @@ export default function BatchPage() {
     clearSession();
     setJobId(null);
     setJobPlant(null);
+    setJobMode(null);
     setJobStatus(null);
     setFiles([]);
     setError(null);
@@ -595,14 +635,24 @@ export default function BatchPage() {
   const progressPct = jobStatus
     ? Math.round((jobStatus.completed / Math.max(jobStatus.total, 1)) * 100)
     : 0;
-  const canCombine = isJobDone && (jobStatus?.succeeded ?? 0) > 1;
+  // Combine rebuilds rows in the Standard layout, so Saipem batches cannot use it
+  // (the API refuses them too).
+  const canCombine = isJobDone && (jobStatus?.succeeded ?? 0) > 1 && jobMode !== "saipem";
 
   // ── Render ───────────────────────────────────────────────────────────────────
 
   if (!hydrated) return <SidebarLayout><></></SidebarLayout>;
 
+  // Header control: the template for the next batch; while a batch runs, the
+  // template it was started with (read-only).
+  const headerToggle = !jobId ? (
+    <ExtractionModeToggle value={mode} onChange={setMode} disabled={uploading} />
+  ) : jobMode ? (
+    <ExtractionModeToggle value={jobMode} onChange={setMode} disabled />
+  ) : null;
+
   return (
-    <SidebarLayout>
+    <SidebarLayout headerCenter={headerToggle}>
       <div className="mx-auto max-w-4xl space-y-6 p-4 sm:p-6 lg:p-8">
 
         {/* ── Page header ── */}
@@ -620,7 +670,8 @@ export default function BatchPage() {
               </p>
             </div>
           </div>
-          {!jobId && (
+          {/* Planning Plant — Standard only; Saipem files don't use one */}
+          {!jobId && mode !== "saipem" && (
             <div className="flex w-full flex-col gap-2 sm:w-80">
               <PlanningPlantSelect
                 ref={plantSelectRef}
@@ -645,19 +696,36 @@ export default function BatchPage() {
           )}
         </div>
 
-        {/* Read-only: the plant this batch was started with (applies to every file).
-            Sits under the title; -mt-3 keeps it close to the header like a wrapped row. */}
-        {jobId && jobPlant && (
-          <div
-            className="-mt-3 flex w-fit max-w-full items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm dark:border-slate-700 dark:bg-slate-800"
-            title="Planning Plant applied to every file in this batch"
-          >
-            <span className="shrink-0 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
-              Planning Plant
-            </span>
-            <span className="truncate text-sm font-semibold text-slate-800 dark:text-slate-200">
-              {planningPlantLabel(jobPlant)}
-            </span>
+        {/* Read-only: the plant and template this batch was started with (apply to
+            every file). Sits under the title; -mt-3 keeps it close to the header like a wrapped row. */}
+        {jobId && (jobPlant || jobMode) && (
+          <div className="-mt-3 flex flex-wrap gap-2">
+            {jobPlant && (
+              <div
+                className="flex w-fit max-w-full items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm dark:border-slate-700 dark:bg-slate-800"
+                title="Planning Plant applied to every file in this batch"
+              >
+                <span className="shrink-0 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                  Planning Plant
+                </span>
+                <span className="truncate text-sm font-semibold text-slate-800 dark:text-slate-200">
+                  {planningPlantLabel(jobPlant)}
+                </span>
+              </div>
+            )}
+            {jobMode && (
+              <div
+                className="flex w-fit items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm dark:border-slate-700 dark:bg-slate-800"
+                title="Extraction template applied to every file in this batch"
+              >
+                <span className="shrink-0 text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                  Template
+                </span>
+                <span className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+                  {extractionModeLabel(jobMode)}
+                </span>
+              </div>
+            )}
           </div>
         )}
 

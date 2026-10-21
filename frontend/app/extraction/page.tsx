@@ -31,6 +31,14 @@ import { directUpload, cancelDirectUpload } from "@/lib/direct-upload";
 import { postExtract, ExtractRequestCancelled } from "@/lib/extract-request";
 import { PlanningPlantError, PlanningPlantSelect } from "@/components/planning-plant-select";
 import { planningPlantFields, type PlanningPlant } from "@/lib/planning-plants";
+import { ExtractionModeToggle } from "@/components/extraction-mode-toggle";
+import {
+  DEFAULT_EXTRACTION_MODE,
+  extractionModeFields,
+  extractionModeLabel,
+  parseExtractionMode,
+  type ExtractionMode,
+} from "@/lib/extraction-mode";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const ACCEPTED = ".xlsx,.xlsm,.xls";
@@ -73,6 +81,10 @@ interface ExtractResult {
   // Workbook plant — both null unless the backend classified it confidently.
   plant?: string | null;
   plant_description?: string | null;
+  // Template the backend extracted with ("standard" / "saipem").
+  extraction_mode?: string | null;
+  // Parser notes (Saipem path): fields not found, unmatched tags, extra columns.
+  warnings?: string[];
 }
 
 // Frozen exchange-rate snapshot the backend converted UNIT PRICE (QAR) with.
@@ -466,6 +478,8 @@ export default function ExtractionPage() {
   const [planningPlant, setPlanningPlant] = useState<PlanningPlant | null>(null);
   const [plantMissing, setPlantMissing] = useState(false);
   const plantSelectRef = useRef<HTMLButtonElement>(null);
+  // Extraction template — sent with the upload and enforced by the backend.
+  const [mode, setMode] = useState<ExtractionMode>(DEFAULT_EXTRACTION_MODE);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ExtractResult | null>(null);
@@ -682,8 +696,10 @@ export default function ExtractionPage() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleExtract = useCallback(async () => {
-    if (!file || !planningPlant) return;
-    const plantFields = planningPlantFields(planningPlant);
+    // Planning Plant is mandatory for Standard; Saipem files don't use one.
+    const plant = mode === "saipem" ? null : planningPlant;
+    if (!file || (mode !== "saipem" && !plant)) return;
+    const requestFields = { ...(plant ? planningPlantFields(plant) : {}), ...extractionModeFields(mode) };
     setLoading(true);
     setError(null);
     setResult(null);
@@ -716,7 +732,7 @@ export default function ExtractionPage() {
     setUpload({ loaded: 0, total: file.size, phase: "uploading" });
     const outcome = await directUpload(file, {
       signal: controller.signal,
-      fields: plantFields,
+      fields: requestFields,
       onJob: (job_id) => {
         if (live()) saveSession({ status: "loading", ...base, savedAt: Date.now(), job_id, phase: "uploading" });
       },
@@ -758,7 +774,7 @@ export default function ExtractionPage() {
     // to "processing" once the body has been delivered.
     const form = new FormData();
     form.append("file", file);
-    for (const [k, v] of Object.entries(plantFields)) form.append(k, v);
+    for (const [k, v] of Object.entries(requestFields)) form.append(k, v);
     setUpload({ loaded: 0, total: file.size, phase: "uploading" });
     try {
       const res = await postExtract(form, {
@@ -808,17 +824,18 @@ export default function ExtractionPage() {
       }
       setLoading(false);
     }
-  }, [file, planningPlant, startPolling, stopPolling]);
+  }, [file, planningPlant, mode, startPolling, stopPolling]);
 
-  // Run Extraction: Planning Plant is mandatory — flag the field instead of starting.
+  // Run Extraction: Planning Plant is mandatory for Standard — flag the field
+  // instead of starting. Saipem files don't use one.
   const handleRunClick = useCallback(() => {
-    if (!planningPlant) {
+    if (mode !== "saipem" && !planningPlant) {
       setPlantMissing(true);
       plantSelectRef.current?.focus();
       return;
     }
     handleExtract();
-  }, [planningPlant, handleExtract]);
+  }, [mode, planningPlant, handleExtract]);
 
   const handleDownload = useCallback(async () => {
     if (!result) return;
@@ -904,24 +921,33 @@ export default function ExtractionPage() {
     ? upload ? "uploading" : "processing"
     : error ? "failed" : null;
   const activeFilename = file?.name ?? savedFilename;
+  const resultMode = parseExtractionMode(result?.extraction_mode);
 
   return (
-    <SidebarLayout>
+    <SidebarLayout
+      headerCenter={<ExtractionModeToggle value={mode} onChange={setMode} disabled={loading} />}
+    >
       {/* ── Dashboard / Upload State ── */}
       {!result && (
         <div className="mx-auto max-w-3xl space-y-6 p-4 sm:p-6 lg:p-8">
           {/* Top bar: Planning Plant (mandatory) · Open Guide — required message right below */}
           <div className="space-y-2">
           <div className="rounded-2xl border border-emerald-200 dark:border-emerald-800/50 bg-white dark:bg-slate-800 p-3 shadow-sm flex items-center gap-4">
-            <PlanningPlantSelect
-              ref={plantSelectRef}
-              value={planningPlant}
-              onChange={(p) => { setPlanningPlant(p); setPlantMissing(false); }}
-              invalid={plantMissing}
-              disabled={loading}
-              describedBy={plantMissing ? "planning-plant-error" : undefined}
-              className="min-w-0 flex-1"
-            />
+            {mode === "saipem" ? (
+              <p className="min-w-0 flex-1 pl-1 text-sm text-slate-500 dark:text-slate-400">
+                Saipem files don&apos;t need a Planning Plant.
+              </p>
+            ) : (
+              <PlanningPlantSelect
+                ref={plantSelectRef}
+                value={planningPlant}
+                onChange={(p) => { setPlanningPlant(p); setPlantMissing(false); }}
+                invalid={plantMissing}
+                disabled={loading}
+                describedBy={plantMissing ? "planning-plant-error" : undefined}
+                className="min-w-0 flex-1"
+              />
+            )}
             <button
               onClick={() => router.push("/guide")}
               className="flex shrink-0 items-center gap-1.5 pr-2 text-xs font-semibold text-emerald-700 hover:text-emerald-800 dark:text-emerald-400 dark:hover:text-emerald-300 transition-colors"
@@ -930,7 +956,7 @@ export default function ExtractionPage() {
               <ArrowUpRight className="h-3.5 w-3.5" />
             </button>
           </div>
-          {plantMissing && <PlanningPlantError id="planning-plant-error" />}
+          {plantMissing && mode !== "saipem" && <PlanningPlantError id="planning-plant-error" />}
           </div>
 
           {/* Recovery banner — extraction completed on backend while page was away */}
@@ -1093,6 +1119,22 @@ export default function ExtractionPage() {
             ))}
           </div>
 
+          {/* Parser notes (Saipem): shown as reported, never hidden */}
+          {result.warnings && result.warnings.length > 0 && (
+            <div
+              role="status"
+              className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 shadow-sm dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300"
+            >
+              <p className="flex items-center gap-2 font-semibold">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                {result.warnings.length === 1 ? "1 extraction note" : `${result.warnings.length} extraction notes`}
+              </p>
+              <ul className="mt-1.5 list-disc space-y-0.5 pl-6 text-xs">
+                {result.warnings.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
+            </div>
+          )}
+
           {/* SPIR Metadata */}
           <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-5 shadow-sm">
             <h2 className="mb-4 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
@@ -1100,6 +1142,7 @@ export default function ExtractionPage() {
             </h2>
             <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4 text-sm">
               {[
+                { label: "TEMPLATE",     value: resultMode ? extractionModeLabel(resultMode) : null },
                 { label: "SPIR NUMBER",  value: result.spir_no },
                 { label: "EQUIPMENT",    value: result.equipment },
                 { label: "MANUFACTURER", value: result.manufacturer },

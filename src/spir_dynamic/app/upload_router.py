@@ -43,10 +43,12 @@ from spir_dynamic.app.batch_router import (
     _assert_job_access,
     _dispatch_celery,
     _persist_job_to_db,
+    extraction_mode_or_422,
     max_upload_bytes,
-    planning_plant_or_422,
+    request_plant_or_422,
     route_queue,
 )
+from spir_dynamic.services.extraction_mode import MODE_SAIPEM
 from spir_dynamic.app.config import get_settings
 from spir_dynamic.services.direct_upload import (
     STATE_COMPLETING,
@@ -83,6 +85,9 @@ class InitiateRequest(BaseModel):
     # User-selected Planning Plant — required (validated against the controlled master).
     planning_plant: str | None = None
     planning_plant_description: str | None = None
+    # User-selected extraction template ("standard" / "saipem"); kept on the
+    # upload session and handed to the worker when the upload completes.
+    extraction_mode: str | None = None
 
 
 class PartsRequest(BaseModel):
@@ -127,7 +132,8 @@ async def initiate_upload(
     plan with one presigned PUT URL per part. A Planning Plant is required
     either way: no extraction may start without one.
     """
-    plant = planning_plant_or_422(body.planning_plant, body.planning_plant_description)
+    mode = extraction_mode_or_422(body.extraction_mode)
+    plant = request_plant_or_422(body.planning_plant, body.planning_plant_description, mode)
     cfg = get_settings()
     t0 = time.perf_counter()
     user_id = td.user_id or ""
@@ -184,7 +190,9 @@ async def initiate_upload(
                 storage, job_id=job_id, file_idx=file_idx, filename=filename, size=body.size,
                 user_id=user_id, queue=queue, part_size=cfg.direct_upload_part_size_mb * 1024 * 1024,
                 url_ttl=cfg.direct_upload_url_ttl_seconds,
-                planning_plant=plant.code, planning_plant_description=plant.description,
+                planning_plant=plant.code if plant else "",
+                planning_plant_description=plant.description if plant else "",
+                extraction_mode=mode or "",
             ),
         )
     except ValueError as exc:
@@ -328,9 +336,12 @@ async def complete_upload(
     store.update_result(job_id, file_idx, FileResult(filename=session.filename, status="pending"))
     queue, _ = route_queue(info.size, cfg)
     try:
-        plant = resolve_planning_plant(session.planning_plant, session.planning_plant_description)
+        # Saipem uploads carry no plant; every other session must hold a valid one.
+        plant = (None if session.extraction_mode == MODE_SAIPEM
+                 else resolve_planning_plant(session.planning_plant, session.planning_plant_description))
         queues = _dispatch_celery(job_id, [(session.source_key, session.filename, info.size)], cfg, user_id,
-                                  idx_offset=file_idx, planning_plant=plant)
+                                  idx_offset=file_idx, planning_plant=plant,
+                                  extraction_mode=session.extraction_mode or None)
         queue = queues[0]
     except InvalidPlanningPlant as exc:
         # Session recorded without a valid plant (e.g. started before this was required).

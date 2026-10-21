@@ -66,6 +66,7 @@ def process_file_task(
     user_id: str = "",
     planning_plant: str = "",
     planning_plant_description: str = "",
+    extraction_mode: str = "",
 ) -> dict:
     """
     Extract a single SPIR file as part of a batch job.
@@ -80,6 +81,9 @@ def process_file_task(
                      The user-selected Planning Plant (validated by the API,
                      re-validated here). Missing/invalid fails the file — there
                      is no automatic plant detection to fall back to.
+        extraction_mode: "standard" / "saipem" (re-validated here; invalid fails
+                     the file). "" — tasks queued without one — keeps the
+                     structural auto-detection. A kwarg, so retries keep it.
 
     Returns:
         Dict with status + result metadata (mirrors run_pipeline output keys).
@@ -90,6 +94,12 @@ def process_file_task(
     from spir_dynamic.services.job_store import FileResult, get_job_store
     from spir_dynamic.services.object_storage import ObjectNotFound
     from spir_dynamic.services.planning_plant import InvalidPlanningPlant, resolve_planning_plant
+    from spir_dynamic.services.extraction_mode import (
+        MODE_SAIPEM,
+        InvalidExtractionMode,
+        resolve_extraction_mode,
+    )
+    from spir_dynamic.extraction.saipem.errors import SaipemFormError
     from spir_dynamic.services.source_objects import (
         discard_source_object,
         scratch_dir,
@@ -115,15 +125,27 @@ def process_file_task(
 
     store = get_job_store()
 
-    # ── Planning Plant — required; not retryable, so fail the slot right away ──
+    # ── Extraction mode — invalid is not retryable, so fail the slot right away ──
     try:
-        plant = resolve_planning_plant(planning_plant, planning_plant_description)
-    except InvalidPlanningPlant as exc:
-        log.error("extraction.invalid_planning_plant", planning_plant=planning_plant, exc_message=str(exc))
-        discard_source_object(source_key, log_context=f"invalid-plant {_log_ctx}")
+        mode = resolve_extraction_mode(extraction_mode)
+    except InvalidExtractionMode as exc:
+        log.error("extraction.invalid_mode", extraction_mode=extraction_mode, exc_message=str(exc))
+        discard_source_object(source_key, log_context=f"invalid-mode {_log_ctx}")
         store.update_result(job_id, file_idx, FileResult(filename=filename, status="error", error=str(exc)))
         return {"status": "error", "job_id": job_id, "file_idx": file_idx, "error": str(exc)}
-    structlog.contextvars.bind_contextvars(planning_plant=plant.code)
+    structlog.contextvars.bind_contextvars(extraction_mode=mode or "auto")
+
+    # ── Planning Plant — required (not retryable) except for Saipem, which uses none ──
+    plant = None
+    if mode != MODE_SAIPEM:
+        try:
+            plant = resolve_planning_plant(planning_plant, planning_plant_description)
+        except InvalidPlanningPlant as exc:
+            log.error("extraction.invalid_planning_plant", planning_plant=planning_plant, exc_message=str(exc))
+            discard_source_object(source_key, log_context=f"invalid-plant {_log_ctx}")
+            store.update_result(job_id, file_idx, FileResult(filename=filename, status="error", error=str(exc)))
+            return {"status": "error", "job_id": job_id, "file_idx": file_idx, "error": str(exc)}
+        structlog.contextvars.bind_contextvars(planning_plant=plant.code)
 
     # ── Broker delivery cap — guard against infinite OOM re-delivery loop ────
     # self.retry() increments self.request.retries (capped at max_retries=3).
@@ -208,7 +230,10 @@ def process_file_task(
         # after extraction regardless of success or failure, while the outer
         # except block preserves the source object for retry attempts.
         try:
-            return run_pipeline(_effective_path, filename, plant)
+            # The mode is passed only when one was selected, so tasks queued
+            # without one call run_pipeline exactly as before (auto-detect).
+            mode_kw = {"extraction_mode": mode} if mode else {}
+            return run_pipeline(_effective_path, filename, plant, **mode_kw)
         finally:
             # Always clean up the sanitized copy; original upload is untouched.
             if _san.sanitized_path is not None:
@@ -277,6 +302,8 @@ def process_file_task(
                 "currency_rates": result.get("currency_rates"),
                 "plant": result.get("plant"),
                 "plant_description": result.get("plant_description"),
+                "extraction_mode": result.get("extraction_mode"),
+                "warnings": result.get("warnings", []),
             }).encode("utf-8")
             _storage = _get_storage()
             _storage.put(
@@ -339,6 +366,14 @@ def process_file_task(
             "file_id": result.get("file_id", ""),
             "total_rows": result.get("total_rows", 0),
         }
+
+    except SaipemFormError as exc:
+        # Saipem mode, but the workbook is not a usable Saipem form. Retrying
+        # cannot change the workbook — fail the file now with the reason.
+        discard_source_object(source_key, log_context=f"saipem-invalid {_log_ctx}")
+        log.warning("extraction.saipem_invalid", status="error", exc_message=str(exc))
+        store.update_result(job_id, file_idx, FileResult(filename=filename, status="error", error=str(exc)))
+        return {"status": "error", "job_id": job_id, "file_idx": file_idx, "error": str(exc)}
 
     except SoftTimeLimitExceeded:
         # Soft time limit fired — not retryable; drop the source object.

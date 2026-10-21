@@ -25,9 +25,12 @@ from sqlalchemy import select, desc
 
 from spir_dynamic.app.auth import get_current_user, TokenData, SUPER_ADMIN
 from spir_dynamic.app.batch_router import (
+    CombineUnsupported,
     _dispatch_celery,
     _persist_job_to_db,
-    planning_plant_or_422,
+    ensure_combinable,
+    extraction_mode_or_422,
+    request_plant_or_422,
     route_queue,
 )
 from spir_dynamic.services.planning_plant import PlanningPlant
@@ -163,10 +166,12 @@ async def extract(
     file: UploadFile = File(...),
     planning_plant: str | None = Form(None),
     planning_plant_description: str | None = Form(None),
+    extraction_mode: str | None = Form(None),
     td: TokenData = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Upload and extract a SPIR Excel file for the user-selected Planning Plant."""
-    plant = planning_plant_or_422(planning_plant, planning_plant_description)
+    """Upload and extract a SPIR Excel file for the user-selected template (and Planning Plant — Standard only)."""
+    mode = extraction_mode_or_422(extraction_mode)
+    plant = request_plant_or_422(planning_plant, planning_plant_description, mode)
     cfg = get_settings()
     filename = file.filename or "upload.xlsx"
     tmp_path: Path | None = None
@@ -199,7 +204,7 @@ async def extract(
         queue, _ = route_queue(file_size, cfg)
         if cfg.celery_enabled and queue != "normal":
             try:
-                job_id, queue = await _enqueue_single_file(tmp_path, filename, file_size, cfg, td, plant)
+                job_id, queue = await _enqueue_single_file(tmp_path, filename, file_size, cfg, td, plant, mode)
             except Exception as exc:
                 log.exception(
                     "extraction.event",
@@ -253,7 +258,7 @@ async def extract(
             try:
                 # Pass the PATH — pipeline opens workbook from disk, zero bytes copy.
                 result = await asyncio.wait_for(
-                    loop.run_in_executor(executor, run_pipeline, tmp_path, filename, plant),
+                    loop.run_in_executor(executor, run_pipeline, tmp_path, filename, plant, mode),
                     timeout=cfg.extraction_timeout_seconds,
                 )
             except asyncio.TimeoutError:
@@ -586,7 +591,8 @@ async def _enqueue_single_file(
     size_bytes: int,
     cfg,
     td: TokenData,
-    planning_plant: PlanningPlant,
+    planning_plant: Optional[PlanningPlant],
+    extraction_mode: Optional[str] = None,
 ) -> tuple[str, str]:
     """
     Hand a large single-file upload to the batch worker infrastructure.
@@ -621,7 +627,7 @@ async def _enqueue_single_file(
     try:
         job_store.create(job_id, [filename], user_id=user_id)
         queues = _dispatch_celery(job_id, [(source_key, filename, size_bytes)], cfg, user_id,
-                                  planning_plant=planning_plant)
+                                  planning_plant=planning_plant, extraction_mode=extraction_mode)
     except Exception as exc:
         discard_source_object(source_key, log_context=f"enqueue-failed job={job_id}")
         # No-op if create() itself failed (store logs "job.not_found").
@@ -867,7 +873,10 @@ async def combine(
             continue
         try:
             payload = json.loads(p.read_text(encoding="utf-8"))
+            ensure_combinable(payload.get("cols"), rec.filename or rec.id)
             combined_rows.extend(payload.get("rows", []))
+        except CombineUnsupported as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
         except Exception as exc:
             raise HTTPException(
                 status_code=500,

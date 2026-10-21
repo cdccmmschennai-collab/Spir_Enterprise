@@ -31,6 +31,9 @@ iniconfig==2.3.0
 kombu==5.6.2
 numpy==2.4.4
 openpyxl==3.1.5
+# Legacy .xls (Excel 97-2003) reader. Only imported inside
+# spir_dynamic.extraction.xls_converter, which turns .xls uploads into .xlsx.
+xlrd==2.0.1
 packaging==26.2
 pandas==3.0.2
 passlib[bcrypt]==1.7.4
