@@ -65,7 +65,7 @@ SAIPEM_COLUMNS: list[SaipemColumn] = [
     # -- Spare parts identification --
     _C("spir_pos_no", "SPIR POS. No. (from 0001)", band=BAND_SPARE, identifier=True, width=10),
     _C("description_of_parts", "DESCRIPTION OF PARTS", band=BAND_SPARE, width=40),
-    # Computed: DESCRIPTION OF PARTS,MATERIAL,ORIGINAL MAKERS NAME,ORIGINAL MAKERS PART No.
+    # Computed: DESCRIPTION OF PARTS,ORIGINAL MAKERS PART No.,ORIGINAL MAKERS NAME,MATERIAL
     _C("new_description_of_parts", "NEW DESCRIPTION OF PARTS", band=BAND_SPARE, width=60),
     _C("material", "MATERIAL", band=BAND_SPARE, width=28),
     _C("original_makers_name", "ORIGINAL MAKERS NAME", band=BAND_SPARE, width=28),
@@ -125,10 +125,11 @@ MATRIX_FIELD_IDS: frozenset[str] = frozenset(
                                  SAIPEM_COLUMNS.index(COLUMN_BY_ID["vendor_name"])]
 ) - COMPUTED_FIELD_IDS
 
-# NEW DESCRIPTION OF PARTS = these values, in this order, joined with "," (the
-# Standard output's NEW DESCRIPTION separator); blank / "-" / "NA" parts skipped.
+# NEW DESCRIPTION OF PARTS = these values joined with ",", in the Standard
+# output's NEW DESCRIPTION order (desc, part no, supplier, material);
+# blank / "-" / "NA" parts skipped.
 NEW_DESCRIPTION_FIELD_IDS = (
-    "description_of_parts", "material", "original_makers_name", "original_makers_part_no",
+    "description_of_parts", "original_makers_part_no", "original_makers_name", "material",
 )
 
 EQUIPMENT_FIELD_IDS = ("free_field", "model_or_type", "equipment_sub_item_no")

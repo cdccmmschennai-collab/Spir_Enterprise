@@ -626,10 +626,11 @@ class TestGenericIsolation:
 # ── NEW DESCRIPTION OF PARTS and the equipment row's description ────────────
 
 class TestDescriptions:
-    def test_new_description_concatenates_in_order(self):
+    def test_new_description_concatenates_in_standard_order(self):
+        # desc, part no, supplier (makers name), material — as the Standard output
         row = _by_pos(_extract(), PUMP_A)["0001"]
         assert row["new_description_of_parts"] == (
-            "PUMP SHAFT,A582 TYP 416 SS,FLOWSERVE INDIA CONTROLS PVT LTD,88590797")
+            "PUMP SHAFT,88590797,FLOWSERVE INDIA CONTROLS PVT LTD,A582 TYP 416 SS")
         assert row["description_of_parts"] == "PUMP SHAFT"            # source value untouched
 
     def test_new_description_skips_blank_and_placeholders(self):
@@ -663,4 +664,4 @@ class TestDescriptions:
         result = _extract(openpyxl.load_workbook(convert_xls_to_xlsx(REAL_XLS, out_dir=tmp_path), data_only=True))
         assert result.rows[0]["description_of_parts"] == "CENTRIFUGAL PUMPS"
         assert _by_pos(result, PUMP_A)["0033"]["new_description_of_parts"] == (
-            "MOTOR BEARING SET(DE / NDE),ABB INDIA LTD,MTR-EX2515011-005400PH011A/B-S1")
+            "MOTOR BEARING SET(DE / NDE),MTR-EX2515011-005400PH011A/B-S1,ABB INDIA LTD")

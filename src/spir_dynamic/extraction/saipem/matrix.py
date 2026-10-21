@@ -64,10 +64,11 @@ def read_spare_lines(ws, layout: SaipemLayout) -> list[SpareLine]:
 
 
 def new_description(values: dict[str, Any]) -> Optional[str]:
-    """DESCRIPTION OF PARTS,MATERIAL,ORIGINAL MAKERS NAME,ORIGINAL MAKERS PART No.
+    """DESCRIPTION OF PARTS,ORIGINAL MAKERS PART No.,ORIGINAL MAKERS NAME,MATERIAL
 
-    Same "," join as the Standard NEW DESCRIPTION; blank, "-" and "NA" parts
-    are left out so the text never carries placeholders.
+    Same order and "," join as the Standard NEW DESCRIPTION (desc, part no,
+    supplier, material); blank, "-" and "NA" parts are left out so the text
+    never carries placeholders.
     """
     parts = [str(values[f]).strip() for f in NEW_DESCRIPTION_FIELD_IDS
              if not is_placeholder(values.get(f))]
