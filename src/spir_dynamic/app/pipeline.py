@@ -25,6 +25,10 @@ from spir_dynamic.extraction.output_schema import (
     make_empty_row,
     row_from_dict,
 )
+from spir_dynamic.extraction.plant_name_filter import (
+    strip_plant_names,
+    strip_plant_names_in_columns,
+)
 from spir_dynamic.extraction.post_processor import post_process_rows
 from spir_dynamic.services.excel_builder import build_xlsx
 from spir_dynamic.services.duplicate_checker import deduplicate_rows, analyse_duplicates
@@ -151,6 +155,11 @@ def run_pipeline(
         # Step 4c: Stamp the user-selected PLANNING PLANT / DESCRIPTION on every row
         _apply_plant(output_rows, planning_plant)
 
+        # Step 4d: Strip vendor-concatenated plant names from EQPT MAKE / EQPT MODEL
+        strip_plant_names_in_columns(
+            output_rows, (CI.get("EQPT MAKE"), CI.get("EQPT MODEL"))
+        )
+
         # The result's file_id doubles as the processing-job id the currency
         # snapshot is recorded against (extraction_history stores both).
         file_id = str(uuid.uuid4())
@@ -205,7 +214,7 @@ def run_pipeline(
             "format": result.get("format", "UNKNOWN"),
             "spir_no": spir_no,
             "equipment": result.get("equipment", ""),
-            "manufacturer": result.get("manufacturer", ""),
+            "manufacturer": strip_plant_names(result.get("manufacturer", "")) or "",
             "supplier": result.get("supplier", ""),
             "spir_type": result.get("spir_type"),
             "eqpt_qty": result.get("eqpt_qty", 0),
