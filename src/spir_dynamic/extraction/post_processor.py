@@ -662,6 +662,7 @@ class SheetTracker:
                 is_non_main = (
                     _sheet_name_is_continuation_or_annexure(name_norm)
                     or role == "annexure"
+                    or bool(sp.get("overflow_of"))
                 )
                 if not is_non_main:
                     main_count += 1

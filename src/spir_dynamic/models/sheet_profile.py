@@ -58,6 +58,9 @@ class SheetProfile:
 
     # Continuation relationship
     continuation_of: str | None = None
+    # Set when a main-layout sheet is really an overflow page of an earlier
+    # main sheet (same equipment tags, item numbering continues).
+    overflow_of: str | None = None
 
     # Extra columns not in the standard 27-column schema (col_index → header_text)
     extra_columns: dict[int, str] = field(default_factory=dict)

@@ -43,6 +43,10 @@ _ANNEXURE_REF_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Annexure tag-column headers that refer to a superseded tag numbering
+# (e.g. "OLD TAG NOS" next to "NEW TAG NO").
+_SUPERSEDED_TAG_RE = re.compile(r"\b(?:old|previous|prev|former|superseded)\b")
+
 # Unicode Roman numeral characters (U+2160–U+217B) → ASCII equivalents.
 # Excel files sometimes use these Unicode glyphs instead of plain I/V/X letters,
 # so "Annexure Ⅵ" (U+2165) would never match the [IVX]+ regex without this map.
@@ -212,6 +216,7 @@ def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
                 "column_map": p.column_map,
                 "extra_columns": p.extra_columns,
                 "discovery_mode": p.discovery_mode,
+                "overflow_of": p.overflow_of,
             }
             for p in profiles
         ],
@@ -253,6 +258,10 @@ def _extract_columnar_group(
     primary_mains = [p for p in columnar_profiles if _is_primary_main(p)]
     non_primaries = [p for p in columnar_profiles if not _is_primary_main(p)]
 
+    # A "main" that repeats an earlier main's equipment tags and continues its
+    # item numbering is an overflow page of that main, not a new equipment.
+    primary_mains, overflow_pages = _split_overflow_mains(wb, primary_mains, all_profiles)
+
     # Single main (or no primaries): use the original single-group logic unchanged.
     if len(primary_mains) <= 1:
         main_name = primary_mains[0].name if primary_mains else None
@@ -291,6 +300,11 @@ def _extract_columnar_group(
 
     # Process each primary main + its local continuations normally.
     groups = _group_by_main(primary_mains, local_non_primaries, all_profiles)
+    for _page in overflow_pages:
+        for _main, _conts in groups:
+            if _main.name == _page.overflow_of:
+                _conts.append(_page)
+                break
 
     all_rows: list[dict[str, Any]] = []
     for main_profile, group_conts in groups:
@@ -413,6 +427,72 @@ def _regroup_global_cont_by_tag(
             result.append(tag_header[key])
         result.extend(tag_spares[key])
     return result
+
+
+def _split_overflow_mains(
+    wb,
+    primary_mains: list[SheetProfile],
+    all_profiles: list[SheetProfile],
+) -> tuple[list[SheetProfile], list[SheetProfile]]:
+    """
+    Separate overflow pages from the real primary main sheets.
+
+    Some vendors spread one equipment's spare list over several copies of the
+    main-sheet form (e.g. "VEN-…-0002" items 1-27, "VEN-…-0002(1)" items 28-33).
+    Each copy has item/description columns, so it looks like an independent
+    main, but it describes the SAME equipment. A main is an overflow page of
+    the previous kept main when:
+      - its equipment tag set equals that main's tag set, AND
+      - its item numbers all come after that main's highest item number.
+    Independent mains differ in tags or restart their item numbering.
+
+    Overflow pages get ``overflow_of`` set to their parent main's name.
+    Returns (real_primary_mains, overflow_pages).
+    """
+    if len(primary_mains) <= 1:
+        return primary_mains, []
+
+    sheet_order = {p.name: i for i, p in enumerate(all_profiles)}
+    helper = ColumnarStrategy()
+
+    def _tag_set(p: SheetProfile) -> frozenset[str]:
+        tags = helper._read_tag_headers(wb[p.name], p)
+        return frozenset(
+            str(t).strip().upper() for vals in tags.values() for t in vals if t
+        )
+
+    def _item_range(p: SheetProfile) -> tuple[int, int] | None:
+        nums = [k for k in helper.read_items(wb[p.name], p) if k > 0]
+        return (min(nums), max(nums)) if nums else None
+
+    kept: list[SheetProfile] = []
+    overflow: list[SheetProfile] = []
+    # parent name -> (tag set, highest item number seen in parent + its overflow pages)
+    last_parent: tuple[SheetProfile, frozenset[str], int] | None = None
+
+    for p in sorted(primary_mains, key=lambda p: sheet_order.get(p.name, 0)):
+        tags = _tag_set(p)
+        rng = _item_range(p)
+        if (
+            last_parent is not None
+            and tags
+            and rng is not None
+            and tags == last_parent[1]
+            and rng[0] > last_parent[2]
+        ):
+            parent = last_parent[0]
+            p.overflow_of = parent.name
+            overflow.append(p)
+            last_parent = (parent, tags, rng[1])
+            log.info(
+                "Sheet '%s' is an overflow page of main '%s' (same tags, items %d-%d)",
+                p.name, parent.name, rng[0], rng[1],
+            )
+            continue
+        kept.append(p)
+        last_parent = (p, tags, rng[1] if rng else 0)
+
+    return kept, overflow
 
 
 def _group_by_main(
@@ -545,6 +625,19 @@ def _extract_single_group(
             # continuation sheets can locate metadata rows without re-scanning.
             if is_item_source_sheet:
                 item_source_metadata_rows = disc_field_rows
+
+            # An overflow page continues its main's equipment — keep its spare
+            # rows but not a second equipment row for a tag already emitted.
+            if profile.overflow_of:
+                _seen_tags = {
+                    str(r.get("tag_no") or "").strip().upper()
+                    for r in all_rows if r.get("item_num") is None
+                }
+                rows = [
+                    r for r in rows
+                    if r.get("item_num") is not None
+                    or str(r.get("tag_no") or "").strip().upper() not in _seen_tags
+                ]
 
             # Inject logical main indicator for header deduplication
             for r in rows:
@@ -2130,6 +2223,7 @@ def _scan_annexure_headers(ws, sheet_name: str = None) -> tuple[dict[str, int], 
     # Stored as col → (matched_keyword, kw_len, row) so we can compare matching
     # keywords later — peer columns share the same matching keyword.
     all_tag_col_set: dict[int, tuple[str, int, int]] = {}
+    tag_col_headers: dict[int, str] = {}
 
     for r in range(1, scan_rows):
         for c in range(1, max_col + 1):
@@ -2149,7 +2243,34 @@ def _scan_annexure_headers(ws, sheet_name: str = None) -> tuple[dict[str, int], 
                             # keeping the longest-matching keyword per column.
                             if c not in all_tag_col_set or kw_len > all_tag_col_set[c][1]:
                                 all_tag_col_set[c] = (kw, kw_len, r)
+                                tag_col_headers[c] = cell_lower
                         break  # one keyword per cell per field
+
+    # Superseded tag columns: renumbered equipment lists carry both an
+    # "OLD TAG NOS" and a "NEW TAG NO" column for the SAME equipment. Both
+    # match "tag no", so they would otherwise be treated as peer columns and
+    # every row emitted twice. Keep only the current column(s) — but only when
+    # a non-superseded tag column exists on the same header row.
+    _superseded = {
+        c for c, h in tag_col_headers.items() if _SUPERSEDED_TAG_RE.search(h)
+    }
+    if _superseded:
+        _sup_rows = {all_tag_col_set[c][2] for c in _superseded}
+        _current = [
+            c for c in all_tag_col_set
+            if c not in _superseded and all_tag_col_set[c][2] in _sup_rows
+        ]
+        if _current:
+            for c in _superseded:
+                all_tag_col_set.pop(c, None)
+            if best_match.get("tag", (None,))[0] in _superseded:
+                # Re-pick the primary: longest keyword, leftmost on ties.
+                _c = min(_current, key=lambda c: (-all_tag_col_set[c][1], c))
+                best_match["tag"] = (_c, all_tag_col_set[_c][1], all_tag_col_set[_c][2])
+            log.info(
+                "[annexure] sheet='%s': ignoring superseded tag col(s) %s, using %s",
+                sheet_name, sorted(_superseded), sorted(_current),
+            )
 
     # Row-preference fix: if the best "tag" column is on a different row from the
     # model/serial columns, prefer a tag column that IS on the same row as model/serial.

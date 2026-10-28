@@ -433,7 +433,13 @@ class ColumnarStrategy:
             raw_text = _TAG_PREFIX_PAT.sub("", raw_text).strip()
 
             if "\n" in raw_text or "\r" in raw_text:
-                nl_parts = [p.strip() for p in re.split(r"[\n\r]+", raw_text) if p.strip()]
+                # Strip the prefix per line too — it may sit after a description
+                # line (e.g. "PowerLogic…\n TAG : 100-30-CB-0001").
+                nl_parts = [
+                    _TAG_PREFIX_PAT.sub("", p.strip()).strip()
+                    for p in re.split(r"[\n\r]+", raw_text)
+                ]
+                nl_parts = [p for p in nl_parts if p]
                 if len(nl_parts) > 1:
                     # Only treat as multiple packed tags when every part looks like
                     # a real tag (has the prefix-separator-suffix structure).
