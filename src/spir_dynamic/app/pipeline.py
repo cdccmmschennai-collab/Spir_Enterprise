@@ -160,6 +160,10 @@ def run_pipeline(
             output_rows, (CI.get("EQPT MAKE"), CI.get("EQPT MODEL"))
         )
 
+        # Step 4e: Equipment rows — PART NUMBER = EQPT MODEL, NEW DESCRIPTION =
+        # DESCRIPTION + MODEL + MAKE (runs after 4d so MAKE/MODEL are clean)
+        _apply_equipment_row_fields(output_rows)
+
         # The result's file_id doubles as the processing-job id the currency
         # snapshot is recorded against (extraction_history stores both).
         file_id = str(uuid.uuid4())
@@ -278,6 +282,49 @@ def _apply_plant(rows: list[list], plant: PlanningPlant) -> None:
         if len(row) > max(plant_col, desc_col):
             row[plant_col] = plant.code
             row[desc_col] = plant.description
+
+
+def _apply_equipment_row_fields(rows: list[list]) -> None:
+    """
+    Fill PART NUMBER and NEW DESCRIPTION on equipment rows.
+
+    An equipment row is a row with a TAG NO but no ITEM NUMBER (the same
+    spare/equipment split post_processor uses). On those rows only:
+      - MANUFACTURER PART NUMBER = EQPT MODEL (when the tag has a model)
+      - NEW DESCRIPTION OF PARTS = DESCRIPTION,EQPT MODEL,EQPT MAKE
+        (blank parts skipped)
+    Values already present on the row are never overwritten.
+    """
+    tag_col = CI.get("TAG NO")
+    item_col = CI.get("ITEM NUMBER")
+    make_col = CI.get("EQPT MAKE")
+    model_col = CI.get("EQPT MODEL")
+    desc_col = CI.get("DESCRIPTION OF PARTS")
+    new_desc_col = CI.get("NEW DESCRIPTION OF PARTS")
+    part_col = CI.get("MANUFACTURER PART NUMBER")
+    cols = (tag_col, item_col, make_col, model_col, desc_col, new_desc_col, part_col)
+    if any(c is None for c in cols):
+        return
+    min_len = max(cols) + 1
+
+    def _text(v: Any) -> str:
+        return str(v).strip() if v is not None else ""
+
+    for row in rows:
+        if len(row) < min_len or not _text(row[tag_col]):
+            continue
+        if _text(row[item_col]) not in ("", "None"):
+            continue  # spare row
+
+        model = _text(row[model_col])
+        if model and not _text(row[part_col]):
+            row[part_col] = model
+
+        if not _text(row[new_desc_col]):
+            parts = [_text(row[desc_col]), model, _text(row[make_col])]
+            joined = ",".join(p for p in parts if p)
+            if joined:
+                row[new_desc_col] = joined
 
 
 def _apply_currency_conversion(
