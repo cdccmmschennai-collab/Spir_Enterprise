@@ -12,7 +12,11 @@ from typing import Any
 # ---------------------------------------------------------------------------
 # Separators that indicate multiple tags in one cell
 # ---------------------------------------------------------------------------
-_TAG_SEPARATORS = re.compile(r"[,/|;]")
+_TAG_SEPARATORS = re.compile(r"[,/\\|;]")
+
+# Separators allowed between suffix codes when the unit count confirms a split:
+# "A-B", "A\B", "A&B", "A+B", "A B"
+_SUFFIX_CODE_SEP = r"\s*[\-\\&+\s]\s*"
 
 # ---------------------------------------------------------------------------
 # Placeholder values treated as empty
@@ -143,6 +147,47 @@ def split_tags(raw_tag: Any) -> list[str]:
             return result
 
     return parts
+
+
+def expand_tag_by_count(raw_tag: Any, count: int) -> list[str]:
+    """
+    Expand a single tag whose suffix packs several units, using the
+    "No. OF UNITS" count as confirmation.
+
+        ("P-3425 AB", 2)    -> ["P-3425 A", "P-3425 B"]
+        ("P-3425AB", 2)     -> ["P-3425A", "P-3425B"]
+        ("P-3425 A-B", 2)   -> ["P-3425 A", "P-3425 B"]
+        ("P-3425 A\\B", 2)  -> ["P-3425 A", "P-3425 B"]
+        ("P-3425 ABC", 3)   -> ["P-3425 A", "P-3425 B", "P-3425 C"]
+        ("P-3425 AB", 1)    -> ["P-3425 AB"]          (count does not confirm)
+        ("P-3425 ABC", 2)   -> ["P-3425 ABC"]         (count mismatch)
+
+    The suffix must follow a digit (optionally plus one space/hyphen) and
+    yield exactly ``count`` distinct codes; otherwise the tag is returned as-is.
+    """
+    if is_placeholder(raw_tag):
+        return []
+    raw = str(raw_tag).strip()
+    if count is None or count < 2 or re.search(r"(?i)ann(?:ex|e)", raw):
+        return [raw]
+
+    # Joined single letters: "P-3425 AB", "P-3425AB", "23V01-AB"
+    m = re.match(rf"^(.*\d[\s\-]?)([A-Za-z]{{{count}}})$", raw)
+    if m:
+        base, letters = m.group(1), m.group(2)
+        if len(set(letters.upper())) == count:
+            return [base + ch for ch in letters]
+
+    # Separated codes: "P-3425 A-B", "P-3425 A\B", "P-3425 XA&XB"
+    code = r"[A-Za-z][A-Za-z0-9]{0,2}"
+    m = re.match(rf"^(.*\d[\s\-]?)({code}(?:{_SUFFIX_CODE_SEP}{code}){{{count - 1}}})$", raw)
+    if m:
+        base = m.group(1)
+        codes = [c for c in re.split(_SUFFIX_CODE_SEP, m.group(2)) if c]
+        if len(codes) == count and len({c.upper() for c in codes}) == count:
+            return [base + c for c in codes]
+
+    return [raw]
 
 
 # Tag pattern used to detect tag-like values in cells

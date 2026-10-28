@@ -27,6 +27,7 @@ from spir_dynamic.utils.cell_utils import (
     clean_num,
     is_placeholder,
     split_tags,
+    expand_tag_by_count,
     looks_like_tag,
 )
 from spir_dynamic.analysis.header_detector import is_footer_row
@@ -95,9 +96,9 @@ def _split_separated_value(val: str, expected_count: int) -> list[str]:
     Returns list of parts. If not separable, returns [val] * expected_count.
     """
     s = val.strip()
-    # Try slash separator
-    if "/" in s:
-        parts = [p.strip() for p in s.split("/") if p.strip()]
+    # Try slash / backslash separator
+    if "/" in s or "\\" in s:
+        parts = [p.strip() for p in re.split(r"[/\\]", s) if p.strip()]
         if len(parts) == expected_count:
             return parts
     # Try comma separator
@@ -174,6 +175,24 @@ class ColumnarStrategy:
 
         # Step 2: Read per-tag metadata (model, serial, qty from rows 2-7)
         tag_metadata, discovered_field_rows, eqpt_qty_by_col = self._read_tag_metadata(ws, profile, tag_info, field_rows=metadata_field_rows)
+
+        # Step 2b: "No. OF UNITS" confirms packed suffixes — a single tag like
+        # "P-3425 AB" / "P-3425 A-B" / "P-3425 A\B" with 2 units is 2 tags.
+        # Re-read metadata so serials ("665426 / 665427") split 1:1 per tag.
+        expanded = False
+        for col, tags in tag_info.items():
+            units = eqpt_qty_by_col.get(col)
+            if len(tags) == 1 and isinstance(units, int) and units > 1:
+                new_tags = expand_tag_by_count(tags[0], units)
+                if len(new_tags) == units:
+                    log.info(
+                        "ColumnarStrategy: '%s' col=%d tag '%s' expanded by unit count %d -> %s",
+                        profile.name, col, tags[0], units, new_tags,
+                    )
+                    tag_info[col] = new_tags
+                    expanded = True
+        if expanded:
+            tag_metadata, discovered_field_rows, eqpt_qty_by_col = self._read_tag_metadata(ws, profile, tag_info, field_rows=metadata_field_rows)
 
         # Step 3: Determine if we need to read items from this sheet
         is_item_source = items_dict is None
@@ -431,7 +450,9 @@ class ColumnarStrategy:
             # Convert only when we can clearly see 2+ tag-like tokens.
             if not re.search(r"[,/;|]", raw_text):
                 tag_tokens = re.findall(r"[A-Z0-9]{1,}(?:[-/][A-Z0-9]+)+", raw_text, re.IGNORECASE)
-                if len(tag_tokens) > 1:
+                # Every token must carry a digit — "P-3425 A-B" is one tag with
+                # packed suffix codes, not the two tags "P-3425" and "A-B".
+                if len(tag_tokens) > 1 and all(re.search(r"\d", t) for t in tag_tokens):
                     compact = re.sub(r"\s+", " ", raw_text)
                     if compact == " ".join(tag_tokens):
                         raw_text = ", ".join(tag_tokens)
