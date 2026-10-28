@@ -566,6 +566,55 @@ def _detect_spir_type_vml(ws) -> str | None:
         return None
 
 
+def _spir_type_from_checkboxes(boxes) -> tuple[bool, str | None]:
+    """
+    Decide the SPIR type from (caption, checked) checkbox controls.
+
+    Returns (has_spir_controls, spir_type). has_spir_controls is False when no
+    checkbox caption names a SPIR type (the caller falls back to other phases).
+    Otherwise spir_type is the single checked type, or None when nothing is
+    checked, different types are checked, a caption names more than one type,
+    a SPIR checkbox has an unreadable state, or a checkbox has no caption.
+    """
+    import re
+
+    typed: list[tuple[str, bool]] = []
+    uncaptioned = False
+    for box in boxes:
+        caption = re.sub(r"\s+", " ", box.caption or "").strip().lower()
+        if not caption:
+            uncaptioned = True
+            continue
+        matches = {normalized for pattern, normalized in _SPIR_TYPE_MAP.items() if pattern in caption}
+        if not matches:
+            continue  # unrelated checkbox
+        if len(matches) > 1:
+            log.debug("Ambiguous SPIR-type checkbox caption %r", box.caption)
+            return True, None
+        if box.checked not in (0, 1):
+            log.debug("SPIR-type checkbox %r has unreadable state %r", box.caption, box.checked)
+            return True, None
+        typed.append((matches.pop(), box.checked == 1))
+
+    if not typed:
+        return False, None
+    if uncaptioned:
+        return True, None  # an unlabelled box could be one of the types
+    selected = {spir_type for spir_type, checked in typed if checked}
+    return True, (selected.pop() if len(selected) == 1 else None)
+
+
+def _detect_spir_type_xls_controls(ws) -> tuple[bool, str | None]:
+    """SPIR type from the legacy .xls checkboxes the loader attached to the workbook."""
+    controls = getattr(ws.parent, "_spir_form_checkboxes", None)
+    if not controls:
+        return False, None
+    found, result = _spir_type_from_checkboxes(controls.get(ws.title, ()))
+    if found:
+        log.debug("XLS checkbox SPIR type for '%s': %s", ws.title, result)
+    return found, result
+
+
 def _detect_spir_type(ws, scan_rows: int, max_col: int) -> str | None:
     """
     Detect which of the 4 SPIR types is ticked/selected.
@@ -583,6 +632,14 @@ def _detect_spir_type(ws, scan_rows: int, max_col: int) -> str | None:
 
     Returns None if no tick is found (e.g., files without the checkbox grid).
     """
+    # Phase 0a: Legacy .xls Forms checkboxes (BIFF8 drawing objects), attached
+    # to the workbook by the .xls loader. When the sheet carries SPIR-type
+    # checkboxes they are authoritative — their result, even None, is final, so
+    # the cell-based phases below can never override them via a linked cell.
+    has_xls_controls, xls_result = _detect_spir_type_xls_controls(ws)
+    if has_xls_controls:
+        return xls_result
+
     # Phase 0: Form Control checkboxes in VML (XLSM files where the type label
     # is a checkbox caption, not a cell value — openpyxl cannot read those labels
     # directly, so we parse the VML drawing embedded in the ZIP archive).

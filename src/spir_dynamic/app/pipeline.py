@@ -14,11 +14,11 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional, Union
 
-import openpyxl
 import structlog
 
 from spir_dynamic.extraction.file_validator import validate_file
 from spir_dynamic.extraction.unified_extractor import extract_workbook
+from spir_dynamic.extraction.workbook_loader import load_workbook_any
 from spir_dynamic.extraction.output_schema import (
     CI,
     OUTPUT_COLS,
@@ -103,22 +103,11 @@ def run_pipeline(
         # Step 1: Validate
         validate_file(original_filename, file_input, cfg.max_file_size_mb)
 
-        # Step 2: Load workbook (not read_only — merged_cells.ranges used in column_mapper)
-        # keep_links=False skips external link parsing, saving ~0.1s on link-heavy files.
+        # Step 2: Load workbook — .xlsx/.xlsm via openpyxl exactly as before
+        # (from disk when given a Path, no raw-bytes copy in RAM); .xls via the
+        # xlrd adapter into an equivalent openpyxl Workbook.
         _wb_start = time.perf_counter()
-        if is_path:
-            # Open directly from disk — no raw-bytes copy in RAM.
-            wb = openpyxl.load_workbook(str(file_input), data_only=True, keep_links=False)
-            wb._spir_raw_bytes = None
-            # VML form-control detection re-opens the ZIP from the temp-file path.
-            wb._spir_raw_path = str(file_input)
-        else:
-            # Bytes path — original behavior (Celery workers use this).
-            wb = openpyxl.load_workbook(
-                io.BytesIO(file_input), data_only=True, keep_links=False
-            )
-            wb._spir_raw_bytes = file_input
-            wb._spir_raw_path = None
+        wb = load_workbook_any(file_input, original_filename)
 
         _wb_dur = time.perf_counter() - _wb_start
         WORKBOOK_OPEN_DURATION.observe(_wb_dur)

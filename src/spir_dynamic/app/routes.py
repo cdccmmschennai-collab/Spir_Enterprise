@@ -27,6 +27,7 @@ from spir_dynamic.app.auth import get_current_user, TokenData, SUPER_ADMIN
 from spir_dynamic.app.batch_router import (
     _dispatch_celery,
     _persist_job_to_db,
+    extension_or_422,
     planning_plant_or_422,
     route_queue,
 )
@@ -169,6 +170,7 @@ async def extract(
     plant = planning_plant_or_422(planning_plant, planning_plant_description)
     cfg = get_settings()
     filename = file.filename or "upload.xlsx"
+    extension_or_422(filename)  # before streaming: an unsupported type never uploads
     tmp_path: Path | None = None
     queue_wait: float = 0.0  # populated after semaphore is acquired
     size_mb: float = 0.0     # populated after upload completes
@@ -296,7 +298,7 @@ async def extract(
                         "This can happen with files containing many images or embedded objects."
                     ),
                 )
-            except (zipfile.BadZipFile, InvalidFileException) as exc:
+            except zipfile.BadZipFile as exc:
                 log.warning(
                     "extraction.event",
                     status="corrupt_file",
@@ -307,6 +309,19 @@ async def extract(
                 raise HTTPException(
                     status_code=422,
                     detail=f"File appears corrupted or unreadable: {exc}",
+                )
+            except InvalidFileException as exc:
+                # openpyxl rejected the format itself — not a damaged file.
+                log.warning(
+                    "extraction.event",
+                    status="unsupported_format",
+                    size_mb=round(size_mb, 1),
+                    queue_wait_s=round(queue_wait, 1),
+                    exc_message=str(exc),
+                )
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"This workbook format cannot be read: {exc}",
                 )
             except Exception as exc:
                 log.exception(

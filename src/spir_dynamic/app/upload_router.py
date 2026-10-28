@@ -43,6 +43,7 @@ from spir_dynamic.app.batch_router import (
     _assert_job_access,
     _dispatch_celery,
     _persist_job_to_db,
+    extension_or_422,
     max_upload_bytes,
     planning_plant_or_422,
     route_queue,
@@ -137,6 +138,9 @@ async def initiate_upload(
         raise HTTPException(status_code=413, detail=f"File exceeds {cfg.max_file_size_mb} MB limit")
     if (body.job_id is None) != (body.file_idx is None):
         raise HTTPException(status_code=400, detail="job_id and file_idx must be given together")
+    if body.job_id is None:
+        # A batch slot's registered name was already checked by /api/batch/register.
+        extension_or_422(body.filename or "upload.xlsx")
 
     # A batch slot is validated (exists, owned by the caller, still pending)
     # before anything else is decided.

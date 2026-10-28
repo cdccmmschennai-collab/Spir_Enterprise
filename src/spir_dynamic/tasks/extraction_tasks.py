@@ -23,8 +23,10 @@ from pathlib import Path
 import structlog
 from celery.exceptions import MaxRetriesExceededError, SoftTimeLimitExceeded
 from celery.signals import worker_process_init
+from openpyxl.utils.exceptions import InvalidFileException
 
 from spir_dynamic.celery_app import celery_app
+from spir_dynamic.extraction.file_validator import ValidationError
 from spir_dynamic.tasks.base import BaseTask
 from spir_dynamic.monitoring.metrics import (
     SANITIZER_RUNS,
@@ -359,6 +361,25 @@ def process_file_task(
             "file_idx": file_idx,
             "error": "Extraction timed out",
         }
+
+    except (ValidationError, InvalidFileException) as exc:
+        # The file itself is unacceptable (unsupported or mismatched format,
+        # password-protected, unreadable .xls): every retry would fail the same
+        # way, so fail the slot now and drop the source object.
+        discard_source_object(source_key, log_context=f"invalid-file {_log_ctx}")
+        log.warning(
+            "extraction.invalid_file",
+            status="error",
+            exc_type=type(exc).__name__,
+            exc_message=str(exc),
+            duration_s=round(time.perf_counter() - _t0, 2),
+        )
+        store.update_result(job_id, file_idx, FileResult(
+            filename=filename,
+            status="error",
+            error=str(exc),
+        ))
+        return {"status": "error", "job_id": job_id, "file_idx": file_idx, "error": str(exc)}
 
     except Exception as exc:
         # Exponential backoff: 10s → 30s → 90s

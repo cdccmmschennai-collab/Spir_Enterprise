@@ -33,6 +33,7 @@ from pydantic import BaseModel
 from spir_dynamic.app.auth import get_current_user, TokenData, SUPER_ADMIN
 from spir_dynamic.app.config import get_settings
 from spir_dynamic.app.pipeline import run_pipeline
+from spir_dynamic.extraction.file_validator import ValidationError, validate_extension
 from spir_dynamic.services.job_store import FileResult, get_job_store
 from spir_dynamic.services.object_storage import StorageError
 from spir_dynamic.services.planning_plant import (
@@ -84,8 +85,11 @@ async def batch_extract(
             detail=f"Max {cfg.batch_max_files} files per batch request",
         )
 
-    job_id = str(uuid.uuid4())
     filenames = [f.filename or f"file_{i}.xlsx" for i, f in enumerate(files)]
+    for name in filenames:
+        extension_or_422(name)
+
+    job_id = str(uuid.uuid4())
     user_id = td.user_id or ""
     get_job_store().create(job_id, filenames, user_id=user_id)
 
@@ -160,6 +164,8 @@ async def batch_register(
             status_code=400,
             detail=f"Max {cfg.batch_max_files} files per batch request",
         )
+    for name in body.filenames:
+        extension_or_422(name)
 
     job_id = str(uuid.uuid4())
     user_id = td.user_id or ""
@@ -515,6 +521,14 @@ def planning_plant_or_422(code: str | None, description: str | None) -> Planning
         return resolve_planning_plant(code, description)
     except InvalidPlanningPlant as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+def extension_or_422(filename: str) -> None:
+    """HTTP 422 when the file type is not one the pipeline can read (checked before any upload)."""
+    try:
+        validate_extension(filename)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=f"{filename}: {exc}")
 
 
 async def _stream_batch_upload(
