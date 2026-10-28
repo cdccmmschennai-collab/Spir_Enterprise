@@ -27,6 +27,7 @@ from spir_dynamic.extraction.strategies.tabular import TabularStrategy
 from spir_dynamic.extraction.strategies.columnar import ColumnarStrategy
 from spir_dynamic.extraction.strategies.transposed import TransposedStrategy
 from spir_dynamic.extraction.output_schema import row_from_dict
+from spir_dynamic.extraction.column_reference import resolve_column_references
 from spir_dynamic.utils.cell_utils import clean_str, clean_num, split_tags, is_placeholder
 from spir_dynamic.utils.logging import timed
 
@@ -139,6 +140,10 @@ def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
     for row in all_rows:
         if "_orig_sheet" in row:
             row["sheet"] = row.pop("_orig_sheet")
+
+    # Step 4c: "Refer column 12A" in EQPT MAKE/MODEL/SR NO → the referenced
+    # column's value (needs the physical sheet label restored above)
+    resolve_column_references(wb, all_rows, profiles)
 
     # PHASE 5 FIX: Clean up internal tracking fields
     for row in all_rows:
