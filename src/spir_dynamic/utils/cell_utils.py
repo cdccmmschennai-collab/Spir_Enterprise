@@ -133,12 +133,18 @@ def split_tags(raw_tag: Any) -> list[str]:
                 return result
 
         # Case 2: Numeric suffix pattern — "30-GV-146, 171, 169"
+        # Zero-padded first number pads shorter numeric suffixes to its width:
+        #   "100-45-HGS-00001/2/3" -> [..."-00001", "-00002", "-00003"]
         prefix_match = re.match(r"^(.*?)(\d+)$", first)
         if prefix_match:
             prefix = prefix_match.group(1)
+            first_digits = prefix_match.group(2)
+            zero_padded = len(first_digits) > 1 and first_digits.startswith("0")
             result = [first]
             for p in parts[1:]:
-                if re.match(r"^\d+$", p) or (
+                if zero_padded and re.match(r"^\d+$", p) and len(p) < len(first_digits):
+                    result.append(prefix + p.zfill(len(first_digits)))
+                elif re.match(r"^\d+$", p) or (
                     not re.search(r"[A-Za-z]", p) and "-" not in p
                 ):
                     result.append(prefix + p)
