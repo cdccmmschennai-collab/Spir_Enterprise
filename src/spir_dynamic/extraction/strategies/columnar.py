@@ -121,6 +121,30 @@ def _split_separated_value(val: str, expected_count: int) -> list[str]:
     return [s] * expected_count
 
 
+def _to_int_or_none(v: Any) -> int | None:
+    """Positive whole number from a cell value, else None."""
+    try:
+        f = float(v)
+    except (ValueError, TypeError):
+        return None
+    return int(f) if f > 0 and f == int(f) else None
+
+
+def _units_for_col(
+    col: int, tag_info: dict[int, list[str]], eqpt_qty_by_col: dict[int, Any] | None
+) -> int:
+    """
+    Number of equipment units a tag column stands for: its expanded tag count,
+    or — for a single-entry column such as an annexure reference — its
+    "No. OF UNITS" value.
+    """
+    n = len(tag_info.get(col, []))
+    if n > 1:
+        return n
+    units = _to_int_or_none((eqpt_qty_by_col or {}).get(col))
+    return units or max(n, 1)
+
+
 class ColumnarStrategy:
     """Extract from sheets with tags as column headers (SPIR matrix)."""
 
@@ -212,7 +236,10 @@ class ColumnarStrategy:
                     items_dict[k] = v
 
         # Step 4: Read tag-to-item mapping (which tags use which items)
-        tag_items_map = self._read_tag_item_mapping(ws, profile, tag_info, item_col=item_col, items_dict=items_dict)
+        tag_items_map = self._read_tag_item_mapping(
+            ws, profile, tag_info, item_col=item_col, items_dict=items_dict,
+            eqpt_qty_by_col=eqpt_qty_by_col,
+        )
 
         # Step 5: Build output rows — header + details per tag
         global_meta = profile.metadata
@@ -881,6 +908,7 @@ class ColumnarStrategy:
         tag_info: dict[int, list[str]],
         item_col: int | None = None,
         items_dict: dict[int, dict[str, Any]] | None = None,
+        eqpt_qty_by_col: dict[int, Any] | None = None,
     ) -> dict[int, dict[int, int]]:
         """
         Read which items each tag column applies to, with per-tag quantities.
@@ -1003,26 +1031,49 @@ class ColumnarStrategy:
             if items_dict is not None and item_num not in items_dict:
                 continue
 
-            # Check each tag column — read the per-tag quantity
+            # Read the raw quantity in each tag column for this row
+            raw_qty: dict[int, int] = {}
             for col in tag_info:
                 v = ws.cell(r, col).value
                 if v is not None and not is_placeholder(v):
                     try:
-                        per_tag_qty = int(float(v))
+                        raw_qty[col] = int(float(v))
                     except (ValueError, TypeError):
-                        per_tag_qty = 1
+                        raw_qty[col] = 1
 
-                    # When column has multiple tags and the cell value equals
-                    # the tag count, the value is the TOTAL across all tags
-                    # (not per-tag). Distribute evenly: qty_per_tag = total / count.
-                    tag_count = len(tag_info.get(col, []))
-                    if tag_count > 1 and per_tag_qty > 0 and per_tag_qty % tag_count == 0:
-                        per_tag_qty = per_tag_qty // tag_count
+            # Cross-check against TOTAL NO. OF IDENTICAL PARTS FITTED: when
+            # Σ (cell value × units in that column) equals the total, the cell
+            # values are already per-tag counts and must NOT be divided
+            # (e.g. "PM-8956A / B" with 2 per tag and total 4).  Only consulted
+            # when a division would otherwise happen; else behaviour unchanged.
+            keep_per_tag = False
+            if any(
+                len(tag_info.get(c, [])) > 1 and q > 0 and q % len(tag_info[c]) == 0
+                for c, q in raw_qty.items()
+            ):
+                total_fitted = _to_int_or_none(
+                    (items_dict or {}).get(item_num, {}).get("qty_identical")
+                )
+                if total_fitted:
+                    undivided_sum = sum(
+                        q * _units_for_col(c, tag_info, eqpt_qty_by_col)
+                        for c, q in raw_qty.items() if q > 0
+                    )
+                    keep_per_tag = undivided_sum == total_fitted
 
-                    if per_tag_qty <= 0:
-                        continue
+            for col, per_tag_qty in raw_qty.items():
+                # When column has multiple tags and the cell value equals
+                # the tag count, the value is the TOTAL across all tags
+                # (not per-tag). Distribute evenly: qty_per_tag = total / count.
+                tag_count = len(tag_info.get(col, []))
+                if (not keep_per_tag and tag_count > 1 and per_tag_qty > 0
+                        and per_tag_qty % tag_count == 0):
+                    per_tag_qty = per_tag_qty // tag_count
 
-                    mapping[col][item_num] = per_tag_qty
+                if per_tag_qty <= 0:
+                    continue
+
+                mapping[col][item_num] = per_tag_qty
 
         return mapping
 
