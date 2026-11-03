@@ -28,7 +28,9 @@ from spir_dynamic.extraction.strategies.columnar import ColumnarStrategy
 from spir_dynamic.extraction.strategies.transposed import TransposedStrategy
 from spir_dynamic.extraction.output_schema import row_from_dict
 from spir_dynamic.extraction.column_reference import resolve_column_references
-from spir_dynamic.utils.cell_utils import clean_str, clean_num, split_tags, is_placeholder
+from spir_dynamic.utils.cell_utils import (
+    clean_str, clean_num, split_tags, is_placeholder, normalize_sheet_name,
+)
 from spir_dynamic.utils.logging import timed
 
 log = logging.getLogger(__name__)
@@ -1055,7 +1057,7 @@ def _enrich_equipment_data(
     resolved_annexure_sheets: set[str] = set()
     for profile in profiles:
         if profile.role == SheetRole.ANNEXURE:
-            key = _normalize_annexure_ref(profile.name)
+            key = _normalize_annexure_ref(normalize_sheet_name(profile.name))
             if not key:
                 key = profile.name.strip().upper()
             if key in resolved_annexure_keys:
@@ -1850,7 +1852,10 @@ def _build_annexure_registry(
     registry: dict[str, list[dict[str, Any]]] = {}
 
     for profile in profiles:
-        annex_key = _normalize_annexure_ref(profile.name)
+        # Sheet names may carry keyboard-repeat typos ("ANNNEXURE-8"); match on
+        # the repaired name, but keep profile.name for worksheet access.
+        _match_name = normalize_sheet_name(profile.name)
+        annex_key = _normalize_annexure_ref(_match_name)
 
         # Cross-check with an explicit-digit fallback for abbreviated names like
         # "Annx-11" where _normalize_annexure_ref may misread the trailing 'x'
@@ -1858,7 +1863,7 @@ def _build_annexure_registry(
         # so it's unambiguous. Also covers "Anx-1(New-Skd)" that the main
         # regex doesn't match at all.
         _explicit_m = re.search(
-            r"(?i)\b(?:annex(?:ure)?|ann?x)[\s\-_]*(\d+)", profile.name
+            r"(?i)\b(?:annex(?:ure)?|ann?x)[\s\-_]*(\d+)", _match_name
         )
         if _explicit_m:
             _explicit_key = f"ANNEXURE{_explicit_m.group(1)}"

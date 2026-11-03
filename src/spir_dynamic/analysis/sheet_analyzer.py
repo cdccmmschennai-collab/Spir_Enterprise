@@ -18,6 +18,7 @@ from spir_dynamic.analysis.header_detector import (
 )
 from spir_dynamic.analysis.column_mapper import map_headers, get_unmapped_columns
 from spir_dynamic.analysis.tag_locator import locate_tags
+from spir_dynamic.utils.cell_utils import normalize_sheet_name
 from spir_dynamic.utils.logging import timed
 
 log = logging.getLogger(__name__)
@@ -85,7 +86,9 @@ def analyze_sheet(ws, sheet_name: str) -> SheetProfile:
     profile = SheetProfile(name=sheet_name)
 
     # Step 1: Quick utility check (name-based hint)
-    name_lower = sheet_name.lower().strip()
+    # normalize_sheet_name repairs repeat-key typos ("ANNNEXURE-8") so the
+    # name-based annexure hints below still recognise the sheet.
+    name_lower = normalize_sheet_name(sheet_name).lower().strip()
     if any(kw in name_lower for kw in _get_utility_keywords()):
         profile.role = SheetRole.UTILITY
         profile.confidence = 0.8

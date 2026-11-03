@@ -36,6 +36,7 @@ import logging
 import re
 from typing import Any
 
+from spir_dynamic.utils.cell_utils import normalize_sheet_name
 from spir_dynamic.utils.logging import timed
 
 log = logging.getLogger(__name__)
@@ -258,7 +259,10 @@ def _find_annexure_ws(wb, key: str):
     Returns the worksheet or None.
     """
     for name in wb.sheetnames:
-        if _is_annexure_ref(name) and _normalize_annexure_key(name) == key:
+        # Match on the typo-repaired name ("ANNNEXURE-8" -> "ANNEXURE-8"),
+        # but index the workbook with the real sheet name.
+        match_name = normalize_sheet_name(name)
+        if _is_annexure_ref(match_name) and _normalize_annexure_key(match_name) == key:
             return wb[name]
     # Second pass: looser match — strip all non-alphanumeric from sheet name
     key_clean = re.sub(r"[^A-Z0-9]", "", key.upper())

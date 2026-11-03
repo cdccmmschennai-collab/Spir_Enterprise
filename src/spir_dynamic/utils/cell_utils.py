@@ -55,6 +55,42 @@ def clean_str(v: Any) -> str | None:
     return str(v).strip()
 
 
+# Loose keyword for the word "annexure" in a sheet NAME, tolerant of the
+# misspellings vendors actually type: ANNNEX, ANNNEXURE, ANEXURE, ANNEXUR,
+# ANNEXRE, ANNXURE, AANNEXURE, ANNEXXURE ...  Must stand alone as a word
+# (not followed by another letter), so ordinary words are not caught.
+_LOOSE_ANNEX_WORD_RE = re.compile(
+    r"(?<![A-Za-z])a+n+e*x+(?:u*r+e*s?|u+e*s?)?(?![A-Za-z])",
+    re.IGNORECASE,
+)
+
+# Spellings the annexure matchers already understand; left exactly as typed
+# so files that work today produce identical keys.
+_KNOWN_ANNEX_SPELLINGS = frozenset({"annexure", "annexures", "annex", "anx", "annx"})
+
+
+def normalize_sheet_name(name: Any) -> str:
+    """
+    Canonicalise a misspelt "annexure" word in a sheet NAME before it is
+    matched as an annexure sheet, e.g.
+
+        "ANNNEXURE-8" -> "ANNEXURE-8"
+        "ANNNEX 3"    -> "ANNEXURE 3"
+        "Anexure-2"   -> "ANNEXURE-2"
+
+    Already-supported spellings (ANNEXURE, ANNEX, ANX, ANNX ...) and every
+    other part of the name are returned unchanged.  Only use this for
+    sheet-name matching; it is not meant for cell values or tags.
+    """
+    text = str(name or "")
+
+    def _fix(m: re.Match) -> str:
+        word = m.group(0)
+        return word if word.lower() in _KNOWN_ANNEX_SPELLINGS else "ANNEXURE"
+
+    return _LOOSE_ANNEX_WORD_RE.sub(_fix, text)
+
+
 def clean_num(v: Any) -> float | None:
     """Return float or None if not numeric / placeholder."""
     if is_placeholder(v):
