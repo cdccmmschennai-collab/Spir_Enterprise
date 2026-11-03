@@ -24,7 +24,7 @@ from typing import Any
 from spir_dynamic.models.sheet_profile import SheetProfile, SheetRole, TagLayout
 from spir_dynamic.analysis.workbook_analyzer import analyze_workbook
 from spir_dynamic.extraction.strategies.tabular import TabularStrategy
-from spir_dynamic.extraction.strategies.columnar import ColumnarStrategy
+from spir_dynamic.extraction.strategies.columnar import ColumnarStrategy, _to_int_or_none
 from spir_dynamic.extraction.strategies.transposed import TransposedStrategy
 from spir_dynamic.extraction.output_schema import row_from_dict
 from spir_dynamic.extraction.column_reference import resolve_column_references
@@ -385,6 +385,9 @@ def _extract_columnar_group(
                 # Show the actual continuation sheet name in the output.
                 r["sheet"] = _cont_display
                 r["_group_main"] = _main_profile.name
+                # Internal group-total markers are not used on this path.
+                r.pop("_qty_weight", None)
+                r.pop("_qty_undivided", None)
             _cont_all_sections.extend(_cont_rows)
         # Regroup: emit all rows for tag-1, then all rows for tag-2, etc.
         all_rows.extend(_regroup_global_cont_by_tag(_cont_all_sections))
@@ -652,7 +655,56 @@ def _extract_single_group(
                 profile.name, exc, exc_info=True,
             )
 
+    _restore_qty_by_group_total(all_rows, items_dict)
     return all_rows
+
+
+def _restore_qty_by_group_total(
+    rows: list[dict[str, Any]], items_dict: dict[int, dict[str, Any]]
+) -> None:
+    """
+    Cross-sheet check of per-tag spare quantities against TOTAL NO. OF
+    IDENTICAL PARTS FITTED, keyed by ITEM NUMBER across the whole group
+    (main + continuation sheets).
+
+    Each sheet may have split a cell value across the tags of a column
+    (marked with _qty_undivided).  If, summed over every tag of the item in
+    all sheets, the UNDIVIDED values equal the item's total while the split
+    values do not, the cell values were already per-tag — restore them.
+    Items with no split, or whose totals don't prove it, are left unchanged.
+    Always strips the internal _qty_* keys.
+    """
+    by_item: dict[int, list[dict[str, Any]]] = {}
+    for r in rows:
+        if r.get("item_num") is not None and "_qty_weight" in r:
+            by_item.setdefault(r["item_num"], []).append(r)
+
+    for item_num, item_rows in by_item.items():
+        if not any("_qty_undivided" in r for r in item_rows):
+            continue
+        total = _to_int_or_none((items_dict.get(item_num) or {}).get("qty_identical"))
+        if not total:
+            continue
+        try:
+            current = sum(int(r.get("qty_identical") or 0) * r["_qty_weight"] for r in item_rows)
+            undivided = sum(
+                int(r.get("_qty_undivided", r.get("qty_identical")) or 0) * r["_qty_weight"]
+                for r in item_rows
+            )
+        except (ValueError, TypeError):
+            continue
+        if undivided == total and current != total:
+            for r in item_rows:
+                if "_qty_undivided" in r:
+                    r["qty_identical"] = r["_qty_undivided"]
+            log.info(
+                "Item %s: per-tag qty kept undivided — group total %d matches "
+                "TOTAL NO. OF IDENTICAL PARTS FITTED", item_num, total,
+            )
+
+    for r in rows:
+        r.pop("_qty_weight", None)
+        r.pop("_qty_undivided", None)
 
 
 def _find_item_source(profiles: list[SheetProfile]) -> SheetProfile | None:

@@ -236,9 +236,14 @@ class ColumnarStrategy:
                     items_dict[k] = v
 
         # Step 4: Read tag-to-item mapping (which tags use which items)
+        # divided_qty records {(col, item): undivided cell value} for every
+        # quantity this sheet split across tags, so the group-level check in
+        # unified_extractor can undo the split when the main + continuation
+        # total proves the cell value was already per-tag.
+        divided_qty: dict[tuple[int, int], int] = {}
         tag_items_map = self._read_tag_item_mapping(
             ws, profile, tag_info, item_col=item_col, items_dict=items_dict,
-            eqpt_qty_by_col=eqpt_qty_by_col,
+            eqpt_qty_by_col=eqpt_qty_by_col, divided_out=divided_qty,
         )
 
         # Step 5: Build output rows — header + details per tag
@@ -353,7 +358,15 @@ class ColumnarStrategy:
                         "classification": item.get("classification"),
                         "spir_type": global_meta.get("spir_type"),
                         "_annex_col": col,
+                        # Internal: units this row stands for (annexure-ref
+                        # columns stand for many) — used by the group total check.
+                        "_qty_weight": (
+                            1 if len(tag_list) > 1
+                            else _units_for_col(col, tag_info, eqpt_qty_by_col)
+                        ),
                     }
+                    if (col, item_num) in divided_qty:
+                        detail_row["_qty_undivided"] = divided_qty[(col, item_num)]
 
                     # Build NEW DESCRIPTION = desc + part_no + supplier + material spec
                     parts = [
@@ -909,6 +922,7 @@ class ColumnarStrategy:
         item_col: int | None = None,
         items_dict: dict[int, dict[str, Any]] | None = None,
         eqpt_qty_by_col: dict[int, Any] | None = None,
+        divided_out: dict[tuple[int, int], int] | None = None,
     ) -> dict[int, dict[int, int]]:
         """
         Read which items each tag column applies to, with per-tag quantities.
@@ -1068,6 +1082,8 @@ class ColumnarStrategy:
                 tag_count = len(tag_info.get(col, []))
                 if (not keep_per_tag and tag_count > 1 and per_tag_qty > 0
                         and per_tag_qty % tag_count == 0):
+                    if divided_out is not None:
+                        divided_out[(col, item_num)] = per_tag_qty
                     per_tag_qty = per_tag_qty // tag_count
 
                 if per_tag_qty <= 0:
