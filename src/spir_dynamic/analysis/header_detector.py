@@ -399,6 +399,8 @@ def find_metadata(ws, header_row: int | None) -> dict[str, Any]:
                                     _vl.startswith("annexure")
                                     or re.search(r"\bannex", _vl)
                                     or _vl.startswith("refer")
+                                    # Checkbox linked cell, not an equipment name
+                                    or _vl in ("true", "false")
                                 ):
                                     break  # skip this cell's value; keep scanning
                             metadata[field] = val

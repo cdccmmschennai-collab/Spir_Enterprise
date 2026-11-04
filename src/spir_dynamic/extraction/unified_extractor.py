@@ -45,6 +45,23 @@ _ANNEXURE_REF_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Lettered annexure identifier ("Annexure-A", "Refer Annexure B").  The letter
+# must stand alone (not followed by a letter/digit, so "Annexure Sheet" and
+# "Annexure B1" are not caught).  After a hyphen/underscore any case is
+# accepted; after a plain space only an uppercase letter, so prose such as
+# "refer annexure a list" is not misread as a reference.
+_ANNEXURE_LETTER_RE = re.compile(
+    r"(?i:ann(?:ex|e)?(?:ures?)?)"
+    r"(?:\s*[\-_]\s*([A-Za-z])|\s+([A-Z]))"
+    r"(?![A-Za-z0-9])"
+)
+_LETTER_ANNEXURE_KEY_RE = re.compile(r"^ANNEXURE[A-Z]$")
+
+# "<qualifier> Sr.No." serial-number header in annexure sheets, e.g.
+# "Valve Sr.No.", "Equipment Sr. No".  The dotted form only — the plain
+# "sr no" keyword is matched by the normal keyword list.
+_QUALIFIED_SR_NO_RE = re.compile(r"\b[a-z]{3,}\s+sr\.\s*no\b")
+
 # Annexure tag-column headers that refer to a superseded tag numbering
 # (e.g. "OLD TAG NOS" next to "NEW TAG NO").
 _SUPERSEDED_TAG_RE = re.compile(r"\b(?:old|previous|prev|former|superseded)\b")
@@ -944,6 +961,18 @@ def _enrich_equipment_data(
 
     # Step 1b: Resolve bare "ANNEXURE_ANY" references (e.g. "Refer Annexure" without a number).
     # If exactly one annexure sheet exists, remap all ANNEXURE_ANY tags to its key.
+    # A lettered reference ("Refer Annexure-A") with no matching lettered sheet
+    # while the workbook has exactly ONE annexure group (e.g. a sheet simply
+    # named "Annexure") is unambiguous — point it at that single group, as
+    # happened before lettered keys were recognised.
+    if len(annexure_registry) == 1:
+        _only_key = next(iter(annexure_registry))
+        for _row in all_rows:
+            _tag = str(_row.get("tag_no") or "").strip()
+            _lk = _normalize_annexure_ref(_tag) if _tag else None
+            if _lk and _lk not in annexure_registry and _LETTER_ANNEXURE_KEY_RE.match(_lk):
+                _row["tag_no"] = _only_key
+
     _real_keys = {k for k in annexure_registry if k != "ANNEXURE_ANY"}
     if len(_real_keys) == 1:
         _single_key = next(iter(_real_keys))
@@ -2019,6 +2048,15 @@ def _read_annexure_equipment(
         elif "all_tag_cols" not in col_map and _scanner_col_map.get("all_tag_cols"):
             col_map = dict(col_map)
             col_map["all_tag_cols"] = _scanner_col_map.get("all_tag_cols")
+        # Profile mapper found no serial column but the scanner did, under an
+        # unambiguous serial header ("Serial No", "Valve Sr.No.").  A bare
+        # "Sr No" / "S.No" is a row index and is never pulled in.
+        _s_serial = _scanner_col_map.get("serial")
+        if "serial" not in col_map and _s_serial and scanner_header_row:
+            _hdr = str(ws.cell(scanner_header_row, _s_serial).value or "").lower()
+            if "serial" in _hdr or _QUALIFIED_SR_NO_RE.search(_hdr):
+                col_map = dict(col_map)
+                col_map["serial"] = _s_serial
         # Always propagate cross_ref_tag_cols from the scanner (the profile
         # mapper doesn't track them).
         if _scanner_col_map.get("cross_ref_tag_cols"):
@@ -2250,6 +2288,10 @@ def _scan_annexure_headers(ws, sheet_name: str = None) -> tuple[dict[str, int], 
                                 all_tag_col_set[c] = (kw, kw_len, r)
                                 tag_col_headers[c] = cell_lower
                         break  # one keyword per cell per field
+            # Qualified dotted serial header ("Valve Sr.No.", "Pump Sr. No"):
+            # a bare "Sr.No." is a row index, so a qualifier word is required.
+            if "serial" not in best_match and _QUALIFIED_SR_NO_RE.search(cell_lower):
+                best_match["serial"] = (c, len("sr no"), r)
 
     # Superseded tag columns: renumbered equipment lists carry both an
     # "OLD TAG NOS" and a "NEW TAG NO" column for the SAME equipment. Both
@@ -2711,6 +2753,13 @@ def _normalize_annexure_ref(value: str) -> str | None:
     cleaned = re.sub(r"[\s\-_]+", "", text.upper())
     if cleaned.startswith("ANNEXURE") and any(c.isdigit() for c in cleaned):
         return cleaned
+    # Single-letter identifier: "Annexure-A", "Refer Annexure B", "ANNEXURE_C"
+    # → "ANNEXUREA" / "ANNEXUREB" / "ANNEXUREC".  Sheet names and references
+    # normalise identically, so several lettered annexures resolve to their
+    # own sheets instead of all collapsing into one ANNEXURE_ANY bucket.
+    m = _ANNEXURE_LETTER_RE.search(text)
+    if m:
+        return f"ANNEXURE{(m.group(1) or m.group(2)).upper()}"
     # Bare "Refer Annexure" / "Annexure" without a number — sentinel for single-sheet resolution
     if re.search(r"(?i)ann(?:ex|e)", text):
         return "ANNEXURE_ANY"

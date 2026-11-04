@@ -232,6 +232,31 @@ def expand_tag_by_count(raw_tag: Any, count: int) -> list[str]:
     return [raw]
 
 
+# A compact equipment identifier with no separator, e.g. "142WCBFV0275" or
+# "18421LP0004": letters AND digits, no spaces.
+_EQUIP_ID_RE = re.compile(r"^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9]{6,30}$")
+_ID_LIST_SEP_RE = re.compile(r"[\n\r,;|]+")
+
+
+def is_packed_equipment_id_list(value: Any) -> bool:
+    """
+    True when a cell packs 2+ compact equipment identifiers separated by
+    newlines / commas / semicolons / pipes, e.g.
+
+        "142WCBFV0275\\n142WCBFV0276\\n142WCBFV0277"   -> True
+        "142WCBFV0275, 142WCBFV0276"                   -> True
+        "142WCBFV0275"                                 -> False (single)
+        "PowerLogic meter\\nNew"                       -> False (not ids)
+
+    Such ids carry no "-" or "/" so the hyphen-based tag heuristics miss
+    them; every part must be an id, so annotation text never qualifies.
+    """
+    if value is None:
+        return False
+    parts = [p.strip() for p in _ID_LIST_SEP_RE.split(str(value)) if p.strip()]
+    return len(parts) >= 2 and all(_EQUIP_ID_RE.match(p) for p in parts)
+
+
 # Tag pattern used to detect tag-like values in cells
 # Default: 1-char minimum prefix to catch V-1234, P-001 style tags
 TAG_PATTERN = re.compile(r"\b[A-Z0-9]{1,}[-/][A-Z0-9]", re.IGNORECASE)

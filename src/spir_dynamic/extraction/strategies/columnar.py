@@ -29,6 +29,7 @@ from spir_dynamic.utils.cell_utils import (
     split_tags,
     expand_tag_by_count,
     looks_like_tag,
+    is_packed_equipment_id_list,
 )
 from spir_dynamic.analysis.header_detector import is_footer_row
 from spir_dynamic.utils.logging import timed
@@ -472,7 +473,11 @@ class ColumnarStrategy:
                     # a real tag (has the prefix-separator-suffix structure).
                     # Parts like "(Existing)" or "New" are annotations — keep only
                     # the tag-like parts and collapse to a single canonical tag.
-                    all_tag_like = all(_TAG_LIKE_PAT.search(p) for p in nl_parts)
+                    # Separator-less ids ("142WCBFV0275\n142WCBFV0276") are
+                    # tags too, as long as EVERY line is such an id.
+                    all_tag_like = all(
+                        _TAG_LIKE_PAT.search(p) for p in nl_parts
+                    ) or is_packed_equipment_id_list("\n".join(nl_parts))
                     if all_tag_like:
                         raw_text = ", ".join(nl_parts)
                     else:
@@ -492,6 +497,14 @@ class ColumnarStrategy:
 
             return raw_text
 
+        def _row_has_tag_label(row: int, tag_col: int) -> bool:
+            """True when a cell left of tag_col labels this row as the tag row."""
+            for label_col in range(1, tag_col):
+                label = str(ws.cell(row, label_col).value or "").lower()
+                if "tag no" in label or "tag number" in label or "equip" in label:
+                    return True
+            return False
+
         def _is_viable_tag_text(raw_text: str) -> bool:
             """Apply the same tag/header guards used for direct header-cell detection."""
             if not raw_text:
@@ -506,7 +519,7 @@ class ColumnarStrategy:
                 len(raw_text) > 50
                 and re.search(r"[A-Z0-9]{2,}[-/][A-Z0-9]", raw_text, re.IGNORECASE)
                 and re.search(r"[,;/|]", raw_text)
-            )
+            ) or is_packed_equipment_id_list(raw_text)
             if len(raw_text) > 50 and not looks_like_packed:
                 return False
             if raw_text == "_":
@@ -586,11 +599,17 @@ class ColumnarStrategy:
                     continue
                 # PHASE 2 FIX: Allow long values if they look like packed tags
                 # (comma/semicolon/newline-separated tag values from continuation sheets)
+                # Only on the row labelled as the tag row: a model row can hold
+                # the same shape of value ("CTRL01, CTRL02") and is not tags.
+                packed_id_list = (
+                    is_packed_equipment_id_list(raw)
+                    and _row_has_tag_label(r, col)
+                )
                 looks_like_packed = (
                     len(raw) > 50
                     and re.search(r"[A-Z0-9]{2,}[-/][A-Z0-9]", raw, re.IGNORECASE)
                     and re.search(r"[,;/|]", raw)
-                )
+                ) or packed_id_list
                 if len(raw) > 50 and not looks_like_packed:
                     continue
                 if raw == "_":
@@ -637,7 +656,8 @@ class ColumnarStrategy:
                 # PHASE 1 FIX: Validate that the value looks like an actual tag
                 # Tags typically have structure: prefix-number, or annexure refs
                 # Reject plain text that doesn't match tag patterns
-                if not _TAG_LIKE_PAT.search(raw) and not _ANNEXURE_PAT.match(raw):
+                if (not packed_id_list and not _TAG_LIKE_PAT.search(raw)
+                        and not _ANNEXURE_PAT.match(raw)):
                     if len(raw) > 20 or " " in raw:
                         # Allow "CODE NUMBER" style tags (e.g. "HCP 9425") —
                         # short alphanumeric prefix + space + 3-or-more digits.

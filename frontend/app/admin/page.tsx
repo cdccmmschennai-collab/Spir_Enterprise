@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, memo } from "react";
+import { useEffect, useState, useCallback, useMemo, memo } from "react";
 import { useRouter } from "next/navigation";
 import {
   Users,
@@ -22,6 +22,7 @@ import {
   EyeOff,
   KeyRound,
   Clock,
+  Search,
 } from "lucide-react";
 import { SidebarLayout } from "@/components/sidebar";
 import { authHeaders, getRole } from "@/lib/auth";
@@ -636,6 +637,53 @@ export default function AdminPage() {
   const [resolveTarget, setResolveTarget] = useState<ResetRequest | null>(null);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [permanentDeleteTarget, setPermanentDeleteTarget] = useState<User | null>(null);
+  const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
+  const [branchFilter, setBranchFilter] = useState<string>("all");
+
+  const isSuperAdminView = currentRole === "super_admin" || currentRole === "admin";
+  const hasActiveFilters =
+    search.trim() !== "" || roleFilter !== "all" || statusFilter !== "all" || branchFilter !== "all";
+
+  const branchNameById = useMemo(
+    () => new Map(branches.map((b) => [b.id, b.name])),
+    [branches]
+  );
+
+  // Users list is already branch-scoped by the backend (branch admins only
+  // receive their own branch), so filtering client-side never widens access.
+  const filteredUsers = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return users.filter((u) => {
+      const normRole = u.role === "admin" ? "super_admin" : u.role;
+      if (roleFilter !== "all" && normRole !== roleFilter) return false;
+      if (statusFilter === "active" && !u.is_active) return false;
+      if (statusFilter === "inactive" && u.is_active) return false;
+      if (branchFilter !== "all") {
+        if (branchFilter === "none" ? u.branch_id !== null : u.branch_id !== branchFilter) return false;
+      }
+      if (!q) return true;
+      const roleLabel =
+        normRole === "super_admin" ? "super admin" : normRole === "branch_admin" ? "branch admin" : normRole;
+      const haystack = [
+        u.username,
+        u.email ?? "",
+        roleLabel,
+        u.branch_id ? branchNameById.get(u.branch_id) ?? "" : "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [users, search, roleFilter, statusFilter, branchFilter, branchNameById]);
+
+  function clearFilters() {
+    setSearch("");
+    setRoleFilter("all");
+    setStatusFilter("all");
+    setBranchFilter("all");
+  }
 
   const ADMIN_ROLES = ["admin", "super_admin", "branch_admin"];
 
@@ -821,8 +869,69 @@ export default function AdminPage() {
         {/* User table */}
         <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm overflow-hidden">
           <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-700 px-5 py-4">
-            <h2 className="text-sm font-bold text-slate-800 dark:text-slate-200">Users ({users.length})</h2>
+            <h2 className="text-sm font-bold text-slate-800 dark:text-slate-200">
+              Users ({hasActiveFilters ? `${filteredUsers.length} of ${users.length}` : users.length})
+            </h2>
             {loading && <Loader2 className="h-4 w-4 animate-spin text-violet-500" />}
+          </div>
+
+          {/* Search & filters */}
+          <div className="flex flex-col gap-2 border-b border-slate-100 dark:border-slate-700 px-5 py-3 sm:flex-row sm:items-center">
+            <div className="relative flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+              <input
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={isSuperAdminView ? "Search by name, email, role or branch…" : "Search employees by name, email or role…"}
+                aria-label="Search employees"
+                className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 pl-9 pr-3 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+              />
+            </div>
+            <select
+              value={roleFilter}
+              onChange={(e) => setRoleFilter(e.target.value)}
+              aria-label="Filter by role"
+              className="h-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 text-sm text-slate-700 dark:text-slate-200 focus:border-violet-500 focus:outline-none"
+            >
+              <option value="all">All roles</option>
+              <option value="user">User</option>
+              <option value="branch_admin">Branch Admin</option>
+              {isSuperAdminView && <option value="super_admin">Super Admin</option>}
+            </select>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as "all" | "active" | "inactive")}
+              aria-label="Filter by status"
+              className="h-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 text-sm text-slate-700 dark:text-slate-200 focus:border-violet-500 focus:outline-none"
+            >
+              <option value="all">All statuses</option>
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+            </select>
+            {isSuperAdminView && branches.length > 0 && (
+              <select
+                value={branchFilter}
+                onChange={(e) => setBranchFilter(e.target.value)}
+                aria-label="Filter by branch"
+                className="h-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 text-sm text-slate-700 dark:text-slate-200 focus:border-violet-500 focus:outline-none"
+              >
+                <option value="all">All branches</option>
+                <option value="none">No branch</option>
+                {branches.map((b) => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </select>
+            )}
+            {/* Always rendered so the filter row never shifts; only enabled when filters are applied */}
+            <button
+              type="button"
+              onClick={clearFilters}
+              disabled={!hasActiveFilters}
+              className="h-9 shrink-0 rounded-lg border border-slate-200 dark:border-slate-700 px-3 text-xs font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-slate-100 transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-600 dark:disabled:hover:text-slate-300"
+            >
+              Clear filters
+            </button>
           </div>
 
           {!loading && users.length === 0 && (
@@ -832,7 +941,21 @@ export default function AdminPage() {
             </div>
           )}
 
-          {users.length > 0 && (
+          {users.length > 0 && filteredUsers.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <Search className="h-8 w-8 text-slate-300 dark:text-slate-600" />
+              <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">No employees match your search</p>
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="mt-2 text-xs font-medium text-violet-600 hover:underline dark:text-violet-400"
+              >
+                Clear search & filters
+              </button>
+            </div>
+          )}
+
+          {filteredUsers.length > 0 && (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
@@ -851,7 +974,7 @@ export default function AdminPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
-                  {users.map((user) => (
+                  {filteredUsers.map((user) => (
                     <tr key={user.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors">
                       <td className="px-4 py-3 font-medium text-slate-800 dark:text-slate-200">
                         <span className="flex items-center gap-1.5">

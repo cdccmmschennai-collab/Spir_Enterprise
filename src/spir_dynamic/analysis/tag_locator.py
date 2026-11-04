@@ -18,7 +18,12 @@ import logging
 import re
 from typing import Any
 
-from spir_dynamic.utils.cell_utils import looks_like_tag, TAG_PATTERN, is_placeholder
+from spir_dynamic.utils.cell_utils import (
+    looks_like_tag,
+    TAG_PATTERN,
+    is_placeholder,
+    is_packed_equipment_id_list,
+)
 from spir_dynamic.models.sheet_profile import TagLayout
 
 log = logging.getLogger(__name__)
@@ -317,7 +322,7 @@ def _check_column_headers(
                         len(s) > 50
                         and re.search(r"[A-Z0-9]{2,}[-/][A-Z0-9]", s, re.IGNORECASE)
                         and re.search(r"[,;/|\n]", s)
-                    )
+                    ) or is_packed_equipment_id_list(s)
                     # Stop at long text (SPIR title, notes) or section breaks
                     # but allow packed tag columns
                     if (len(s) > 50 and not looks_like_packed_tags
