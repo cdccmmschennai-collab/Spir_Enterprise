@@ -379,15 +379,6 @@ export default function LoginPage() {
             </>
           )}
         </div>
-
-        {/* Footer */}
-        <div className="mt-6 flex items-center justify-center gap-4 text-xs text-white/40">
-          <button className="hover:text-white/70 hover:underline transition-colors">Privacy Policy</button>
-          <span>·</span>
-          <button className="hover:text-white/70 hover:underline transition-colors">Terms of Service</button>
-          <span>·</span>
-          <button className="hover:text-white/70 hover:underline transition-colors">Support</button>
-        </div>
       </div>
     </div>
   );
