@@ -205,6 +205,10 @@ def extract_workbook(wb, filename: str = "") -> dict[str, Any]:
             str(_r.get("desc") or "").strip().lower(),
             str(_r.get("mfr_part_no") or "").strip().lower(),
         )
+        # Leftover template lines (item number, no description / part no) are
+        # not spares — the pipeline drops them, so they must not count here.
+        if _key == ("", "") and not str(_r.get("dwg_no") or "").strip():
+            continue
         _spare_keys.add(_key)
     spare_items = len(_spare_keys)
 
@@ -820,6 +824,18 @@ def _resolve_spir_no(profiles: list[SheetProfile], filename: str) -> str:
         _rev_m = re.search(r"[_\s]REV[\s.\-]*([A-Z0-9]+)", _fname_stem, re.IGNORECASE)
         if _rev_m:
             revision = f"REV-{_rev_m.group(1).upper()}"
+
+    # Last resort: the file name carries the revision as a short code right
+    # after the document number, e.g. SPIR "VEN-...-43-0035" saved as
+    # "VEN-...-43-0035-0.xlsm" / "VEN-...-43-0035_1.xlsm" (ISSUE LETTER holds
+    # no revision). Anchored on the SPIR's own last segment.
+    if spir_clean and not revision and filename:
+        _fname_stem = filename.rsplit(".", 1)[0].strip()
+        _last_seg = spir_clean.rsplit("-", 1)[-1]
+        if len(_last_seg) >= 3:
+            _rev_m = re.search(re.escape(_last_seg) + r"[-_ ]([A-Z0-9]{1,2})$", _fname_stem, re.IGNORECASE)
+            if _rev_m:
+                revision = f"REV-{_rev_m.group(1).upper()}"
 
     if not spir_clean:
         # Fallback: derive from filename

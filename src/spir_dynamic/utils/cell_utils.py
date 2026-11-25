@@ -5,6 +5,7 @@ Consolidates: clean_str, clean_num, split_tags, placeholder detection.
 """
 from __future__ import annotations
 
+import os
 import re
 from functools import lru_cache
 from typing import Any
@@ -123,6 +124,12 @@ def split_tags(raw_tag: Any) -> list[str]:
 
     raw = str(raw_tag).strip()
 
+    # Full tags whose "/" is part of the tag, joined by "&" / "," / newline:
+    # "143-21-FE/FT-0001A & \n143-21-FE/FT-0001B" -> the two tags as written.
+    full = _full_slash_tags(raw)
+    if full:
+        return full
+
     # No separator -> single tag
     if not _TAG_SEPARATORS.search(raw):
         return [raw] if raw else []
@@ -189,6 +196,30 @@ def split_tags(raw_tag: Any) -> list[str]:
             return result
 
     return parts
+
+
+def _full_slash_tags(raw: str) -> list[str]:
+    """
+    Two or more complete tags with a "/" INSIDE each tag (instrument loops such
+    as "143-21-FE/FT-0001A": flow element / transmitter), joined by "&", "," or
+    a line break. Returns the tags, or [] when the cell is not of that shape.
+
+    Every "/" segment after the first must carry a digit and be 4+ chars, so
+    suffix lists ("23V01-A/B, 23V01-C/D", "P-3425 A/B") are never caught here.
+    The tags must differ only in their last few characters (one loop series).
+    """
+    parts = [re.sub(r"\s+", " ", p).strip(" &") for p in re.split(r"[,&\n\r]+", raw)]
+    parts = [p for p in parts if p]
+    if len(parts) < 2:
+        return []
+    for p in parts:
+        segs = p.split("/")
+        if len(segs) < 2 or not all(len(s) >= 4 and re.search(r"\d", s) for s in segs[1:]):
+            return []
+    pre = len(os.path.commonprefix(parts))
+    if pre < 0.6 * min(len(p) for p in parts) or any(len(p) - pre > 4 for p in parts):
+        return []
+    return list(dict.fromkeys(parts))
 
 
 def expand_tag_by_count(raw_tag: Any, count: int) -> list[str]:

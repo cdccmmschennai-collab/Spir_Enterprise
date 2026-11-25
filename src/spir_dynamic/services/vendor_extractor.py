@@ -571,6 +571,9 @@ def _extract_contact_numbers(text: str) -> str:
         return re.sub(r"\D", "", s)
 
     clean = _EMAIL_RE.sub(" ", text)
+    # "+974 66938286 (name@x.com)" -> the email leaves "( )" behind, which the
+    # phone patterns (they allow brackets) would otherwise keep in the number.
+    clean = re.sub(r"\(\s*\)", " ", clean)
     segments: list[str] = []
 
     # 🔹 Labeled blocks — track captured digit keys to avoid re-extracting them

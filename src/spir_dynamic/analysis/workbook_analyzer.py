@@ -183,6 +183,8 @@ def _exclude_foreign_spir_sheets(profiles: list[SheetProfile], filename: str) ->
 
     file_spir = m.group(1)
 
+    foreign: list[tuple[SheetProfile, str]] = []
+    numbered = 0
     for p in profiles:
         sheet_spir = p.metadata.get("spir_no")
         if not sheet_spir:
@@ -195,13 +197,28 @@ def _exclude_foreign_spir_sheets(profiles: list[SheetProfile], filename: str) ->
         if not sheet_spir_clean:
             continue
 
+        numbered += 1
         if _spir_differs(sheet_spir_clean, file_spir):
-            log.info(
-                "Sheet '%s' excluded: embedded SPIR '%s' differs from file SPIR '%s'",
-                p.name, sheet_spir_clean, file_spir,
-            )
-            p.role = SheetRole.UTILITY
-            p.confidence = 0.9
+            foreign.append((p, sheet_spir_clean))
+
+    # Every numbered sheet differs from the file name -> the FILE NAME is wrong
+    # (typo such as "RLCSF4" for "RCLSF4"), not the sheets: exclude nothing.
+    # A workbook that really embeds another document still has sheets matching
+    # its own name, so those foreign sheets are excluded as before.
+    if foreign and len(foreign) == numbered:
+        log.info(
+            "No sheet SPIR matches file SPIR '%s' — file name ignored for the foreign-sheet check",
+            file_spir,
+        )
+        return
+
+    for p, sheet_spir_clean in foreign:
+        log.info(
+            "Sheet '%s' excluded: embedded SPIR '%s' differs from file SPIR '%s'",
+            p.name, sheet_spir_clean, file_spir,
+        )
+        p.role = SheetRole.UTILITY
+        p.confidence = 0.9
 
 
 def _spir_differs(a: str, b: str) -> bool:

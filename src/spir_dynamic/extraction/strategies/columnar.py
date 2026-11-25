@@ -93,10 +93,16 @@ def _is_text_heavy_cell(raw: Any) -> bool:
 def _split_separated_value(val: str, expected_count: int) -> list[str]:
     """
     Split a separated value (serial number, model, etc.) into individual parts.
-    Handles: slash "665426 / 665427", comma "A, B, C", "to" range "100 to 102".
+    Handles: "&" / line break "N1U..26 & N1U..27", slash "665426 / 665427",
+    comma "A, B, C", "to" range "100 to 102".
     Returns list of parts. If not separable, returns [val] * expected_count.
     """
     s = val.strip()
+    # "&" / line break: "N1U3248018326 & N1U3248018327" for tags "...A & ...B"
+    if expected_count > 1:
+        parts = [p.strip() for p in re.split(r"\s*&\s*|[\n\r]+", s) if p.strip()]
+        if len(parts) == expected_count:
+            return parts
     # Try slash / backslash separator
     if "/" in s or "\\" in s:
         parts = [p.strip() for p in re.split(r"[/\\]", s) if p.strip()]
@@ -451,7 +457,13 @@ class ColumnarStrategy:
 
         # Strips leading "TAG : ", "TAG:", "TAG# " prefixes written by some vendors
         # in the EQUIPMENT TAG No cell (e.g. "TAG : 100-30-CB-0001" → "100-30-CB-0001")
-        _TAG_PREFIX_PAT = re.compile(r"(?i)^(?:tag\s*[:#]?\s*)+")
+        # Also strips a short label ending in "TAG NO:" / "TAG NUMBER:" / "TAG:" that
+        # names the equipment group before the value
+        # (e.g. "POTABLE PUMPS TAG NO: P-3427 A/B" → "P-3427 A/B"). A colon or "#"
+        # is required there, so a bare "EQUIPMENT TAG No" label is never stripped.
+        _TAG_PREFIX_PAT = re.compile(
+            r"(?i)^(?:[^:#\n\d]{0,40}?\btag\s*(?:no\.?|number|nos\.?)?\s*[:#]\s*|tag\s*[:#]?\s*)+"
+        )
 
         def _normalize_tag_candidate(raw_value: Any) -> str:
             """Normalise packed multi-tag cells to separators preprocessing can expand."""

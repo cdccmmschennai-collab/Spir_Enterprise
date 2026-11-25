@@ -4,6 +4,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback, useContext, 
 import { useRouter, usePathname } from "next/navigation";
 import {
   FileSpreadsheet,
+  GitCompare,
   Layers,
   LogOut,
   Menu,
@@ -39,6 +40,7 @@ interface NavItem {
 const baseNavItems: NavItem[] = [
   { label: "Extraction",  href: "/extraction",   icon: FileSpreadsheet },
   { label: "Batch Extraction", href: "/batch",     icon: Layers },
+  { label: "SPIR Comparison", href: "/compare",    icon: GitCompare },
   { label: "History",     href: "/history",      icon: History },
   { label: "Settings",    href: "/settings",     icon: Settings },
 ];

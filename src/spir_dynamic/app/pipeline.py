@@ -12,7 +12,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Callable, Optional, Union
 
 import structlog
 
@@ -98,92 +98,23 @@ def run_pipeline(
         if size_mb > 500:
             log.warning("pipeline.large_file", filename=original_filename, size_mb=round(size_mb, 1))
 
-        cfg = get_settings()
-
-        # Step 1: Validate
-        validate_file(original_filename, file_input, cfg.max_file_size_mb)
-
-        # Step 2: Load workbook — .xlsx/.xlsm via openpyxl exactly as before
-        # (from disk when given a Path, no raw-bytes copy in RAM); .xls via the
-        # xlrd adapter into an equivalent openpyxl Workbook.
-        _wb_start = time.perf_counter()
-        wb = load_workbook_any(file_input, original_filename)
-
-        _wb_dur = time.perf_counter() - _wb_start
-        WORKBOOK_OPEN_DURATION.observe(_wb_dur)
-        log.debug("workbook.loaded", duration_s=round(_wb_dur, 2), filename=original_filename)
-
-        _extract_start = time.perf_counter()
-        try:
-            # Step 3: Extract
-            result = extract_workbook(wb, original_filename)
-        finally:
-            wb.close()
-            # Explicitly release the parsed workbook for large files to reclaim RAM
-            # before building the output Excel (which also needs memory).
-            if size_mb > 100:
-                del wb
-                gc.collect()
-
-        _extract_dur = time.perf_counter() - _extract_start
-        if _extract_dur > _SLOW_EXTRACTION_WARN_SECONDS:
-            log.warning("pipeline.slow", duration_s=round(_extract_dur, 1), filename=original_filename, size_mb=round(size_mb, 1))
-
-        raw_rows = result.get("rows", [])
-        spir_no = result.get("spir_no", "")
-
-        # Step 4: Convert dicts to the standard 27-column output schema
-        output_rows = [row_from_dict(r) for r in raw_rows]
-
-        # Step 4b: Ensure SPIR NO on all rows
-        spir_col = CI.get("SPIR NO", 0)
-        for row in output_rows:
-            if spir_col < len(row) and row[spir_col] is None and spir_no:
-                row[spir_col] = spir_no
-
-        # Step 4c: Stamp the user-selected PLANNING PLANT / DESCRIPTION on every row
-        _apply_plant(output_rows, planning_plant)
-
-        # Step 4d: Strip vendor-concatenated plant names from EQPT MAKE / EQPT MODEL
-        strip_plant_names_in_columns(
-            output_rows, (CI.get("EQPT MAKE"), CI.get("EQPT MODEL"))
-        )
-
-        # Step 4e: Equipment rows — PART NUMBER = EQPT MODEL, NEW DESCRIPTION =
-        # DESCRIPTION + MODEL + MAKE (runs after 4d so MAKE/MODEL are clean)
-        _apply_equipment_row_fields(output_rows)
-
         # The result's file_id doubles as the processing-job id the currency
         # snapshot is recorded against (extraction_history stores both).
         file_id = str(uuid.uuid4())
+        currency_snapshot: Optional[RateSnapshot] = None
 
-        # Step 5: Currency conversion — one frozen rate snapshot per job.
-        currency_snapshot = _apply_currency_conversion(output_rows, job_id=file_id)
+        def _job_steps(output_rows: list[list]) -> None:
+            nonlocal currency_snapshot
+            # Step 4c: Stamp the user-selected PLANNING PLANT / DESCRIPTION on every row
+            _apply_plant(output_rows, planning_plant)
+            # Step 5: Currency conversion — one frozen rate snapshot per job.
+            currency_snapshot = _apply_currency_conversion(output_rows, job_id=file_id)
 
-        # Step 6: Post-process (position numbers + SPF numbers)
-        # Pass ordered sheet_profiles so SheetTracker can pre-map every sheet
-        # (including continuations) to the correct OMN index before processing rows.
-        sheet_profiles = result.get("sheet_profiles", [])
-        output_rows = post_process_rows(output_rows, spir_no, sheet_profiles=sheet_profiles)
-
-        # Step 7: Deduplicate
-        output_rows = deduplicate_rows(output_rows, CI)
-        dup_info = analyse_duplicates(output_rows)
-
-        # Step 7b: Ensure ERROR = 0 on all rows after duplicate analysis.
-        error_col = CI.get("ERROR")
-        if error_col is not None:
-            for row in output_rows:
-                if error_col < len(row):
-                    val = row[error_col]
-                    if val is None or val == "":
-                        row[error_col] = 0
-
-        # Step 7c: Uppercase all string values
-        for row in output_rows:
-            for i, v in enumerate(row):
-                if isinstance(v, str):
-                    row[i] = v.upper()
+        # Steps 1-7c: the ONE extraction engine (shared with SPIR Comparison).
+        result, output_rows, dup_info = extract_output_rows(
+            file_input, original_filename, job_steps=_job_steps, size_mb=size_mb,
+        )
+        spir_no = result.get("spir_no", "")
 
         # Step 8: Build styled Excel (always 27 columns)
         xlsx_bytes = build_xlsx(output_rows, spir_no)
@@ -254,6 +185,136 @@ def run_pipeline(
             log.info("pipeline.profile", stats=_s.getvalue())
         # ────────────────────────────────────────────────────────────────────────
         PROCESSING_DURATION.observe(time.time() - _pipeline_start)
+
+
+def extract_output_rows(
+    file_input: Union[bytes, Path],
+    original_filename: str,
+    *,
+    job_steps: Optional[Callable[[list[list]], None]] = None,
+    size_mb: Optional[float] = None,
+) -> tuple[dict[str, Any], list[list], dict[str, Any]]:
+    """
+    The single extraction engine used by every tab (Extraction, Batch
+    Extraction, SPIR Comparison): validate -> load -> extract -> output rows ->
+    post-process -> deduplicate -> uppercase.
+
+    `job_steps(rows)` runs the per-job steps that need user input (Planning
+    Plant stamp, currency conversion) at their original place in the pipeline;
+    a comparison passes None (no plant / conversion is part of a comparison).
+
+    Returns (extract_workbook result, output rows, duplicate analysis).
+    """
+    if size_mb is None:
+        size_mb = (file_input.stat().st_size if isinstance(file_input, Path) else len(file_input)) / (1024 * 1024)
+    cfg = get_settings()
+
+    # Step 1: Validate
+    validate_file(original_filename, file_input, cfg.max_file_size_mb)
+
+    # Step 2: Load workbook — .xlsx/.xlsm via openpyxl exactly as before
+    # (from disk when given a Path, no raw-bytes copy in RAM); .xls via the
+    # xlrd adapter into an equivalent openpyxl Workbook.
+    _wb_start = time.perf_counter()
+    wb = load_workbook_any(file_input, original_filename)
+
+    _wb_dur = time.perf_counter() - _wb_start
+    WORKBOOK_OPEN_DURATION.observe(_wb_dur)
+    log.debug("workbook.loaded", duration_s=round(_wb_dur, 2), filename=original_filename)
+
+    _extract_start = time.perf_counter()
+    try:
+        # Step 3: Extract
+        result = extract_workbook(wb, original_filename)
+    finally:
+        wb.close()
+        # Explicitly release the parsed workbook for large files to reclaim RAM
+        # before building the output Excel (which also needs memory).
+        if size_mb > 100:
+            del wb
+            gc.collect()
+
+    _extract_dur = time.perf_counter() - _extract_start
+    if _extract_dur > _SLOW_EXTRACTION_WARN_SECONDS:
+        log.warning("pipeline.slow", duration_s=round(_extract_dur, 1), filename=original_filename, size_mb=round(size_mb, 1))
+
+    raw_rows = result.get("rows", [])
+    spir_no = result.get("spir_no", "")
+
+    # Step 4: Convert dicts to the standard 27-column output schema
+    output_rows = [row_from_dict(r) for r in raw_rows]
+
+    # Step 4b: Ensure SPIR NO on all rows
+    spir_col = CI.get("SPIR NO", 0)
+    for row in output_rows:
+        if spir_col < len(row) and row[spir_col] is None and spir_no:
+            row[spir_col] = spir_no
+
+    # Step 4d: Strip vendor-concatenated plant names from EQPT MAKE / EQPT MODEL
+    strip_plant_names_in_columns(
+        output_rows, (CI.get("EQPT MAKE"), CI.get("EQPT MODEL"))
+    )
+
+    # Step 4e: Equipment rows — PART NUMBER = EQPT MODEL, NEW DESCRIPTION =
+    # DESCRIPTION + MODEL + MAKE (runs after 4d so MAKE/MODEL are clean)
+    _apply_equipment_row_fields(output_rows)
+
+    # Steps 4c + 5 (Planning Plant, currency) — per job, see docstring
+    if job_steps is not None:
+        job_steps(output_rows)
+
+    # Step 6: Post-process (position numbers + SPF numbers)
+    # Pass ordered sheet_profiles so SheetTracker can pre-map every sheet
+    # (including continuations) to the correct OMN index before processing rows.
+    sheet_profiles = result.get("sheet_profiles", [])
+    output_rows = post_process_rows(output_rows, spir_no, sheet_profiles=sheet_profiles)
+
+    # Step 7: Deduplicate
+    output_rows = deduplicate_rows(output_rows, CI)
+
+    # Step 7a: Drop leftover template lines — an ITEM NUMBER with no
+    # description, part number or drawing number is not a spare (seen: a
+    # revision that cut 23 spares to 9 left items 10-20 with quantities only).
+    output_rows = _drop_empty_spare_lines(output_rows)
+
+    dup_info = analyse_duplicates(output_rows)
+
+    # Step 7b: Ensure ERROR = 0 on all rows after duplicate analysis.
+    error_col = CI.get("ERROR")
+    if error_col is not None:
+        for row in output_rows:
+            if error_col < len(row):
+                val = row[error_col]
+                if val is None or val == "":
+                    row[error_col] = 0
+
+    # Step 7c: Uppercase all string values
+    for row in output_rows:
+        for i, v in enumerate(row):
+            if isinstance(v, str):
+                row[i] = v.upper()
+
+    return result, output_rows, dup_info
+
+
+def _drop_empty_spare_lines(rows: list[list]) -> list[list]:
+    """Remove spare rows (ITEM NUMBER set) that have no description, part number
+    and drawing number. Equipment rows (no ITEM NUMBER) are always kept."""
+    item_col = CI.get("ITEM NUMBER")
+    ident_cols = [CI.get(c) for c in ("DESCRIPTION OF PARTS", "MANUFACTURER PART NUMBER", "DWG NO INCL POSN NO")]
+    if item_col is None or any(c is None for c in ident_cols):
+        return rows
+
+    def _blank(v: Any) -> bool:
+        return v is None or str(v).strip() in ("", "None")
+
+    kept = [
+        r for r in rows
+        if _blank(r[item_col]) or not all(_blank(r[c]) for c in ident_cols)
+    ]
+    if len(kept) != len(rows):
+        log.info("pipeline.empty_spare_lines_dropped", count=len(rows) - len(kept))
+    return kept
 
 
 def retrieve_result(file_id: str) -> Optional[tuple[bytes, str]]:

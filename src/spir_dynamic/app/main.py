@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import make_asgi_app
 from spir_dynamic.app.auth import auth_router
 from spir_dynamic.app.batch_router import batch_router
+from spir_dynamic.app.comparison_router import comparison_router
 from spir_dynamic.app.config import get_settings
 from spir_dynamic.app.routes import router
 from spir_dynamic.app.upload_router import upload_router
@@ -145,6 +146,8 @@ def create_app() -> FastAPI:
     app.include_router(router, prefix="/api")          # register first so /api/me wins
     app.include_router(auth_router, prefix="/api")     # /api/login + /api/logout aliases
     app.include_router(batch_router, prefix="/api/batch")
+    # SPIR Comparison tab (source file vs comparison file, same extraction engine)
+    app.include_router(comparison_router, prefix="/api")
     # Phase 3D: control plane for direct browser->MinIO uploads (no file bodies).
     app.include_router(upload_router, prefix="/api/uploads")
 
