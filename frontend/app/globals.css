@@ -13,8 +13,9 @@
     --popover: 0 0% 100%;
     --popover-foreground: 222 47% 11%;
 
-    --primary: 221 83% 53%;
-    --primary-foreground: 210 40% 98%;
+    /* CDC navy #003A89 (brand-700) */
+    --primary: 215 100% 27%;
+    --primary-foreground: 0 0% 100%;
 
     --secondary: 210 40% 96%;
     --secondary-foreground: 222 47% 11%;
@@ -30,7 +31,7 @@
 
     --border: 214 32% 91%;
     --input: 214 32% 91%;
-    --ring: 221 83% 53%;
+    --ring: 215 100% 27%;
 
     --radius: 0.625rem;
   }
@@ -45,17 +46,36 @@
   }
 }
 
-/* ── Login page background animation ── */
-@keyframes bg-zoom {
-  0%   { transform: scale(1) translateZ(0); }
-  50%  { transform: scale(1.1) translateZ(0); }
-  100% { transform: scale(1) translateZ(0); }
+/* ── Login brand mark: CDC logo turning on its vertical axis (coin turn) ──
+   Modelled on emergent.sh's hero: a small wind-up wobble, one full 360° turn
+   left → right, then a rest. Front + pre-flipped back face so the lettering is
+   never mirrored. */
+.cdc-coin { perspective: 900px; }
+.cdc-coin-inner {
+  transform-style: preserve-3d;
+  animation: cdc-turn 2.45s infinite;
+}
+.cdc-coin-face {
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  filter: drop-shadow(0 14px 18px rgba(0, 58, 137, 0.18));
+}
+.cdc-coin-back { transform: rotateY(180deg); }
+
+@keyframes cdc-turn {
+  /* 2.45s loop: a 2.4s turn, left → right only (positive rotateY), then a 0.05s
+     rest. The steep ease-in-out makes it whip through the edge-on part of the
+     turn and glide slowly into/out of face-on, so it lingers while straight.
+     No wind-up: any backwards swing reads as a glitch. 360° ≡ 0°, so the loop
+     restarts with no visible jump. */
+  0%   { transform: rotateY(0deg); animation-timing-function: cubic-bezier(0.76, 0, 0.24, 1); }
+  97.96%, 100% { transform: rotateY(360deg); } /* 2.4 / 2.45 */
 }
 
-.animate-bg-zoom {
-  animation: bg-zoom 14s ease-in-out infinite;
-  transform-origin: center center;
-  will-change: transform;
+/* Login peripheral cards are positioned by a rAF loop in app/login/page.tsx. */
+
+@media (prefers-reduced-motion: reduce) {
+  .cdc-coin-inner { animation: none; }
 }
 
 /* Admin nav tab: hidden by default; inline-script sets html[data-admin="1"] before
@@ -89,9 +109,10 @@ html[data-sidebar="collapsed"] #app-sidebar .sb-row {
   position: absolute;
   inset: 0;
   z-index: 10;
+  border-radius: inherit;
   display: grid;
   place-items: center;
-  background-color: #8E2F81; /* violet-600 (CDC INT brand scale) — matches button bg */
+  background-color: #003A89; /* brand-700 (CDC navy) — matches the avatar button bg */
   color: white;
   font-size: 0.75rem;
   font-weight: 700;

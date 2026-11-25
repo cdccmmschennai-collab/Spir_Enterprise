@@ -1,10 +1,35 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { User, Moon, Sun, FileSpreadsheet, Clock, Pencil, Settings2, ImagePlus, ImageOff, RefreshCw, Lock, Eye, EyeOff, CheckCircle2, AlertCircle } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  Clock,
+  FileSpreadsheet,
+  ImageOff,
+  ImagePlus,
+  KeyRound,
+  Lock,
+  Pencil,
+  RefreshCw,
+} from "lucide-react";
 import { SidebarLayout } from "@/components/sidebar";
 import { authHeaders } from "@/lib/auth";
-import { cn } from "@/lib/utils";
+import { roleMeta } from "@/lib/roles";
+import { PageHeader } from "@/components/ui/page-header";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Avatar } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
+import { FieldHint, Label } from "@/components/ui/label";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -12,30 +37,36 @@ interface Profile {
   username: string;
   email: string | null;
   role: string;
+  branch_id: string | null;
+  branch_name: string | null;
   created_at: string | null;
   last_login_at: string | null;
   total_files_extracted: number;
   avatar_url: string | null;
 }
 
-function SectionCard({ title, icon: Icon, children }: { title: string; icon: React.ElementType; children: React.ReactNode }) {
-  return (
-    <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm overflow-hidden">
-      <div className="flex items-center gap-2.5 border-b border-slate-100 dark:border-slate-700 px-5 py-4">
-        <Icon className="h-4 w-4 text-violet-600" />
-        <h2 className="text-sm font-bold text-slate-800 dark:text-slate-200">{title}</h2>
-      </div>
-      <div className="p-5">{children}</div>
-    </div>
-  );
+function formatDate(iso: string | null) {
+  if (!iso) return "-";
+  return new Date(iso).toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
 }
 
-function ReadOnlyField({ label, value }: { label: string; value: string }) {
+function Stat({ icon: Icon, label, value }: { icon: React.ElementType; label: string; value: React.ReactNode }) {
   return (
-    <div className="space-y-1">
-      <label className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{label}</label>
-      <div className="flex h-9 items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 text-sm text-slate-700 dark:text-slate-300">
-        {value}
+    <div className="flex items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3 dark:bg-slate-800/60">
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-brand-700 shadow-sm dark:bg-slate-900 dark:text-brand-300">
+        <Icon className="h-4 w-4" />
+      </span>
+      <div className="min-w-0">
+        <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">{label}</p>
+        <p className="truncate text-sm font-bold text-slate-900 dark:text-slate-100">{value}</p>
       </div>
     </div>
   );
@@ -43,38 +74,22 @@ function ReadOnlyField({ label, value }: { label: string; value: string }) {
 
 export default function SettingsPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
-  const [darkMode, setDarkMode] = useState(false);
   const [avatarSrc, setAvatarSrc] = useState("");
   const [uploading, setUploading] = useState(false);
-  const [showAvatarMenu, setShowAvatarMenu] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const avatarMenuRef = useRef<HTMLDivElement>(null);
 
-  // Password change form state
+  // Password change form state — the form stays hidden until the user asks for it.
+  const [pwOpen, setPwOpen] = useState(false);
   const [pwCurrent, setPwCurrent] = useState("");
   const [pwNew, setPwNew] = useState("");
   const [pwConfirm, setPwConfirm] = useState("");
   const [pwLoading, setPwLoading] = useState(false);
   const [pwError, setPwError] = useState<string | null>(null);
   const [pwSuccess, setPwSuccess] = useState(false);
-  const [showCurrentPw, setShowCurrentPw] = useState(false);
-  const [showNewPw, setShowNewPw] = useState(false);
 
   useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (avatarMenuRef.current && !avatarMenuRef.current.contains(e.target as Node)) {
-        setShowAvatarMenu(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  useEffect(() => {
-    setDarkMode(localStorage.getItem("theme") === "dark");
-
     fetch(`${API_URL}/api/me`, { headers: { ...authHeaders() } })
-      .then((r) => r.ok ? r.json() : null)
+      .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data) {
           setProfile(data);
@@ -84,24 +99,15 @@ export default function SettingsPage() {
       .catch(() => {});
   }, []);
 
-  function toggleTheme() {
-    const next = !darkMode;
-    setDarkMode(next);
-    localStorage.setItem("theme", next ? "dark" : "light");
-    document.documentElement.classList.toggle("dark", next);
+  function openPasswordForm() {
+    setPwSuccess(false);
+    setPwOpen(true);
   }
 
-  function formatDate(iso: string | null) {
-    if (!iso) return "-";
-    return new Date(iso).toLocaleString("en-IN", {
-      timeZone: "Asia/Kolkata",
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: true,
-    });
+  function closePasswordForm() {
+    setPwOpen(false);
+    setPwError(null);
+    setPwCurrent(""); setPwNew(""); setPwConfirm("");
   }
 
   async function handlePasswordChange(e: React.FormEvent<HTMLFormElement>) {
@@ -132,8 +138,8 @@ export default function SettingsPage() {
         setPwError(data.detail ?? `Failed (${res.status})`);
         return;
       }
+      closePasswordForm();
       setPwSuccess(true);
-      setPwCurrent(""); setPwNew(""); setPwConfirm("");
       setTimeout(() => setPwSuccess(false), 5000);
     } catch {
       setPwError("Network error. Please try again.");
@@ -172,7 +178,6 @@ export default function SettingsPage() {
   }
 
   async function handleAvatarRemove() {
-    setShowAvatarMenu(false);
     setUploading(true);
     try {
       const res = await fetch(`${API_URL}/api/avatar`, {
@@ -191,90 +196,52 @@ export default function SettingsPage() {
     }
   }
 
-  const initials = profile?.username?.slice(0, 2).toUpperCase() ?? "";
+  const role = roleMeta(profile?.role);
+  // Super admins aren't tied to one branch; everyone else should have one.
+  const branchLabel = !profile
+    ? ""
+    : profile.branch_name ?? (profile.role === "super_admin" ? "All branches" : "Not assigned");
 
   return (
     <SidebarLayout>
-      <div className="mx-auto max-w-2xl space-y-6 p-4 sm:p-6 lg:p-8">
-        <div>
-          <h1 className="text-xl font-bold text-slate-900 dark:text-slate-100">Settings</h1>
-          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            Manage your account and workspace preferences
-          </p>
-        </div>
+      <div className="mx-auto max-w-3xl space-y-6 p-4 sm:p-6 lg:p-8">
+        <PageHeader back title="Account settings" description="Manage your profile and password." />
 
         {/* 1. Profile */}
-        <SectionCard title="Profile" icon={User}>
-          <div className="space-y-4">
-            {/* Avatar row */}
+        <Card>
+          <CardContent className="space-y-6">
             <div className="flex items-center gap-4">
-              <div className="relative shrink-0" ref={avatarMenuRef}>
-                <div className="flex h-16 w-16 items-center justify-center rounded-full overflow-hidden bg-violet-100 dark:bg-violet-900 shadow-sm ring-2 ring-violet-200 dark:ring-violet-800">
-                  {avatarSrc ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={avatarSrc} alt="Avatar" className="h-full w-full object-cover" />
-                  ) : (
-                    <span className="text-xl font-bold text-violet-700 dark:text-violet-300">{initials}</span>
-                  )}
-                </div>
-                <button
-                  onClick={() => setShowAvatarMenu((p) => !p)}
-                  disabled={uploading}
-                  title="Edit photo"
-                  className="absolute bottom-0 right-0 flex h-6 w-6 items-center justify-center rounded-full bg-violet-600 text-white hover:bg-violet-700 transition-colors shadow-sm disabled:opacity-60"
-                >
-                  <Pencil className="h-3 w-3" />
-                </button>
-                {showAvatarMenu && (
-                  <div className="absolute top-full left-0 mt-1.5 z-50 min-w-[168px] rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg overflow-hidden">
-                    {avatarSrc ? (
-                      <>
-                        <button
-                          onClick={() => { setShowAvatarMenu(false); fileInputRef.current?.click(); }}
-                          className="flex w-full items-center gap-2 px-3 py-2 text-xs text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
-                        >
-                          <RefreshCw className="h-3 w-3 shrink-0 text-slate-400" />
-                          Change Profile Photo
-                        </button>
-                        <button
-                          onClick={handleAvatarRemove}
-                          className="flex w-full items-center gap-2 px-3 py-2 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
-                        >
-                          <ImageOff className="h-3 w-3 shrink-0" />
-                          Remove Profile Photo
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        onClick={() => { setShowAvatarMenu(false); fileInputRef.current?.click(); }}
-                        className="flex w-full items-center gap-2 px-3 py-2 text-xs text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
-                      >
-                        <ImagePlus className="h-3 w-3 shrink-0 text-slate-400" />
-                        Upload Profile Photo
-                      </button>
+              <div className="relative shrink-0">
+                <Avatar src={avatarSrc} name={profile?.username} size="xl" />
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    disabled={uploading}
+                    title="Edit photo"
+                    aria-label="Edit profile photo"
+                    className="absolute -bottom-1 -right-1 flex h-7 w-7 items-center justify-center rounded-full border-2 border-white bg-brand-700 text-white shadow-sm transition-colors hover:bg-brand-800 disabled:opacity-60 dark:border-slate-900"
+                  >
+                    <Pencil className="h-3 w-3" />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="min-w-[13rem]">
+                    <DropdownMenuItem icon={avatarSrc ? RefreshCw : ImagePlus} onClick={() => fileInputRef.current?.click()}>
+                      {avatarSrc ? "Change photo" : "Upload photo"}
+                    </DropdownMenuItem>
+                    {avatarSrc && (
+                      <DropdownMenuItem icon={ImageOff} tone="danger" onClick={handleAvatarRemove}>
+                        Remove photo
+                      </DropdownMenuItem>
                     )}
-                  </div>
-                )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
-              <div>
-                <p className="text-base font-bold text-slate-800 dark:text-slate-100">{profile?.username ?? ""}</p>
-                <span className={cn(
-                  "inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide",
-                  profile?.role === "super_admin" || profile?.role === "admin"
-                    ? "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300"
-                    : profile?.role === "branch_admin"
-                    ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
-                    : "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300"
-                )}>
-                  {profile?.role === "super_admin"
-                    ? "Super Admin"
-                    : profile?.role === "branch_admin"
-                    ? "Branch Admin"
-                    : (profile?.role ?? "")}
-                </span>
-                {uploading && (
-                  <p className="mt-1 text-xs text-slate-400">Updating…</p>
+              <div className="min-w-0">
+                <p className="truncate text-lg font-bold text-slate-900 dark:text-slate-100">{profile?.username ?? ""}</p>
+                {role.label && (
+                  <Badge variant={role.variant} className="mt-1 uppercase tracking-wide">
+                    {role.label}
+                  </Badge>
                 )}
+                {uploading && <p className="mt-1 text-xs text-slate-400">Updating photo…</p>}
               </div>
             </div>
 
@@ -286,134 +253,112 @@ export default function SettingsPage() {
               onChange={handleAvatarUpload}
             />
 
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <Label htmlFor="st-email">Email</Label>
+                <Input id="st-email" value={profile?.email ?? "Not set"} readOnly />
+              </div>
+              <div>
+                <Label htmlFor="st-branch">Branch</Label>
+                <Input id="st-branch" value={branchLabel} readOnly />
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <ReadOnlyField label="Username" value={profile?.username ?? ""} />
-              <ReadOnlyField label="Email" value={profile?.email ?? "Not set"} />
+              <Stat icon={FileSpreadsheet} label="Extractions" value={(profile?.total_files_extracted ?? 0).toLocaleString()} />
+              <Stat icon={Clock} label="Last login" value={formatDate(profile?.last_login_at ?? null)} />
             </div>
+          </CardContent>
+        </Card>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex items-center gap-2 rounded-lg border border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 py-2.5">
-                <FileSpreadsheet className="h-3.5 w-3.5 text-violet-500" />
+        {/* 2. Security — Change Password (form opens on demand) */}
+        <Card>
+          <CardHeader
+            icon={Lock}
+            action={
+              !pwOpen && (
+                <Button variant="outline" size="sm" onClick={openPasswordForm}>
+                  <KeyRound />
+                  Change password
+                </Button>
+              )
+            }
+          >
+            <CardTitle>Password</CardTitle>
+            <CardDescription>Other active sessions are signed out after a change.</CardDescription>
+          </CardHeader>
+
+          {pwSuccess && !pwOpen && (
+            <div className="px-6 py-4">
+              <div role="status" className="flex items-start gap-2.5 rounded-xl bg-emerald-50 p-3 text-sm text-emerald-700">
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                Password changed. Other active sessions have been signed out.
+              </div>
+            </div>
+          )}
+
+          {pwOpen && (
+            <CardContent>
+              <form onSubmit={handlePasswordChange} className="space-y-4">
                 <div>
-                  <p className="text-[10px] text-slate-400 dark:text-slate-500">Extractions</p>
-                  <p className="text-sm font-bold text-slate-800 dark:text-slate-100">{profile?.total_files_extracted ?? 0}</p>
+                  <Label htmlFor="pw-current">Current password</Label>
+                  <PasswordInput
+                    id="pw-current"
+                    value={pwCurrent}
+                    onChange={(e) => setPwCurrent(e.target.value)}
+                    required
+                    autoFocus
+                    autoComplete="current-password"
+                    placeholder="Enter current password"
+                  />
                 </div>
-              </div>
-              <div className="flex items-center gap-2 rounded-lg border border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-3 py-2.5">
-                <Clock className="h-3.5 w-3.5 text-emerald-500" />
-                <div>
-                  <p className="text-[10px] text-slate-400 dark:text-slate-500">Last login</p>
-                  <p className="text-[11px] font-medium text-slate-600 dark:text-slate-300 leading-tight">{formatDate(profile?.last_login_at ?? null)}</p>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div>
+                    <Label htmlFor="pw-new">New password</Label>
+                    <PasswordInput
+                      id="pw-new"
+                      value={pwNew}
+                      onChange={(e) => setPwNew(e.target.value)}
+                      required
+                      minLength={8}
+                      autoComplete="new-password"
+                      placeholder="Min. 8 characters"
+                    />
+                    <FieldHint>Uppercase, lowercase and a digit.</FieldHint>
+                  </div>
+                  <div>
+                    <Label htmlFor="pw-confirm">Confirm new password</Label>
+                    <PasswordInput
+                      id="pw-confirm"
+                      value={pwConfirm}
+                      onChange={(e) => setPwConfirm(e.target.value)}
+                      required
+                      minLength={8}
+                      autoComplete="new-password"
+                      placeholder="Repeat new password"
+                    />
+                  </div>
                 </div>
-              </div>
-            </div>
-          </div>
-        </SectionCard>
 
-        {/* 2. Security — Change Password */}
-        <SectionCard title="Change Password" icon={Lock}>
-          <form onSubmit={handlePasswordChange} className="space-y-3">
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Current Password</label>
-              <div className="relative">
-                <input
-                  type={showCurrentPw ? "text" : "password"}
-                  value={pwCurrent}
-                  onChange={(e) => setPwCurrent(e.target.value)}
-                  required
-                  placeholder="Enter current password"
-                  className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 pr-9 text-sm text-slate-900 dark:text-slate-100 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
-                />
-                <button type="button" onClick={() => setShowCurrentPw((p) => !p)} tabIndex={-1}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
-                  {showCurrentPw ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                </button>
-              </div>
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">New Password</label>
-              <div className="relative">
-                <input
-                  type={showNewPw ? "text" : "password"}
-                  value={pwNew}
-                  onChange={(e) => setPwNew(e.target.value)}
-                  required
-                  minLength={8}
-                  placeholder="Min. 8 chars, upper + lower + digit"
-                  className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 pr-9 text-sm text-slate-900 dark:text-slate-100 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
-                />
-                <button type="button" onClick={() => setShowNewPw((p) => !p)} tabIndex={-1}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
-                  {showNewPw ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                </button>
-              </div>
-              <p className="text-[11px] text-slate-400">Must contain uppercase, lowercase, and a digit.</p>
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Confirm New Password</label>
-              <input
-                type="password"
-                value={pwConfirm}
-                onChange={(e) => setPwConfirm(e.target.value)}
-                required
-                minLength={8}
-                placeholder="Repeat new password"
-                className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 text-sm text-slate-900 dark:text-slate-100 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
-              />
-            </div>
-
-            {pwError && (
-              <div className="flex items-start gap-2 rounded-lg bg-red-50 dark:bg-red-950/30 p-3 text-xs text-red-600 dark:text-red-400">
-                <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />{pwError}
-              </div>
-            )}
-            {pwSuccess && (
-              <div className="flex items-start gap-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 p-3 text-xs text-emerald-700 dark:text-emerald-400">
-                <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />Password changed successfully. Other active sessions have been signed out.
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={pwLoading || !pwCurrent || !pwNew || !pwConfirm}
-              className="mt-1 h-9 w-full rounded-xl bg-violet-700 text-sm font-semibold text-white hover:bg-violet-800 disabled:opacity-50 transition-colors"
-            >
-              {pwLoading ? "Updating…" : "Update Password"}
-            </button>
-          </form>
-        </SectionCard>
-
-        {/* 3. Preferences */}
-        <SectionCard title="Preferences" icon={Settings2}>
-          <div className="space-y-3">
-            <div className="flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 px-4 py-3">
-              <div className="flex items-center gap-2.5">
-                {darkMode ? <Moon className="h-4 w-4 text-violet-500" /> : <Sun className="h-4 w-4 text-amber-500" />}
-                <div>
-                  <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Appearance</p>
-                  <p className="text-xs text-slate-400">{darkMode ? "Dark mode" : "Light mode"}</p>
-                </div>
-              </div>
-              <button
-                onClick={toggleTheme}
-                className={cn(
-                  "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none",
-                  darkMode ? "bg-violet-600" : "bg-slate-300"
+                {pwError && (
+                  <div role="alert" className="flex items-start gap-2.5 rounded-xl bg-red-50 p-3 text-sm text-red-700">
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                    {pwError}
+                  </div>
                 )}
-                role="switch"
-                aria-checked={darkMode}
-              >
-                <span className={cn(
-                  "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out",
-                  darkMode ? "translate-x-5" : "translate-x-0"
-                )} />
-              </button>
-            </div>
-          </div>
-        </SectionCard>
-      </div>
+
+                <div className="flex justify-end gap-2">
+                  <Button type="button" variant="ghost" onClick={closePasswordForm} disabled={pwLoading}>
+                    Cancel
+                  </Button>
+                  <Button type="submit" disabled={pwLoading || !pwCurrent || !pwNew || !pwConfirm}>
+                    {pwLoading ? "Updating…" : "Update password"}
+                  </Button>
+                </div>
+              </form>
+            </CardContent>
+          )}
+        </Card>      </div>
     </SidebarLayout>
   );
 }

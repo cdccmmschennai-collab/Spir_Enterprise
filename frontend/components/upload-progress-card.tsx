@@ -59,7 +59,7 @@ export function UploadProgressCard({
     ) : stage === "failed" ? (
       <AlertCircle className="h-8 w-8 text-red-600 dark:text-red-400" />
     ) : (
-      <FileSpreadsheet className="h-8 w-8 text-violet-600 dark:text-violet-400" />
+      <FileSpreadsheet className="h-8 w-8 text-brand-600 dark:text-brand-400" />
     );
 
   return (
@@ -72,7 +72,7 @@ export function UploadProgressCard({
           ? "border-emerald-200 dark:border-emerald-800/50"
           : stage === "failed"
           ? "border-red-200 dark:border-red-900/50"
-          : "border-violet-200 dark:border-violet-800/60",
+          : "border-brand-200 dark:border-brand-800/60",
         horizontal ? "p-5" : "px-6 py-8 sm:px-10"
       )}
     >
@@ -90,7 +90,7 @@ export function UploadProgressCard({
               ? "bg-emerald-50 dark:bg-emerald-950/50"
               : stage === "failed"
               ? "bg-red-50 dark:bg-red-950/50"
-              : "bg-violet-100 dark:bg-violet-900/50"
+              : "bg-brand-100 dark:bg-brand-900/50"
           )}
         >
           {icon}
@@ -118,7 +118,7 @@ export function UploadProgressCard({
                 : "text-slate-800 dark:text-slate-100"
             )}
           >
-            {active && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-violet-600 dark:text-violet-400" />}
+            {active && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-brand-600 dark:text-brand-400" />}
             <p className="text-base font-semibold">{STATUS_TEXT[stage]}</p>
           </div>
 
@@ -135,10 +135,10 @@ export function UploadProgressCard({
                 className="h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-700"
               >
                 {pct === null ? (
-                  <div className="h-full w-2/5 rounded-full bg-violet-500 animate-progress-indeterminate motion-reduce:animate-pulse" />
+                  <div className="h-full w-2/5 rounded-full bg-brand-500 animate-progress-indeterminate motion-reduce:animate-pulse" />
                 ) : (
                   <div
-                    className="h-full rounded-full bg-violet-600 transition-[width] duration-300 ease-out"
+                    className="h-full rounded-full bg-brand-600 transition-[width] duration-300 ease-out"
                     style={{ width: `${pct}%` }}
                   />
                 )}
@@ -177,7 +177,7 @@ export function UploadProgressCard({
                 <button
                   type="button"
                   onClick={onRetry}
-                  className="flex h-9 items-center gap-2 rounded-xl bg-violet-700 px-4 text-sm font-semibold text-white shadow-md shadow-violet-200 transition-colors hover:bg-violet-800 dark:shadow-none"
+                  className="flex h-9 items-center gap-2 rounded-xl bg-brand-700 px-4 text-sm font-semibold text-white shadow-md shadow-brand-200 transition-colors hover:bg-brand-800 dark:shadow-none"
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
                   Try again

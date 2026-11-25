@@ -27,6 +27,13 @@ import {
 import { SidebarLayout } from "@/components/sidebar";
 import { authHeaders, getRole } from "@/lib/auth";
 import { cn } from "@/lib/utils";
+import { Tabs, TabPanel } from "@/components/ui/tabs";
+import { StatCard, StatDelta, StatMeter, StatNote, StatSparkline } from "@/components/ui/stat-card";
+import { LoginHistory } from "@/components/admin/login-history";
+
+// Users | Requests for every admin; Audit (login history) for super admins only.
+type AdminTab = "users" | "requests" | "audit";
+const ADMIN_TABS: AdminTab[] = ["users", "requests", "audit"];
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -62,6 +69,8 @@ interface Stats {
   active_users: number;
   total_extractions: number;
   today_extractions: number;
+  /** Last 14 UTC days, oldest first (absent on older backends). */
+  daily_extractions?: { date: string; count: number }[];
 }
 
 interface ResetRequest {
@@ -224,7 +233,7 @@ function CreateUserModal({ onClose, onCreated, callerRole, branches }: CreateMod
               name="username"
               required
               minLength={2}
-              className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-sm text-slate-900 dark:text-slate-100 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+              className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-sm text-slate-900 dark:text-slate-100 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
             />
           </div>
           <div className="space-y-1.5">
@@ -235,7 +244,7 @@ function CreateUserModal({ onClose, onCreated, callerRole, branches }: CreateMod
                 type={showPass ? "text" : "password"}
                 required
                 minLength={8}
-                className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 pr-9 text-sm text-slate-900 dark:text-slate-100 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+                className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 pr-9 text-sm text-slate-900 dark:text-slate-100 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
               />
               <button
                 type="button"
@@ -252,7 +261,7 @@ function CreateUserModal({ onClose, onCreated, callerRole, branches }: CreateMod
             <input
               name="email"
               type="email"
-              className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-sm text-slate-900 dark:text-slate-100 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+              className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-sm text-slate-900 dark:text-slate-100 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
             />
           </div>
           <div className="space-y-1.5">
@@ -260,7 +269,7 @@ function CreateUserModal({ onClose, onCreated, callerRole, branches }: CreateMod
             <select
               name="role"
               defaultValue="user"
-              className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-sm text-slate-900 dark:text-slate-100 focus:border-violet-500 focus:outline-none"
+              className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-sm text-slate-900 dark:text-slate-100 focus:border-brand-500 focus:outline-none"
             >
               <option value="user">User</option>
               {isSuperAdmin && <option value="branch_admin">Branch Admin</option>}
@@ -273,7 +282,7 @@ function CreateUserModal({ onClose, onCreated, callerRole, branches }: CreateMod
               <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">Branch</label>
               <select
                 name="branch_id"
-                className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-sm text-slate-900 dark:text-slate-100 focus:border-violet-500 focus:outline-none"
+                className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-sm text-slate-900 dark:text-slate-100 focus:border-brand-500 focus:outline-none"
               >
                 <option value="">— No branch (super_admin) —</option>
                 {branches.filter((b) => b.is_active).map((b) => (
@@ -301,7 +310,7 @@ function CreateUserModal({ onClose, onCreated, callerRole, branches }: CreateMod
             <button
               type="submit"
               disabled={loading}
-              className="flex-1 h-9 rounded-xl bg-violet-700 text-sm font-semibold text-white hover:bg-violet-800 disabled:opacity-60 transition-colors"
+              className="flex-1 h-9 rounded-xl bg-brand-700 text-sm font-semibold text-white hover:bg-brand-800 disabled:opacity-60 transition-colors"
             >
               {loading ? <Loader2 className="mx-auto h-4 w-4 animate-spin" /> : "Create User"}
             </button>
@@ -355,7 +364,7 @@ function ResetPasswordModal({ user, onClose, onSuccess }: ResetPasswordModalProp
       <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 p-6 shadow-2xl">
         <div className="mb-5 flex items-center justify-between">
           <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
-            Reset Password: <span className="text-violet-600">{user.username}</span>
+            Reset Password: <span className="text-brand-600">{user.username}</span>
           </h2>
           <button onClick={onClose} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800">
             <X className="h-4 w-4" />
@@ -371,7 +380,7 @@ function ResetPasswordModal({ user, onClose, onSuccess }: ResetPasswordModalProp
                 type={showPass ? "text" : "password"}
                 required
                 minLength={8}
-                className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 pr-9 text-sm text-slate-900 dark:text-slate-100 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+                className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 pr-9 text-sm text-slate-900 dark:text-slate-100 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
               />
               <button
                 type="button"
@@ -395,7 +404,7 @@ function ResetPasswordModal({ user, onClose, onSuccess }: ResetPasswordModalProp
             <button type="button" onClick={onClose} className="flex-1 h-9 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
               Cancel
             </button>
-            <button type="submit" disabled={loading} className="flex-1 h-9 rounded-xl bg-violet-700 text-sm font-semibold text-white hover:bg-violet-800 disabled:opacity-60 transition-colors">
+            <button type="submit" disabled={loading} className="flex-1 h-9 rounded-xl bg-brand-700 text-sm font-semibold text-white hover:bg-brand-800 disabled:opacity-60 transition-colors">
               {loading ? <Loader2 className="mx-auto h-4 w-4 animate-spin" /> : "Update"}
             </button>
           </div>
@@ -448,7 +457,7 @@ function ResolveRequestModal({ request, onClose, onSuccess }: ResolveRequestModa
       <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 p-6 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-base font-bold text-slate-900 dark:text-slate-100">
-            Resolve Request: <span className="text-violet-600">{request.username}</span>
+            Resolve Request: <span className="text-brand-600">{request.username}</span>
           </h2>
           <button onClick={onClose} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800">
             <X className="h-4 w-4" />
@@ -477,7 +486,7 @@ function ResolveRequestModal({ request, onClose, onSuccess }: ResolveRequestModa
                 required
                 minLength={8}
                 placeholder="Min. 8 characters"
-                className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 pr-9 text-sm text-slate-900 dark:text-slate-100 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+                className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 pr-9 text-sm text-slate-900 dark:text-slate-100 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
               />
               <button
                 type="button"
@@ -501,7 +510,7 @@ function ResolveRequestModal({ request, onClose, onSuccess }: ResolveRequestModa
             <button type="button" onClick={onClose} className="flex-1 h-9 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
               Cancel
             </button>
-            <button type="submit" disabled={loading} className="flex-1 h-9 rounded-xl bg-violet-700 text-sm font-semibold text-white hover:bg-violet-800 disabled:opacity-60 transition-colors">
+            <button type="submit" disabled={loading} className="flex-1 h-9 rounded-xl bg-brand-700 text-sm font-semibold text-white hover:bg-brand-800 disabled:opacity-60 transition-colors">
               {loading ? <Loader2 className="mx-auto h-4 w-4 animate-spin" /> : "Reset & Resolve"}
             </button>
           </div>
@@ -633,6 +642,7 @@ export default function AdminPage() {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [currentRole, setCurrentRole] = useState<string>("user");
+  const [currentRoleLoaded, setCurrentRoleLoaded] = useState(false);
   const [resetRequests, setResetRequests] = useState<ResetRequest[]>([]);
   const [resolveTarget, setResolveTarget] = useState<ResetRequest | null>(null);
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -643,6 +653,33 @@ export default function AdminPage() {
   const [branchFilter, setBranchFilter] = useState<string>("all");
 
   const isSuperAdminView = currentRole === "super_admin" || currentRole === "admin";
+
+  // Active tab, mirrored in ?tab= so a refresh or shared link keeps it.
+  const [tab, setTabState] = useState<AdminTab>("users");
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get("tab") as AdminTab | null;
+    if (t && ADMIN_TABS.includes(t)) setTabState(t);
+  }, []);
+  const setTab = useCallback((t: AdminTab) => {
+    setTabState(t);
+    const url = new URL(window.location.href);
+    if (t === "users") url.searchParams.delete("tab");
+    else url.searchParams.set("tab", t);
+    window.history.replaceState(window.history.state, "", url);
+  }, []);
+  // Branch admins never get Audit (the API also refuses them): fall back once
+  // the role is known.
+  useEffect(() => {
+    if (tab === "audit" && currentRoleLoaded && !isSuperAdminView) setTab("users");
+  }, [tab, currentRoleLoaded, isSuperAdminView, setTab]);
+
+  const pendingRequests = resetRequests.filter((r) => r.status === "pending").length;
+  const tabItems = [
+    { value: "users" as const, label: "Users" },
+    { value: "requests" as const, label: "Requests", count: pendingRequests },
+    ...(isSuperAdminView ? [{ value: "audit" as const, label: "Audit log" }] : []),
+  ];
+
   const hasActiveFilters =
     search.trim() !== "" || roleFilter !== "all" || statusFilter !== "all" || branchFilter !== "all";
 
@@ -736,6 +773,7 @@ export default function AdminPage() {
         const me = await meRes.json();
         setCurrentUserId(me.id ?? null);
         setCurrentRole(me.role ?? "user");
+        setCurrentRoleLoaded(true);
       }
 
       if (resetRes.ok) {
@@ -820,43 +858,50 @@ export default function AdminPage() {
         <div className="flex items-center justify-between">
           <div>
             <div className="flex items-center gap-2">
-              <ShieldCheck className="h-5 w-5 text-violet-600" />
+              <ShieldCheck className="h-5 w-5 text-brand-600" />
               <h1 className="text-xl font-bold text-slate-900 dark:text-slate-100">Admin Dashboard</h1>
             </div>
             <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
               Manage users, roles, and monitor system activity
             </p>
           </div>
-          <button
-            onClick={() => setShowCreate(true)}
-            className="flex items-center gap-2 rounded-xl bg-violet-700 px-4 py-2 text-sm font-semibold text-white shadow-md shadow-violet-200 hover:bg-violet-800 transition-colors"
-          >
-            <Plus className="h-4 w-4" />
-            New User
-          </button>
+          {tab === "users" && (
+            <button
+              onClick={() => setShowCreate(true)}
+              className="flex items-center gap-2 rounded-xl bg-brand-700 px-4 py-2 text-sm font-semibold text-white shadow-md shadow-brand-200 hover:bg-brand-800 transition-colors"
+            >
+              <Plus className="h-4 w-4" />
+              New User
+            </button>
+          )}
         </div>
 
-        {/* Stats cards */}
-        {stats && (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            {[
-              { icon: Users,           label: "Total Users",       value: stats.total_users,       color: "text-violet-600",  bg: "bg-violet-50 dark:bg-violet-950/50" },
-              { icon: UserCheck,       label: "Active Users",      value: stats.active_users,      color: "text-emerald-600", bg: "bg-emerald-50 dark:bg-emerald-950/50" },
-              { icon: FileSpreadsheet, label: "Total Extractions", value: stats.total_extractions, color: "text-blue-600",    bg: "bg-blue-50 dark:bg-blue-950/50" },
-              { icon: Activity,        label: "Today",             value: stats.today_extractions, color: "text-amber-600",   bg: "bg-amber-50 dark:bg-amber-950/50" },
-            ].map(({ icon: Icon, label, value, color, bg }) => (
-              <div key={label} className="flex items-center gap-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-4 py-3 shadow-sm">
-                <div className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-lg", bg)}>
-                  <Icon className={cn("h-4 w-4", color)} />
-                </div>
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">{label}</p>
-                  <p className="text-lg font-bold text-slate-900 dark:text-slate-100">{value.toLocaleString()}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+        {/* KPI row — stat tiles with real context (meter / trend / delta). */}
+        {stats && (() => {
+          const inactive = Math.max(0, stats.total_users - stats.active_users);
+          const daily = stats.daily_extractions ?? [];
+          const yesterday = daily.length >= 2 ? daily[daily.length - 2].count : null;
+          return (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <StatCard label="Total users" value={stats.total_users} icon={Users}>
+                <StatNote>{inactive === 0 ? "All accounts enabled" : `${inactive.toLocaleString()} inactive`}</StatNote>
+              </StatCard>
+              <StatCard label="Active users" value={stats.active_users} icon={UserCheck}>
+                <StatMeter value={stats.active_users} max={stats.total_users} caption="{pct}% of accounts" />
+              </StatCard>
+              <StatCard label="Total extractions" value={stats.total_extractions} icon={FileSpreadsheet}>
+                <StatSparkline points={daily} caption="Last 14 days" />
+              </StatCard>
+              <StatCard label="Today" value={stats.today_extractions} icon={Activity}>
+                {yesterday === null ? (
+                  <StatNote>Extractions so far today</StatNote>
+                ) : (
+                  <StatDelta current={stats.today_extractions} previous={yesterday} period="yesterday" />
+                )}
+              </StatCard>
+            </div>
+          );
+        })()}
 
         {/* Error */}
         {error && (
@@ -866,13 +911,17 @@ export default function AdminPage() {
           </div>
         )}
 
-        {/* User table */}
+        <Tabs items={tabItems} value={tab} onValueChange={setTab} aria-label="Admin sections" />
+
+        {/* ── Users tab ── */}
+        {tab === "users" && (
+        <TabPanel value="users">
         <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm overflow-hidden">
           <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-700 px-5 py-4">
             <h2 className="text-sm font-bold text-slate-800 dark:text-slate-200">
               Users ({hasActiveFilters ? `${filteredUsers.length} of ${users.length}` : users.length})
             </h2>
-            {loading && <Loader2 className="h-4 w-4 animate-spin text-violet-500" />}
+            {loading && <Loader2 className="h-4 w-4 animate-spin text-brand-500" />}
           </div>
 
           {/* Search & filters */}
@@ -885,14 +934,14 @@ export default function AdminPage() {
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder={isSuperAdminView ? "Search by name, email, role or branch…" : "Search employees by name, email or role…"}
                 aria-label="Search employees"
-                className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 pl-9 pr-3 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+                className="h-9 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 pl-9 pr-3 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20"
               />
             </div>
             <select
               value={roleFilter}
               onChange={(e) => setRoleFilter(e.target.value)}
               aria-label="Filter by role"
-              className="h-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 text-sm text-slate-700 dark:text-slate-200 focus:border-violet-500 focus:outline-none"
+              className="h-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 text-sm text-slate-700 dark:text-slate-200 focus:border-brand-500 focus:outline-none"
             >
               <option value="all">All roles</option>
               <option value="user">User</option>
@@ -903,7 +952,7 @@ export default function AdminPage() {
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value as "all" | "active" | "inactive")}
               aria-label="Filter by status"
-              className="h-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 text-sm text-slate-700 dark:text-slate-200 focus:border-violet-500 focus:outline-none"
+              className="h-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 text-sm text-slate-700 dark:text-slate-200 focus:border-brand-500 focus:outline-none"
             >
               <option value="all">All statuses</option>
               <option value="active">Active</option>
@@ -914,7 +963,7 @@ export default function AdminPage() {
                 value={branchFilter}
                 onChange={(e) => setBranchFilter(e.target.value)}
                 aria-label="Filter by branch"
-                className="h-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 text-sm text-slate-700 dark:text-slate-200 focus:border-violet-500 focus:outline-none"
+                className="h-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 text-sm text-slate-700 dark:text-slate-200 focus:border-brand-500 focus:outline-none"
               >
                 <option value="all">All branches</option>
                 <option value="none">No branch</option>
@@ -948,7 +997,7 @@ export default function AdminPage() {
               <button
                 type="button"
                 onClick={clearFilters}
-                className="mt-2 text-xs font-medium text-violet-600 hover:underline dark:text-violet-400"
+                className="mt-2 text-xs font-medium text-brand-600 hover:underline dark:text-brand-400"
               >
                 Clear search & filters
               </button>
@@ -980,7 +1029,7 @@ export default function AdminPage() {
                         <span className="flex items-center gap-1.5">
                           {user.username}
                           {user.id === currentUserId && (
-                            <span className="rounded-full bg-violet-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-violet-600 dark:bg-violet-950 dark:text-violet-400">You</span>
+                            <span className="rounded-full bg-brand-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-brand-600 dark:bg-brand-950 dark:text-brand-400">You</span>
                           )}
                         </span>
                         {user.email && (
@@ -1027,7 +1076,7 @@ export default function AdminPage() {
                           <button
                             onClick={() => setResetTarget(user)}
                             title="Reset password"
-                            className="rounded-lg p-1.5 text-slate-400 hover:bg-violet-50 hover:text-violet-600 dark:hover:bg-violet-950/30 dark:hover:text-violet-400 transition-colors"
+                            className="rounded-lg p-1.5 text-slate-400 hover:bg-brand-50 hover:text-brand-600 dark:hover:bg-brand-950/30 dark:hover:text-brand-400 transition-colors"
                           >
                             <Key className="h-3.5 w-3.5" />
                           </button>
@@ -1110,8 +1159,12 @@ export default function AdminPage() {
             </div>
           )}
         </div>
+        </TabPanel>
+        )}
 
-        {/* Password Reset Requests */}
+        {/* ── Requests tab: password reset requests ── */}
+        {tab === "requests" && (
+        <TabPanel value="requests">
         <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm overflow-hidden">
           <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-700 px-5 py-4">
             <div className="flex items-center gap-2">
@@ -1188,7 +1241,7 @@ export default function AdminPage() {
                         {req.status === "pending" && (
                           <button
                             onClick={() => setResolveTarget(req)}
-                            className="inline-flex items-center gap-1.5 rounded-lg bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-800 transition-colors"
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-800 transition-colors"
                           >
                             <Key className="h-3 w-3" />
                             Reset Password
@@ -1207,6 +1260,15 @@ export default function AdminPage() {
             </div>
           )}
         </div>
+        </TabPanel>
+        )}
+
+        {/* ── Audit tab: login history (super admins only; API enforces it too) ── */}
+        {tab === "audit" && isSuperAdminView && (
+          <TabPanel value="audit">
+            <LoginHistory branches={branches} />
+          </TabPanel>
+        )}
       </div>
 
       {/* Modals */}

@@ -172,7 +172,7 @@ export default function HistoryPage() {
               <button
                 onClick={handleCombine}
                 disabled={combining || deleting}
-                className="flex items-center gap-2 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-60 disabled:cursor-not-allowed px-4 py-2 text-sm font-semibold text-white transition-colors shadow-sm"
+                className="flex items-center gap-2 rounded-xl bg-brand-600 hover:bg-brand-700 disabled:opacity-60 disabled:cursor-not-allowed px-4 py-2 text-sm font-semibold text-white transition-colors shadow-sm"
               >
                 {combining ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -245,7 +245,7 @@ export default function HistoryPage() {
         {/* Loading spinner */}
         {loading && (
           <div className="flex items-center justify-center py-16">
-            <Loader2 className="h-6 w-6 animate-spin text-violet-500" />
+            <Loader2 className="h-6 w-6 animate-spin text-brand-500" />
           </div>
         )}
 
@@ -272,13 +272,13 @@ export default function HistoryPage() {
                   <th className="w-10 px-3 py-3">
                     <button
                       onClick={toggleAll}
-                      className="flex items-center justify-center text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 transition-colors"
+                      className="flex items-center justify-center text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 transition-colors"
                       title={allSelected ? "Deselect all" : "Select all"}
                     >
                       {allSelected ? (
-                        <CheckSquare className="h-4 w-4 text-violet-600 dark:text-violet-400" />
+                        <CheckSquare className="h-4 w-4 text-brand-600 dark:text-brand-400" />
                       ) : someSelected ? (
-                        <CheckSquare className="h-4 w-4 text-violet-400" />
+                        <CheckSquare className="h-4 w-4 text-brand-400" />
                       ) : (
                         <Square className="h-4 w-4" />
                       )}
@@ -305,14 +305,14 @@ export default function HistoryPage() {
                       onClick={() => toggleRow(item.id)}
                       className={`cursor-pointer transition-colors ${
                         isChecked
-                          ? "bg-violet-50 dark:bg-violet-900/20"
+                          ? "bg-brand-50 dark:bg-brand-900/20"
                           : "hover:bg-slate-50 dark:hover:bg-slate-700/50"
                       }`}
                     >
                       <td className="w-10 px-3 py-3">
                         <div className="flex items-center justify-center">
                           {isChecked ? (
-                            <CheckSquare className="h-4 w-4 text-violet-600 dark:text-violet-400" />
+                            <CheckSquare className="h-4 w-4 text-brand-600 dark:text-brand-400" />
                           ) : (
                             <Square className="h-4 w-4 text-slate-300 dark:text-slate-600" />
                           )}
@@ -352,7 +352,7 @@ export default function HistoryPage() {
 
             {/* Selection status bar */}
             {selected.size > 0 && (
-              <div className="border-t border-slate-100 dark:border-slate-700 bg-violet-50 dark:bg-violet-900/10 px-4 py-2 text-xs text-violet-700 dark:text-violet-300">
+              <div className="border-t border-slate-100 dark:border-slate-700 bg-brand-50 dark:bg-brand-900/10 px-4 py-2 text-xs text-brand-700 dark:text-brand-300">
                 {selected.size} file{selected.size > 1 ? "s" : ""} selected
                 {" · "}
                 <button

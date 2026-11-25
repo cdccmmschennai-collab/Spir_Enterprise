@@ -103,19 +103,19 @@ function FilePicker({ label, hint, file, onFile, disabled }: FilePickerProps) {
         onDrop={handleDrop}
         onClick={() => !disabled && inputRef.current?.click()}
         className={cn(
-          "flex min-h-[200px] cursor-pointer flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed px-5 py-8 text-center transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/40",
+          "flex min-h-[200px] cursor-pointer flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed px-5 py-8 text-center transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400/40",
           dragging
-            ? "border-violet-400 bg-violet-50 dark:bg-violet-950/30"
+            ? "border-brand-400 bg-brand-50 dark:bg-brand-950/30"
             : file
-            ? "border-violet-200 bg-white dark:border-violet-800 dark:bg-slate-800"
-            : "border-slate-200 bg-white hover:border-violet-300 hover:bg-violet-50/30 dark:border-slate-600 dark:bg-slate-800 dark:hover:border-violet-500 dark:hover:bg-violet-950/20",
+            ? "border-brand-200 bg-white dark:border-brand-800 dark:bg-slate-800"
+            : "border-slate-200 bg-white hover:border-brand-300 hover:bg-brand-50/30 dark:border-slate-600 dark:bg-slate-800 dark:hover:border-brand-500 dark:hover:bg-brand-950/20",
           disabled && "cursor-not-allowed opacity-60"
         )}
       >
         {file ? (
           <>
-            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-violet-100 dark:bg-violet-900/50">
-              <FileSpreadsheet className="h-6 w-6 text-violet-600 dark:text-violet-400" />
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand-100 dark:bg-brand-900/50">
+              <FileSpreadsheet className="h-6 w-6 text-brand-600 dark:text-brand-400" />
             </div>
             <div className="min-w-0 max-w-full">
               <p className="truncate text-sm font-semibold text-slate-800 dark:text-slate-200" title={file.name}>{file.name}</p>
@@ -135,11 +135,11 @@ function FilePicker({ label, hint, file, onFile, disabled }: FilePickerProps) {
           <>
             <div className={cn(
               "flex h-12 w-12 items-center justify-center rounded-xl transition-colors",
-              dragging ? "bg-violet-100 dark:bg-violet-900/50" : "bg-slate-100 dark:bg-slate-700"
+              dragging ? "bg-brand-100 dark:bg-brand-900/50" : "bg-slate-100 dark:bg-slate-700"
             )}>
               <CloudUpload className={cn(
                 "h-6 w-6 transition-colors",
-                dragging ? "text-violet-600 dark:text-violet-400" : "text-slate-400 dark:text-slate-500"
+                dragging ? "text-brand-600 dark:text-brand-400" : "text-slate-400 dark:text-slate-500"
               )} />
             </div>
             <div>
@@ -201,7 +201,7 @@ function SideCard({ title, side }: { title: string; side: FileSide }) {
   ];
   return (
     <div className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
-      <p className="text-[10px] font-bold uppercase tracking-wider text-violet-700 dark:text-violet-400">{title}</p>
+      <p className="text-[10px] font-bold uppercase tracking-wider text-brand-700 dark:text-brand-400">{title}</p>
       <p className="mt-1 truncate text-sm font-semibold text-slate-800 dark:text-slate-200" title={side.filename}>
         {side.filename}
       </p>
@@ -310,8 +310,8 @@ export default function ComparePage() {
       <div className="mx-auto max-w-5xl space-y-6 p-4 sm:p-6 lg:p-8">
         {/* Heading */}
         <div className="flex items-start gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-violet-100 dark:bg-violet-900/50">
-            <GitCompare className="h-5 w-5 text-violet-700 dark:text-violet-400" />
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-100 dark:bg-brand-900/50">
+            <GitCompare className="h-5 w-5 text-brand-700 dark:text-brand-400" />
           </div>
           <div>
             <h1 className="text-lg font-bold text-slate-900 dark:text-white">SPIR Comparison</h1>
@@ -349,7 +349,7 @@ export default function ComparePage() {
             <div className="flex justify-center gap-3">
               {loading ? (
                 <>
-                  <div className="flex h-11 items-center gap-2 rounded-xl bg-violet-700/90 px-8 text-sm font-semibold text-white shadow-md">
+                  <div className="flex h-11 items-center gap-2 rounded-xl bg-brand-700/90 px-8 text-sm font-semibold text-white shadow-md">
                     <Loader2 className="h-4 w-4 animate-spin" />
                     Comparing…
                   </div>
@@ -366,7 +366,7 @@ export default function ComparePage() {
                   type="button"
                   onClick={handleCompare}
                   disabled={!ready}
-                  className="flex h-11 items-center gap-2 rounded-xl bg-violet-700 px-8 text-sm font-semibold text-white shadow-md shadow-violet-200 transition-all hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-50 dark:shadow-none"
+                  className="flex h-11 items-center gap-2 rounded-xl bg-brand-700 px-8 text-sm font-semibold text-white shadow-md shadow-brand-200 transition-all hover:bg-brand-800 disabled:cursor-not-allowed disabled:opacity-50 dark:shadow-none"
                 >
                   <GitCompare className="h-4 w-4" />
                   Run Comparison
@@ -382,7 +382,7 @@ export default function ComparePage() {
             <div className="flex flex-col gap-3 rounded-2xl border border-emerald-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between dark:border-emerald-800/50 dark:bg-slate-800">
               <div className="min-w-0">
                 <p className="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-200">
-                  <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-violet-700 dark:bg-violet-950 dark:text-violet-300">
+                  <span className="rounded-full bg-brand-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-brand-700 dark:bg-brand-950 dark:text-brand-300">
                     {result.mode === "REVISION" ? "Revision comparison" : "SPIR type comparison"}
                   </span>
                   <span className="truncate" title={result.filename}>{result.filename}</span>
@@ -406,7 +406,7 @@ export default function ComparePage() {
                   type="button"
                   onClick={handleDownload}
                   disabled={downloading}
-                  className="flex h-9 items-center gap-2 rounded-xl bg-violet-700 px-4 text-sm font-semibold text-white shadow-md shadow-violet-200 hover:bg-violet-800 disabled:opacity-60 dark:shadow-none"
+                  className="flex h-9 items-center gap-2 rounded-xl bg-brand-700 px-4 text-sm font-semibold text-white shadow-md shadow-brand-200 hover:bg-brand-800 disabled:opacity-60 dark:shadow-none"
                 >
                   {downloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
                   Download Comparison

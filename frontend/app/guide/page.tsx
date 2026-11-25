@@ -63,7 +63,7 @@ export default function GuidePage() {
             Back
           </button>
           <div className="flex items-center gap-2 mb-1">
-            <BookOpen className="h-5 w-5 text-violet-600" />
+            <BookOpen className="h-5 w-5 text-brand-600" />
             <h1 className="text-lg font-bold text-slate-900 dark:text-slate-100 tracking-tight">
               System Guide
             </h1>
@@ -84,7 +84,7 @@ export default function GuidePage() {
               >
                 {/* Step number + icon */}
                 <div className="flex flex-col items-center gap-1 shrink-0">
-                  <span className="text-sm font-extrabold tabular-nums text-violet-600 dark:text-violet-400">
+                  <span className="text-sm font-extrabold tabular-nums text-brand-600 dark:text-brand-400">
                     {step.number}
                   </span>
                   <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-100 dark:bg-slate-700">
@@ -103,7 +103,7 @@ export default function GuidePage() {
                   {step.action && (
                     <button
                       onClick={() => router.push(step.action!.href)}
-                      className="mt-2 inline-flex w-fit items-center gap-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 active:bg-violet-800 px-3 py-1.5 text-xs font-semibold text-white transition-colors"
+                      className="mt-2 inline-flex w-fit items-center gap-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 active:bg-brand-800 px-3 py-1.5 text-xs font-semibold text-white transition-colors"
                     >
                       {step.action.label}
                       <ArrowRight className="h-3 w-3" />

@@ -179,7 +179,7 @@ function FileStatusBadge({
 }) {
   if (status === "uploading") {
     return (
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 dark:border-violet-800 dark:bg-violet-950/50 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-violet-700 dark:text-violet-400 whitespace-nowrap">
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-brand-200 bg-brand-50 dark:border-brand-800 dark:bg-brand-950/50 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-brand-700 dark:text-brand-400 whitespace-nowrap">
         <Loader2 className="h-3 w-3 animate-spin shrink-0" />
         Uploading…
       </span>
@@ -608,8 +608,8 @@ export default function BatchPage() {
         {/* ── Page header ── */}
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-violet-100 dark:bg-violet-900/50">
-              <Layers className="h-5 w-5 text-violet-600 dark:text-violet-400" />
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-100 dark:bg-brand-900/50">
+              <Layers className="h-5 w-5 text-brand-600 dark:text-brand-400" />
             </div>
             <div>
               <h1 className="text-lg font-bold text-slate-900 dark:text-white">
@@ -676,8 +676,8 @@ export default function BatchPage() {
               className={cn(
                 "flex cursor-pointer flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed px-6 py-12 transition-all duration-200",
                 dragging
-                  ? "border-violet-400 bg-violet-50 dark:bg-violet-950/30"
-                  : "border-slate-200 bg-white hover:border-violet-300 hover:bg-violet-50/30 dark:border-slate-600 dark:bg-slate-800 dark:hover:border-violet-500 dark:hover:bg-violet-950/20",
+                  ? "border-brand-400 bg-brand-50 dark:bg-brand-950/30"
+                  : "border-slate-200 bg-white hover:border-brand-300 hover:bg-brand-50/30 dark:border-slate-600 dark:bg-slate-800 dark:hover:border-brand-500 dark:hover:bg-brand-950/20",
                 uploading && "cursor-not-allowed opacity-60"
               )}
             >
@@ -685,18 +685,18 @@ export default function BatchPage() {
                 className={cn(
                   "flex h-14 w-14 items-center justify-center rounded-2xl transition-colors",
                   dragging
-                    ? "bg-violet-100 dark:bg-violet-900/50"
+                    ? "bg-brand-100 dark:bg-brand-900/50"
                     : "bg-slate-100 dark:bg-slate-700"
                 )}
               >
                 {uploading ? (
-                  <Loader2 className="h-7 w-7 animate-spin text-violet-600 dark:text-violet-400" />
+                  <Loader2 className="h-7 w-7 animate-spin text-brand-600 dark:text-brand-400" />
                 ) : (
                   <CloudUpload
                     className={cn(
                       "h-7 w-7 transition-colors",
                       dragging
-                        ? "text-violet-600 dark:text-violet-400"
+                        ? "text-brand-600 dark:text-brand-400"
                         : "text-slate-400 dark:text-slate-500"
                     )}
                   />
@@ -724,7 +724,7 @@ export default function BatchPage() {
                     e.stopPropagation();
                     inputRef.current?.click();
                   }}
-                  className="rounded-xl bg-violet-700 px-5 py-2 text-sm font-semibold text-white shadow-md shadow-violet-200 transition-colors hover:bg-violet-800"
+                  className="rounded-xl bg-brand-700 px-5 py-2 text-sm font-semibold text-white shadow-md shadow-brand-200 transition-colors hover:bg-brand-800"
                 >
                   Browse Files
                 </button>
@@ -766,7 +766,7 @@ export default function BatchPage() {
                     <button
                       onClick={handleUpload}
                       disabled={uploading}
-                      className="flex h-9 items-center gap-2 rounded-xl bg-violet-700 px-5 text-sm font-semibold text-white shadow-md shadow-violet-200 transition-all hover:bg-violet-800 disabled:opacity-60"
+                      className="flex h-9 items-center gap-2 rounded-xl bg-brand-700 px-5 text-sm font-semibold text-white shadow-md shadow-brand-200 transition-all hover:bg-brand-800 disabled:opacity-60"
                     >
                       {uploading ? (
                         <>
@@ -790,7 +790,7 @@ export default function BatchPage() {
                       key={`${f.name}-${i}`}
                       className="flex items-center gap-3 px-5 py-3"
                     >
-                      <FileSpreadsheet className="h-4 w-4 shrink-0 text-violet-500" />
+                      <FileSpreadsheet className="h-4 w-4 shrink-0 text-brand-500" />
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium text-slate-700 dark:text-slate-300">
                           {f.name}
@@ -949,7 +949,7 @@ export default function BatchPage() {
                         ? "bg-emerald-500"
                         : jobStatus.status === "failed"
                         ? "bg-red-500"
-                        : "bg-violet-500"
+                        : "bg-brand-500"
                     )}
                     style={{ width: `${progressPct}%` }}
                   />
@@ -960,17 +960,17 @@ export default function BatchPage() {
             {/* ── Combine / Merge section — placed above the queue list so the
                 action is visible without scrolling past every file ── */}
             {canCombine && (
-              <div className="rounded-2xl border border-violet-200 bg-violet-50 p-5 shadow-sm dark:border-violet-800/50 dark:bg-violet-950/20">
+              <div className="rounded-2xl border border-brand-200 bg-brand-50 p-5 shadow-sm dark:border-brand-800/50 dark:bg-brand-950/20">
                 <div className="flex flex-wrap items-center justify-between gap-4">
                   <div className="flex items-center gap-3">
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-violet-100 dark:bg-violet-900/50">
-                      <GitMerge className="h-4 w-4 text-violet-600 dark:text-violet-400" />
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-100 dark:bg-brand-900/50">
+                      <GitMerge className="h-4 w-4 text-brand-600 dark:text-brand-400" />
                     </div>
                     <div>
-                      <p className="text-sm font-semibold text-violet-900 dark:text-violet-200">
+                      <p className="text-sm font-semibold text-brand-900 dark:text-brand-200">
                         Merge Successful Extractions
                       </p>
-                      <p className="mt-0.5 text-xs text-violet-600 dark:text-violet-400">
+                      <p className="mt-0.5 text-xs text-brand-600 dark:text-brand-400">
                         Combine {jobStatus.succeeded} completed files into one
                         Excel workbook
                       </p>
@@ -1004,7 +1004,7 @@ export default function BatchPage() {
                       <button
                         onClick={handleCombine}
                         disabled={combineState === "combining"}
-                        className="flex items-center gap-1.5 rounded-lg bg-violet-700 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-violet-800 disabled:opacity-60"
+                        className="flex items-center gap-1.5 rounded-lg bg-brand-700 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-800 disabled:opacity-60"
                       >
                         {combineState === "combining" ? (
                           <>
@@ -1059,7 +1059,7 @@ export default function BatchPage() {
                         r.status === "running" &&
                           "bg-blue-50/40 dark:bg-blue-950/10",
                         displayStatus === "uploading" &&
-                          "bg-violet-50/30 dark:bg-violet-950/10"
+                          "bg-brand-50/30 dark:bg-brand-950/10"
                       )}
                     >
                       {/* Status-coloured file icon */}
@@ -1073,7 +1073,7 @@ export default function BatchPage() {
                             : r.status === "running"
                             ? "bg-blue-50 dark:bg-blue-950/50"
                             : displayStatus === "uploading"
-                            ? "bg-violet-50 dark:bg-violet-950/50"
+                            ? "bg-brand-50 dark:bg-brand-950/50"
                             : "bg-slate-100 dark:bg-slate-700"
                         )}
                       >
@@ -1087,7 +1087,7 @@ export default function BatchPage() {
                               : r.status === "running"
                               ? "text-blue-600 dark:text-blue-400"
                               : displayStatus === "uploading"
-                              ? "text-violet-600 dark:text-violet-400"
+                              ? "text-brand-600 dark:text-brand-400"
                               : "text-slate-400 dark:text-slate-500"
                           )}
                         />
@@ -1119,7 +1119,7 @@ export default function BatchPage() {
                           </p>
                         )}
                         {displayStatus === "uploading" && (
-                          <p className="mt-0.5 text-xs text-violet-500 dark:text-violet-400">
+                          <p className="mt-0.5 text-xs text-brand-500 dark:text-brand-400">
                             {r.status === "uploading" && i === uploadingFileIdx && directPct !== null
                               ? `Uploading… ${directPct}%`
                               : "Uploading…"}
@@ -1170,7 +1170,7 @@ export default function BatchPage() {
                               handleDownload(r.file_id, r.filename)
                             }
                             disabled={downloading === r.file_id}
-                            className="flex shrink-0 items-center gap-1.5 rounded-lg bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-violet-800 disabled:opacity-60"
+                            className="flex shrink-0 items-center gap-1.5 rounded-lg bg-brand-700 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-brand-800 disabled:opacity-60"
                           >
                             {downloading === r.file_id ? (
                               <Loader2 className="h-3 w-3 animate-spin" />

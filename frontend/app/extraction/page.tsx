@@ -174,15 +174,15 @@ function UploadZone({ file, onFile, disabled }: UploadZoneProps) {
       className={cn(
         "flex cursor-pointer flex-col items-center justify-center gap-5 rounded-2xl border-2 border-dashed px-6 py-16 transition-all duration-200",
         dragging
-          ? "border-violet-400 bg-violet-50 dark:bg-violet-950/30"
-          : "border-slate-200 bg-white hover:border-violet-300 hover:bg-violet-50/30 dark:border-slate-600 dark:bg-slate-800 dark:hover:border-violet-500 dark:hover:bg-violet-950/20",
+          ? "border-brand-400 bg-brand-50 dark:bg-brand-950/30"
+          : "border-slate-200 bg-white hover:border-brand-300 hover:bg-brand-50/30 dark:border-slate-600 dark:bg-slate-800 dark:hover:border-brand-500 dark:hover:bg-brand-950/20",
         disabled && "cursor-not-allowed opacity-60"
       )}
     >
       {file ? (
         <>
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-violet-100 dark:bg-violet-900/50">
-            <FileSpreadsheet className="h-8 w-8 text-violet-600 dark:text-violet-400" />
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-100 dark:bg-brand-900/50">
+            <FileSpreadsheet className="h-8 w-8 text-brand-600 dark:text-brand-400" />
           </div>
           <div className="text-center">
             <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">{file.name}</p>
@@ -201,11 +201,11 @@ function UploadZone({ file, onFile, disabled }: UploadZoneProps) {
         <>
           <div className={cn(
             "flex h-16 w-16 items-center justify-center rounded-2xl transition-colors",
-            dragging ? "bg-violet-100 dark:bg-violet-900/50" : "bg-slate-100 dark:bg-slate-700"
+            dragging ? "bg-brand-100 dark:bg-brand-900/50" : "bg-slate-100 dark:bg-slate-700"
           )}>
             <CloudUpload className={cn(
               "h-8 w-8 transition-colors",
-              dragging ? "text-violet-600 dark:text-violet-400" : "text-slate-400 dark:text-slate-500"
+              dragging ? "text-brand-600 dark:text-brand-400" : "text-slate-400 dark:text-slate-500"
             )} />
           </div>
           <div className="text-center">
@@ -221,7 +221,7 @@ function UploadZone({ file, onFile, disabled }: UploadZoneProps) {
           </div>
           <button
             type="button"
-            className="rounded-xl bg-violet-700 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-violet-200 hover:bg-violet-800 transition-colors"
+            className="rounded-xl bg-brand-700 px-6 py-2.5 text-sm font-semibold text-white shadow-md shadow-brand-200 hover:bg-brand-800 transition-colors"
             onClick={(e) => { e.stopPropagation(); inputRef.current?.click(); }}
           >
             Browse Files
@@ -436,7 +436,7 @@ const PreviewTable = memo(function PreviewTable({ cols, rows, totalRows, expande
           <button
             onClick={() => setPage(Math.max(1, safePage - 1))}
             disabled={safePage === 1}
-            className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 text-violet-700 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-950/30 disabled:opacity-40 transition-colors"
+            className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 text-brand-700 dark:text-brand-400 hover:bg-brand-50 dark:hover:bg-brand-950/30 disabled:opacity-40 transition-colors"
           >
             <ChevronLeft className="h-3.5 w-3.5" />
           </button>
@@ -446,7 +446,7 @@ const PreviewTable = memo(function PreviewTable({ cols, rows, totalRows, expande
           <button
             onClick={() => setPage(Math.min(totalPages, safePage + 1))}
             disabled={safePage === totalPages}
-            className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 text-violet-700 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-950/30 disabled:opacity-40 transition-colors"
+            className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 dark:border-slate-700 text-brand-700 dark:text-brand-400 hover:bg-brand-50 dark:hover:bg-brand-950/30 disabled:opacity-40 transition-colors"
           >
             <ChevronRight className="h-3.5 w-3.5" />
           </button>
@@ -993,7 +993,7 @@ export default function ExtractionPage() {
                 <div className="flex justify-center">
                   <button
                     onClick={handleRunClick}
-                    className="flex h-11 items-center gap-2 rounded-xl bg-violet-700 px-8 text-sm font-semibold text-white shadow-md shadow-violet-200 transition-all hover:bg-violet-800"
+                    className="flex h-11 items-center gap-2 rounded-xl bg-brand-700 px-8 text-sm font-semibold text-white shadow-md shadow-brand-200 transition-all hover:bg-brand-800"
                   >
                     <FileSpreadsheet className="h-4 w-4" />
                     Run Extraction
@@ -1026,7 +1026,7 @@ export default function ExtractionPage() {
                 <button
                   onClick={handleDownload}
                   disabled={downloading}
-                  className="flex h-9 items-center gap-2 rounded-xl bg-violet-700 px-4 text-sm font-semibold text-white shadow-md shadow-violet-200 hover:bg-violet-800 transition-colors disabled:opacity-60"
+                  className="flex h-9 items-center gap-2 rounded-xl bg-brand-700 px-4 text-sm font-semibold text-white shadow-md shadow-brand-200 hover:bg-brand-800 transition-colors disabled:opacity-60"
                 >
                   {downloading ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1046,8 +1046,8 @@ export default function ExtractionPage() {
                 icon: Hash,
                 label: "TOTAL ROWS",
                 value: result.total_rows.toLocaleString(),
-                iconClass: "text-violet-600",
-                bgClass: "bg-violet-50 dark:bg-violet-950/50",
+                iconClass: "text-brand-600",
+                bgClass: "bg-brand-50 dark:bg-brand-950/50",
               },
               {
                 icon: Tag,
@@ -1207,10 +1207,10 @@ export default function ExtractionPage() {
                 aria-label={previewExpanded ? "Exit fullscreen" : "Expand data preview to fullscreen"}
                 title={previewExpanded ? "Exit fullscreen (Esc)" : "Expand to fullscreen"}
                 className={cn(
-                  "flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/40",
+                  "flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400/40",
                   previewExpanded
-                    ? "border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-300 dark:hover:bg-violet-950/60"
-                    : "border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-violet-700 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-violet-400"
+                    ? "border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100 dark:border-brand-800 dark:bg-brand-950/40 dark:text-brand-300 dark:hover:bg-brand-950/60"
+                    : "border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-brand-700 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-brand-400"
                 )}
               >
                 {previewExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}

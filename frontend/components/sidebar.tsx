@@ -14,15 +14,20 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   ShieldCheck,
-  User,
-  Pencil,
-  ImagePlus,
-  ImageOff,
-  RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { clearToken, authHeaders, getRole } from "@/lib/auth";
 import { clearSession } from "@/lib/extraction-session";
+import { roleMeta } from "@/lib/roles";
+import { Avatar } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -42,7 +47,7 @@ const baseNavItems: NavItem[] = [
   { label: "Batch Extraction", href: "/batch",     icon: Layers },
   { label: "SPIR Comparison", href: "/compare",    icon: GitCompare },
   { label: "History",     href: "/history",      icon: History },
-  { label: "Settings",    href: "/settings",     icon: Settings },
+  // Settings lives in the profile menu (top-right avatar), not the sidebar.
 ];
 
 // ─── Sidebar collapse state ───────────────────────────────────────────────────
@@ -134,7 +139,7 @@ const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, isAd
       "sb-row flex w-full min-h-[40px] items-center rounded-lg py-2 text-sm font-medium transition-all duration-200",
       collapsed ? "justify-center gap-0 px-0" : "gap-3 px-3",
       active
-        ? "bg-violet-50 text-violet-700 dark:bg-violet-950/50 dark:text-violet-400"
+        ? "bg-brand-50 text-brand-700 dark:bg-brand-950/50 dark:text-brand-400"
         : "text-slate-600 hover:bg-slate-50 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
     );
 
@@ -163,13 +168,15 @@ const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, isAd
       <div
         className={cn(
           "sb-row group relative flex h-16 shrink-0 items-center border-b border-slate-100 dark:border-slate-700",
-          collapsed ? "justify-center" : "gap-3 px-4"
+          // pl-[18px]: centres the 28px logo on the nav icons' column (x = 32px).
+          collapsed ? "justify-center" : "gap-3 pl-[18px] pr-4"
         )}
         {...headerEvents}
       >
         <div
           className={cn(
-            "flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white shadow-sm ring-1 ring-slate-100",
+            // Icon-sized mark (24px tall, ~1.16:1 aspect) to match the nav icons.
+            "flex h-6 w-7 shrink-0 items-center justify-center",
             collapsed && cn(
               // Keyboard focus only (focus-visible): a mouse click that collapses
               // the sidebar leaves the button focused, but must not hide the logo.
@@ -180,20 +187,16 @@ const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, isAd
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src="/cdc_logo.jpg"
-            alt="CDC International"
+            src="/cdc-logo.png"
+            alt="CDC — Construction Development Company"
             className="h-full w-full object-contain"
           />
         </div>
         {!collapsed && (
-          <div className="sb-expanded-only flex min-w-0 flex-1 flex-col">
-            <span className="truncate text-sm font-bold leading-tight text-slate-900 dark:text-white tracking-wide uppercase">
-              SPIR TOOL
-            </span>
-            <span className="truncate text-[10px] leading-tight text-slate-400 dark:text-slate-500 tracking-wide">
-              Extraction Platform
-            </span>
-          </div>
+          // Single line, vertically centred on the logo (the header row is items-center).
+          <span className="sb-expanded-only min-w-0 flex-1 truncate text-[15px] font-bold leading-6 tracking-[-0.01em] text-slate-900">
+            Spir Tool
+          </span>
         )}
         {onToggle && (
           <button
@@ -210,7 +213,7 @@ const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, isAd
             aria-controls="app-sidebar"
             title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
             className={cn(
-              "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 hover:text-violet-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/40 dark:text-slate-500 dark:hover:text-violet-300",
+              "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 hover:text-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400/40 dark:text-slate-500 dark:hover:text-brand-300",
               collapsed
                 ? cn(
                     // Stacked exactly over the centered 32px logo; hidden until revealed.
@@ -247,12 +250,12 @@ const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, isAd
               <Icon
                 className={cn(
                   "h-4 w-4 shrink-0",
-                  isActive ? "text-violet-600 dark:text-violet-400" : "text-slate-400 dark:text-slate-500"
+                  isActive ? "text-brand-600 dark:text-brand-400" : "text-slate-400 dark:text-slate-500"
                 )}
               />
               <span className={cn("sb-expanded-only", LABEL_TRANSITION, collapsed ? LABEL_CLOSED : LABEL_OPEN)}>{item.label}</span>
               {isActive && !collapsed && (
-                <span className="sb-expanded-only ml-auto h-1.5 w-1.5 rounded-full bg-amber-500" />
+                <span className="sb-expanded-only ml-auto h-1.5 w-1.5 rounded-full bg-cdc-gold" />
               )}
             </button>
           );
@@ -270,12 +273,12 @@ const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, isAd
           <ShieldCheck
             className={cn(
               "h-4 w-4 shrink-0",
-              adminIsActive ? "text-violet-600 dark:text-violet-400" : "text-slate-400 dark:text-slate-500"
+              adminIsActive ? "text-brand-600 dark:text-brand-400" : "text-slate-400 dark:text-slate-500"
             )}
           />
           <span className={cn("sb-expanded-only", LABEL_TRANSITION, collapsed ? LABEL_CLOSED : LABEL_OPEN)}>Admin</span>
           {adminIsActive && !collapsed && (
-            <span className="sb-expanded-only ml-auto h-1.5 w-1.5 rounded-full bg-amber-500" />
+            <span className="sb-expanded-only ml-auto h-1.5 w-1.5 rounded-full bg-cdc-gold" />
           )}
         </button>
       </nav>
@@ -287,248 +290,86 @@ const SidebarContent = memo(function SidebarContent({ pathname, onNavigate, isAd
 
 const TopNavbar = memo(function TopNavbar({
   onMenuClick,
-  userInitials,
   username,
   email,
   role,
   count,
   avatarUrl,
   onLogout,
-  onAvatarUploaded,
-  onAvatarRemoved,
 }: {
   onMenuClick?: () => void;
-  userInitials: string;
   username: string;
   email: string;
   role: string;
   count: number;
   avatarUrl: string;
   onLogout: () => void;
-  onAvatarUploaded: (url: string) => void;
-  onAvatarRemoved: () => void;
 }) {
-  const [showProfile, setShowProfile] = useState(false);
-  const [showAvatarMenu, setShowAvatarMenu] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const profileRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (profileRef.current && !profileRef.current.contains(e.target as Node)) {
-        setShowProfile(false);
-      }
-    }
-    function handleEscape(e: KeyboardEvent) {
-      if (e.key === "Escape") setShowProfile(false);
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    document.addEventListener("keydown", handleEscape);
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-      document.removeEventListener("keydown", handleEscape);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!showProfile) setShowAvatarMenu(false);
-  }, [showProfile]);
-
-  async function handleAvatarUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    try {
-      const form = new FormData();
-      form.append("file", file);
-      const res = await fetch(`${API_URL}/api/avatar`, {
-        method: "POST",
-        headers: { ...authHeaders() },
-        body: form,
-      });
-      if (res.ok) {
-        const data = await res.json();
-        onAvatarUploaded(data.avatar_url);
-      }
-    } catch {
-      // ignore
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
-  }
-
-  async function handleAvatarRemove() {
-    setShowAvatarMenu(false);
-    setUploading(true);
-    try {
-      const res = await fetch(`${API_URL}/api/avatar`, {
-        method: "DELETE",
-        headers: { ...authHeaders() },
-      });
-      if (res.ok) {
-        onAvatarRemoved();
-      }
-    } catch {
-      // ignore
-    } finally {
-      setUploading(false);
-    }
-  }
-
+  const router = useRouter();
   const avatarSrc = avatarUrl ? `${API_URL}${avatarUrl}` : "";
+  const roleInfo = roleMeta(role);
 
   return (
     // h-16 matches the sidebar header so the two borders sit on one line.
-    <header className="flex h-16 items-center gap-3 border-b border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 px-4 lg:px-6">
+    <header className="flex h-16 items-center gap-3 border-b border-slate-200/80 bg-white/80 px-4 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/80 lg:px-6">
       {/* Mobile menu */}
       {onMenuClick && (
         <button
           onClick={onMenuClick}
           aria-label="Open navigation menu"
-          className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200 lg:hidden"
+          className="rounded-full p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200 lg:hidden"
         >
           <Menu className="h-5 w-5" />
         </button>
       )}
 
       <div className="ml-auto flex items-center">
-        {/* User avatar + profile dropdown */}
-        <div className="relative" ref={profileRef}>
-          <button
-            onClick={() => {
-              window.dispatchEvent(new CustomEvent("profile-refresh"));
-              setShowProfile((p) => !p);
-            }}
+        {/* Profile menu: identity, stats, account settings, sign out. */}
+        <DropdownMenu
+          onOpenChange={(open) => {
+            if (open) window.dispatchEvent(new CustomEvent("profile-refresh"));
+          }}
+        >
+          <DropdownMenuTrigger
             title={username}
             aria-label="Open profile menu"
-            aria-expanded={showProfile}
-            className="avatar-btn flex h-8 w-8 shrink-0 items-center justify-center rounded-full overflow-hidden bg-violet-600 text-xs font-bold text-white ring-2 ring-violet-300 ring-offset-1 dark:ring-violet-700 dark:ring-offset-slate-900 cursor-pointer hover:ring-violet-400 transition-all duration-150 shadow-sm"
+            className="flex h-9 w-9 items-center justify-center rounded-full transition-shadow hover:ring-4 hover:ring-brand-500/15 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand-500/25"
           >
-            {avatarSrc ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={avatarSrc} alt={username} className="h-full w-full object-cover" />
-            ) : (
-              userInitials || <User className="h-4 w-4" />
-            )}
-          </button>
+            {/* The avatar fills the button. avatar-btn = pre-hydration initials overlay (globals.css). */}
+            <Avatar src={avatarSrc} name={username} tone="solid" className="avatar-btn h-9 w-9 text-xs" />
+          </DropdownMenuTrigger>
 
-          {showProfile && (
-            <div
-              role="menu"
-              className="absolute right-0 top-10 z-50 w-64 rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900 overflow-hidden animate-in fade-in-0 zoom-in-95 duration-150"
-            >
-              {/* Hidden file input */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/jpeg,image/png,image/webp,image/gif"
-                className="hidden"
-                onChange={handleAvatarUpload}
-              />
-
-              {/* Identity block */}
-              <div className="flex items-center gap-3 px-4 pt-4 pb-3">
-                <div className="relative shrink-0">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-xl overflow-hidden bg-violet-100 dark:bg-violet-900/60 shadow-sm ring-1 ring-violet-200 dark:ring-violet-800">
-                    {avatarSrc ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={avatarSrc} alt={username} className="h-full w-full object-cover" />
-                    ) : (
-                      <span className="text-base font-bold text-violet-700 dark:text-violet-300">
-                        {userInitials || <User className="h-5 w-5" />}
-                      </span>
-                    )}
-                  </div>
-                  <button
-                    onClick={() => setShowAvatarMenu((p) => !p)}
-                    disabled={uploading}
-                    title="Edit photo"
-                    className="absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-violet-600 text-white hover:bg-violet-700 transition-colors shadow-sm disabled:opacity-60"
-                  >
-                    <Pencil className="h-2.5 w-2.5" />
-                  </button>
-                  {showAvatarMenu && (
-                    <div className="absolute top-full left-0 mt-1.5 z-[70] min-w-[168px] rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-xl overflow-hidden">
-                      {avatarSrc ? (
-                        <>
-                          <button
-                            onClick={() => { setShowAvatarMenu(false); fileInputRef.current?.click(); }}
-                            className="flex w-full items-center gap-2 px-3 py-2 text-xs text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
-                          >
-                            <RefreshCw className="h-3 w-3 shrink-0 text-slate-400" />
-                            Change Profile Photo
-                          </button>
-                          <button
-                            onClick={handleAvatarRemove}
-                            className="flex w-full items-center gap-2 px-3 py-2 text-xs text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
-                          >
-                            <ImageOff className="h-3 w-3 shrink-0" />
-                            Remove Profile Photo
-                          </button>
-                        </>
-                      ) : (
-                        <button
-                          onClick={() => { setShowAvatarMenu(false); fileInputRef.current?.click(); }}
-                          className="flex w-full items-center gap-2 px-3 py-2 text-xs text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
-                        >
-                          <ImagePlus className="h-3 w-3 shrink-0 text-slate-400" />
-                          Upload Profile Photo
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5 mb-0.5">
-                    <p className="truncate text-sm font-bold text-slate-900 dark:text-slate-100 leading-tight">
-                      {username}
-                    </p>
-                    {role && (
-                      <span className={cn(
-                        "shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide",
-                        role === "super_admin" || role === "admin"
-                          ? "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300"
-                          : role === "branch_admin"
-                          ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
-                          : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"
-                      )}>
-                        {role === "super_admin" ? "Super Admin" : role === "branch_admin" ? "Branch Admin" : role}
-                      </span>
-                    )}
-                  </div>
-                  {email && (
-                    <p className="truncate text-xs text-slate-500 dark:text-slate-400">{email}</p>
-                  )}
-                </div>
-              </div>
-
-              {/* Extractions count */}
-              <div className="mx-4 mb-3 flex items-center justify-between rounded-lg bg-slate-50 dark:bg-slate-800/60 px-3 py-2">
-                <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
-                  Total Extractions
-                </span>
-                <span className="text-base font-bold text-violet-700 dark:text-violet-400 tabular-nums">
-                  {count.toLocaleString()}
-                </span>
-              </div>
-
-              {/* Sign out */}
-              <div className="px-4 pb-4">
-                <button
-                  role="menuitem"
-                  onClick={() => { setShowProfile(false); onLogout(); }}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 dark:bg-violet-900 dark:hover:bg-violet-800 transition-all duration-150 active:scale-[0.98]"
-                >
-                  <LogOut className="h-4 w-4" />
-                  Sign Out
-                </button>
+          <DropdownMenuContent className="w-72">
+            {/* Identity */}
+            <div className="flex items-center gap-3 px-2.5 pb-3 pt-2">
+              <Avatar src={avatarSrc} name={username} size="lg" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-bold text-slate-900 dark:text-slate-100">{username}</p>
+                {email && <p className="truncate text-xs text-slate-500 dark:text-slate-400">{email}</p>}
+                {roleInfo.label && (
+                  <Badge variant={roleInfo.variant} className="mt-1 uppercase tracking-wide">
+                    {roleInfo.label}
+                  </Badge>
+                )}
               </div>
             </div>
-          )}
-        </div>
+
+            <DropdownMenuSeparator />
+            {/* Stat row — same type, icon and padding as the menu items below. */}
+            <div className="flex w-full items-center gap-2.5 px-3 py-2 text-sm font-medium text-slate-700">
+              <FileSpreadsheet className="h-4 w-4 shrink-0 text-slate-400" />
+              Total extractions
+              <span className="ml-auto tabular-nums text-slate-700">{count.toLocaleString()}</span>
+            </div>
+            <DropdownMenuItem icon={Settings} onClick={() => router.push("/settings")}>
+              Account settings
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem icon={LogOut} tone="danger" onClick={onLogout}>
+              Sign out
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </header>
   );
@@ -545,9 +386,7 @@ export function SidebarLayout({ children }: SidebarProps) {
   // Desktop rail state comes from SidebarProvider (root layout) — see the note
   // there for why it can't live in this per-page component.
   const { collapsed: sidebarCollapsed, toggle: toggleSidebar, animate: animateSidebar } = useContext(SidebarContext);
-  const [darkMode, setDarkMode] = useState(false);
   const [mounted, setMounted] = useState(false);
-  const [userInitials, setUserInitials] = useState("");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("");
@@ -558,14 +397,8 @@ export function SidebarLayout({ children }: SidebarProps) {
   const [isAdmin, setIsAdmin] = useState(false);
 
   useIsomorphicLayoutEffect(() => {
-    const saved = localStorage.getItem("theme");
-    if (saved === "dark") setDarkMode(true);
-
     const cachedName = localStorage.getItem("profile_username") ?? "";
-    if (cachedName) {
-      setUsername(cachedName);
-      setUserInitials(cachedName.slice(0, 2).toUpperCase() || "");
-    }
+    if (cachedName) setUsername(cachedName);
 
     const cachedAvatar = localStorage.getItem("profile_avatar_url") ?? "";
     if (cachedAvatar) setAvatarUrl(cachedAvatar);
@@ -595,7 +428,6 @@ export function SidebarLayout({ children }: SidebarProps) {
       const data = await meRes.json();
       const name: string = data.username ?? "";
       setUsername(name);
-      setUserInitials(name.slice(0, 2).toUpperCase() || "");
       setEmail(data.email ?? "");
       setRole(data.role ?? "");
       setCount(data.total_files_extracted ?? 0);
@@ -616,14 +448,6 @@ export function SidebarLayout({ children }: SidebarProps) {
     window.addEventListener("profile-refresh", refreshProfile);
     return () => window.removeEventListener("profile-refresh", refreshProfile);
   }, [refreshProfile]);
-
-  // Persist theme and apply class to <html>
-  // mounted guard prevents removing the pre-paint dark class on initial render
-  useEffect(() => {
-    if (!mounted) return;
-    localStorage.setItem("theme", darkMode ? "dark" : "light");
-    document.documentElement.classList.toggle("dark", darkMode);
-  }, [darkMode, mounted]);
 
   const handleLogout = useCallback(async () => {
     try {
@@ -654,16 +478,6 @@ export function SidebarLayout({ children }: SidebarProps) {
     clearToken();
     localStorage.removeItem("profile_avatar_url");
     window.location.href = "/login";
-  }, []);
-
-  const handleAvatarUploaded = useCallback((url: string) => {
-    setAvatarUrl(url);
-    localStorage.setItem("profile_avatar_url", url);
-  }, []);
-
-  const handleAvatarRemoved = useCallback(() => {
-    setAvatarUrl("");
-    localStorage.removeItem("profile_avatar_url");
   }, []);
 
   const handleMenuClick = useCallback(() => setMobileOpen(true), []);
@@ -719,15 +533,12 @@ export function SidebarLayout({ children }: SidebarProps) {
       <div className="flex flex-1 flex-col overflow-hidden">
         <TopNavbar
           onMenuClick={handleMenuClick}
-          userInitials={userInitials}
           username={username}
           email={email}
           role={role}
           count={count}
           avatarUrl={avatarUrl}
           onLogout={handleLogout}
-          onAvatarUploaded={handleAvatarUploaded}
-          onAvatarRemoved={handleAvatarRemoved}
         />
         <main className="flex-1 overflow-y-auto">{children}</main>
       </div>

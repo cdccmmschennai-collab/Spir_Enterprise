@@ -107,9 +107,9 @@ export function ColumnFilter({ label, numeric, selected, sortDir, getValues, onA
         className={cn(
           "flex h-5 w-5 shrink-0 items-center justify-center rounded border transition-colors",
           filtered
-            ? "border-violet-700 bg-violet-700 text-white"
-            : "border-slate-200 bg-white text-slate-500 hover:border-violet-400 hover:text-violet-700 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300 dark:hover:text-violet-400",
-          !filtered && sortDir && "text-violet-700 dark:text-violet-400"
+            ? "border-brand-700 bg-brand-700 text-white"
+            : "border-slate-200 bg-white text-slate-500 hover:border-brand-400 hover:text-brand-700 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300 dark:hover:text-brand-400",
+          !filtered && sortDir && "text-brand-700 dark:text-brand-400"
         )}
       >
         {filtered ? (
@@ -309,7 +309,7 @@ function FilterMenu({ anchor, numeric, selected, values, onClose, onApply, onSor
           value={term}
           onChange={(e) => onSearch(e.target.value)}
           placeholder="Search..."
-          className="h-8 w-full rounded-lg border border-input bg-background pl-7 pr-2 text-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:bg-slate-900"
+          className="h-8 w-full rounded-lg border border-input bg-background pl-7 pr-2 text-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 dark:bg-slate-900"
         />
       </div>
 
@@ -321,7 +321,7 @@ function FilterMenu({ anchor, numeric, selected, values, onClose, onApply, onSor
             checked={allListedChecked}
             onChange={toggleAll}
             disabled={listedKeys.length === 0}
-            className="h-3.5 w-3.5 rounded border-slate-300 accent-violet-700"
+            className="h-3.5 w-3.5 rounded border-slate-300 accent-brand-700"
           />
           (Select All)
         </label>
@@ -334,7 +334,7 @@ function FilterMenu({ anchor, numeric, selected, values, onClose, onApply, onSor
                 type="checkbox"
                 checked={draft.has(k)}
                 onChange={() => toggleOne(k)}
-                className="h-3.5 w-3.5 shrink-0 rounded border-slate-300 accent-violet-700"
+                className="h-3.5 w-3.5 shrink-0 rounded border-slate-300 accent-brand-700"
               />
               <span className={cn("truncate", k === BLANK_KEY && "italic text-slate-500 dark:text-slate-400")}>
                 {keyLabel(k)}
@@ -349,7 +349,7 @@ function FilterMenu({ anchor, numeric, selected, values, onClose, onApply, onSor
         <button
           type="button"
           onClick={apply}
-          className="flex h-8 flex-1 items-center justify-center rounded-lg bg-violet-700 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-violet-800"
+          className="flex h-8 flex-1 items-center justify-center rounded-lg bg-brand-700 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-brand-800"
         >
           OK
         </button>

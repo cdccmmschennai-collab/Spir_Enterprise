@@ -673,11 +673,32 @@ async def get_stats(
             )
         )
 
+    # Daily extraction counts for the KPI sparkline / "vs yesterday" delta:
+    # the last 14 UTC days (same day boundary as today_extractions), oldest
+    # first, zero-filled, same branch scoping as the totals above.
+    from datetime import timedelta
+    days = 14
+    window_start = today_start - timedelta(days=days - 1)
+    day_col = func.date_trunc("day", func.timezone("UTC", ExtractionHistory.created_at))
+    daily_q = (
+        select(day_col.label("day"), func.count().label("n"))
+        .where(ExtractionHistory.created_at >= window_start)
+        .group_by(day_col)
+    )
+    if td.role == BRANCH_ADMIN and td.branch_id:
+        daily_q = daily_q.where(ExtractionHistory.user_id.in_(branch_user_ids))
+    counts = {row.day.date(): int(row.n) for row in (await db.execute(daily_q)).all()}
+    daily_extractions = [
+        {"date": d.isoformat(), "count": counts.get(d, 0)}
+        for d in ((window_start + timedelta(days=i)).date() for i in range(days))
+    ]
+
     return {
         "total_users": int(total_users or 0),
         "active_users": int(active_users or 0),
         "total_extractions": int(total_extractions or 0),
         "today_extractions": int(today_extractions or 0),
+        "daily_extractions": daily_extractions,
     }
 
 
@@ -707,6 +728,148 @@ async def get_activity_logs(
     result = await db.execute(q)
     rows = result.scalars().all()
     return [ActivityLogOut.model_validate(r) for r in rows]
+
+
+# ── Login history (Audit tab — super_admin only) ─────────────────────────────
+
+class LoginHistoryItem(BaseModel):
+    session_id: str
+    user_id: str
+    username: str
+    email: Optional[str]
+    role: str
+    branch_id: Optional[str]
+    branch_name: Optional[str]
+    ip_address: Optional[str]
+    user_agent: Optional[str]
+    login_at: datetime
+    last_activity_at: datetime
+    ended_at: Optional[datetime]
+    expires_at: datetime
+    status: str  # active | signed_out | expired
+    extractions: int  # files extracted during this login
+
+
+class LoginHistoryPage(BaseModel):
+    items: list[LoginHistoryItem]
+    total: int
+
+
+def _session_status(sess: Session, now: datetime) -> str:
+    """signed_out = logged out / revoked; expired = token lapsed; else active."""
+    if sess.ended_at is not None or not sess.is_active:
+        return "signed_out"
+    expires = sess.expires_at
+    if expires.tzinfo is None:  # SQLite returns naive datetimes
+        expires = expires.replace(tzinfo=timezone.utc)
+    return "expired" if expires <= now else "active"
+
+
+@admin_router.get("/login-history", response_model=LoginHistoryPage)
+async def get_login_history(
+    q: Optional[str] = None,
+    branch_id: Optional[str] = None,
+    role: Optional[str] = None,
+    status_filter: Optional[str] = None,
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+    limit: int = 50,
+    offset: int = 0,
+    td: TokenData = Depends(require_super_admin),
+    db=Depends(get_db),
+) -> LoginHistoryPage:
+    """
+    One row per login (a `sessions` row), newest first, for super admins.
+
+    Filters: q (username / email / IP, case-insensitive substring), branch_id
+    ("none" = no branch), role, status_filter (active | signed_out | expired),
+    date_from / date_to (login time, ISO datetimes; to is exclusive).
+    """
+    from sqlalchemy import and_, or_
+    from sqlalchemy.orm import aliased
+
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    now = datetime.now(timezone.utc)
+    B = aliased(Branch)
+
+    conds = []
+    if q and q.strip():
+        needle = q.strip().lower()
+        conds.append(or_(
+            func.lower(User.username).contains(needle, autoescape=True),
+            func.lower(func.coalesce(User.email, "")).contains(needle, autoescape=True),
+            func.lower(func.coalesce(Session.ip_address, "")).contains(needle, autoescape=True),
+        ))
+    if branch_id == "none":
+        conds.append(User.branch_id.is_(None))
+    elif branch_id:
+        conds.append(User.branch_id == branch_id)
+    if role:
+        # Legacy "admin" accounts are super admins.
+        conds.append(User.role.in_(["super_admin", "admin"]) if role == "super_admin" else User.role == role)
+    if status_filter == "signed_out":
+        conds.append(or_(Session.ended_at.is_not(None), Session.is_active.is_(False)))
+    elif status_filter == "expired":
+        conds.append(and_(Session.ended_at.is_(None), Session.is_active.is_(True), Session.expires_at <= now))
+    elif status_filter == "active":
+        conds.append(and_(Session.ended_at.is_(None), Session.is_active.is_(True), Session.expires_at > now))
+    if date_from:
+        conds.append(Session.created_at >= date_from)
+    if date_to:
+        conds.append(Session.created_at < date_to)
+
+    # Extractions during this login. Rows written by the API carry session_id;
+    # Celery-worker rows (heavy/giant/batch) have session_id NULL, so those are
+    # attributed by user + time window (sign-in → sign-out, else token expiry).
+    EH = ExtractionHistory
+    extracted = (
+        select(func.count(EH.id))
+        .where(or_(
+            EH.session_id == Session.id,
+            and_(
+                EH.session_id.is_(None),
+                EH.user_id == Session.user_id,
+                EH.created_at >= Session.created_at,
+                EH.created_at <= func.coalesce(Session.ended_at, Session.expires_at),
+            ),
+        ))
+        .correlate(Session)
+        .scalar_subquery()
+    )
+
+    base = (
+        select(Session, User, B.name, extracted.label("extractions"))
+        .join(User, User.id == Session.user_id)
+        .outerjoin(B, B.id == User.branch_id)
+        .where(*conds)
+    )
+    total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
+    rows = (
+        await db.execute(base.order_by(desc(Session.created_at)).offset(offset).limit(limit))
+    ).all()
+
+    items = [
+        LoginHistoryItem(
+            session_id=sess.id,
+            user_id=user.id,
+            username=user.username,
+            email=user.email,
+            role=SUPER_ADMIN if user.role == "admin" else user.role,
+            branch_id=user.branch_id,
+            branch_name=branch_name,
+            ip_address=sess.ip_address,
+            user_agent=sess.user_agent,
+            login_at=sess.created_at,
+            last_activity_at=sess.last_activity_at,
+            ended_at=sess.ended_at,
+            expires_at=sess.expires_at,
+            status=_session_status(sess, now),
+            extractions=int(extractions or 0),
+        )
+        for sess, user, branch_name, extractions in rows
+    ]
+    return LoginHistoryPage(items=items, total=int(total))
 
 
 @admin_router.get("/extraction-history", response_model=list[ExtractionHistoryOut])

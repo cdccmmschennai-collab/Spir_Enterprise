@@ -477,12 +477,20 @@ async def me(
         total_files = int(result.scalar() or 0)
         if user:
             role = user.role if user.role != "admin" else SUPER_ADMIN
+            # Branch name for the account page (regular users can't call the
+            # admin branches endpoint, so resolve it here).
+            branch_name = None
+            if user.branch_id:
+                from spir_dynamic.db.models import Branch
+                branch = await db.get(Branch, user.branch_id)
+                branch_name = branch.name if branch else None
             return {
                 "id": user.id,
                 "username": user.username,
                 "email": user.email,
                 "role": role,
                 "branch_id": user.branch_id,
+                "branch_name": branch_name,
                 "created_at": user.created_at,
                 "last_login_at": user.last_login_at,
                 "total_files_extracted": total_files,
@@ -493,6 +501,8 @@ async def me(
         "username": td.username,
         "email": None,
         "role": td.role,
+        "branch_id": None,
+        "branch_name": None,
         "created_at": None,
         "last_login_at": None,
         "total_files_extracted": 0,

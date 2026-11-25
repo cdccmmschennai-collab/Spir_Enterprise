@@ -11,23 +11,29 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // CDC INT brand purple, sampled from the logo (public/cdc_logo.jpg, solid
-        // fill ≈ #6C2462, hue 308°). The 700 step (primary buttons) is lifted a
-        // touch lighter than the logo for visibility; white text on it is ~9:1.
-        // Overrides Tailwind's stock violet so every existing `violet-*` utility
-        // renders the brand hue instead of the default AI-violet.
-        violet: {
-          50: "#F9F0F8",
-          100: "#F4E1F1",
-          200: "#E9C4E4",
-          300: "#D897CF",
-          400: "#C464B7",
-          500: "#A83899",
-          600: "#8E2F81",
-          700: "#77286C",
-          800: "#602057",
-          900: "#491842",
-          950: "#2E0F2A",
+        // CDC brand navy, built around the logo's lettering (public/cdc-logo.png,
+        // #003A89 = the 700 step, used for primary buttons; white text ~10:1).
+        // Lighter steps for tints/active states, 300–400 for dark-mode text.
+        brand: {
+          50: "#EEF4FC",
+          100: "#D9E6F8",
+          200: "#B5CDF0",
+          300: "#85ACE3",
+          400: "#4F82D0",
+          500: "#2662BA",
+          600: "#0F4CA3",
+          700: "#003A89",
+          800: "#002F70",
+          900: "#002456",
+          950: "#001536",
+        },
+        // New CDC logo palette, sampled from cdc-logo.png: gold fill #FFC420,
+        // navy lettering #003A89. Gold is for fills/glows only (low contrast as
+        // text on white); navy carries text, links and primary buttons (~10:1).
+        cdc: {
+          gold: "#FFC420",
+          navy: "#003A89",
+          "navy-dark": "#002B66",
         },
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
@@ -78,12 +84,17 @@ const config: Config = {
           from: { transform: "translateX(-100%)" },
           to: { transform: "translateX(250%)" },
         },
+        "cdc-rise": {
+          from: { opacity: "0", transform: "translateY(16px)" },
+          to: { opacity: "1", transform: "translateY(0)" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
         "fade-in": "fade-in 0.3s ease-out",
         "progress-indeterminate": "progress-indeterminate 1.6s ease-in-out infinite",
+        "cdc-rise": "cdc-rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) both",
       },
     },
   },

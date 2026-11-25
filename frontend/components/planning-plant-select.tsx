@@ -152,7 +152,7 @@ export const PlanningPlantSelect = forwardRef<HTMLButtonElement, PlanningPlantSe
             invalid
               ? "border-red-300 bg-red-50/40 dark:border-red-800 dark:bg-red-950/10"
               : open
-              ? "border-violet-400 ring-2 ring-violet-400/30 dark:border-violet-500"
+              ? "border-brand-400 ring-2 ring-brand-400/30 dark:border-brand-500"
               : "border-slate-200 hover:border-slate-300 dark:border-slate-600 dark:hover:border-slate-500",
             disabled && "opacity-60"
           )}
@@ -172,7 +172,7 @@ export const PlanningPlantSelect = forwardRef<HTMLButtonElement, PlanningPlantSe
             onKeyDown={onTriggerKeyDown}
             className={cn(
               "absolute inset-0 rounded-xl focus-visible:outline-none focus-visible:ring-2",
-              invalid ? "focus-visible:ring-red-400/40" : "focus-visible:ring-violet-400/40",
+              invalid ? "focus-visible:ring-red-400/40" : "focus-visible:ring-brand-400/40",
               disabled ? "cursor-not-allowed" : "cursor-pointer"
             )}
           />
@@ -195,7 +195,7 @@ export const PlanningPlantSelect = forwardRef<HTMLButtonElement, PlanningPlantSe
               aria-label="Clear Planning Plant"
               title="Clear Planning Plant"
               onClick={clear}
-              className="relative z-10 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/40 dark:text-slate-500 dark:hover:bg-slate-700 dark:hover:text-slate-200"
+              className="relative z-10 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400/40 dark:text-slate-500 dark:hover:bg-slate-700 dark:hover:text-slate-200"
             >
               <X className="h-3.5 w-3.5" />
             </button>
@@ -204,7 +204,7 @@ export const PlanningPlantSelect = forwardRef<HTMLButtonElement, PlanningPlantSe
             aria-hidden
             className={cn(
               "pointer-events-none h-4 w-4 shrink-0 text-slate-400 transition-transform duration-150 dark:text-slate-500",
-              open && "rotate-180 text-violet-600 dark:text-violet-400"
+              open && "rotate-180 text-brand-600 dark:text-brand-400"
             )}
           />
         </div>
@@ -255,16 +255,16 @@ export const PlanningPlantSelect = forwardRef<HTMLButtonElement, PlanningPlantSe
                     onClick={() => commit(p)}
                     className={cn(
                       "flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm",
-                      i === active ? "bg-violet-50 dark:bg-violet-950/40" : "bg-transparent",
+                      i === active ? "bg-brand-50 dark:bg-brand-950/40" : "bg-transparent",
                       selected
-                        ? "font-semibold text-violet-700 dark:text-violet-300"
+                        ? "font-semibold text-brand-700 dark:text-brand-300"
                         : "text-slate-700 dark:text-slate-300"
                     )}
                   >
                     <span className="min-w-0 flex-1 truncate">{planningPlantLabel(p)}</span>
                     <Check
                       aria-hidden
-                      className={cn("h-4 w-4 shrink-0 text-violet-600 dark:text-violet-400", !selected && "invisible")}
+                      className={cn("h-4 w-4 shrink-0 text-brand-600 dark:text-brand-400", !selected && "invisible")}
                     />
                   </li>
                 );
