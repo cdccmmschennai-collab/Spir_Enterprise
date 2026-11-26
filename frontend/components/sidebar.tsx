@@ -18,6 +18,7 @@ import {
 import { cn } from "@/lib/utils";
 import { clearToken, authHeaders, getRole } from "@/lib/auth";
 import { clearSession } from "@/lib/extraction-session";
+import { clearCompareSession, resetCompareMemory } from "@/lib/compare-session";
 import { roleMeta } from "@/lib/roles";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -475,6 +476,8 @@ export function SidebarLayout({ children }: SidebarProps) {
       // non-fatal — isolation is still guaranteed by user-scoped keys
     }
     clearSession(); // single-file extraction session (also user-scoped in extraction-session.ts)
+    clearCompareSession(); // comparison result (user-scoped in compare-session.ts)
+    resetCompareMemory();
     clearToken();
     localStorage.removeItem("profile_avatar_url");
     window.location.href = "/login";

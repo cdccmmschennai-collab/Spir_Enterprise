@@ -22,7 +22,7 @@ export interface ExtractionSession {
 // Decode JWT to get the user's stable DB UUID (uid claim), falling back to
 // the username (sub claim) in legacy/no-DB mode. Keying by uid is consistent
 // with how the backend scopes extraction_history records.
-function getUserId(): string {
+export function getUserId(): string {
   if (typeof window === "undefined") return "";
   try {
     const token = localStorage.getItem("token");

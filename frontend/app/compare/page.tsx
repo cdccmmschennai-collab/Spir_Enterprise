@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   ArrowRight,
@@ -15,6 +15,15 @@ import {
 import { SidebarLayout } from "@/components/sidebar";
 import { authHeaders } from "@/lib/auth";
 import { cn, formatBytes } from "@/lib/utils";
+import {
+  clearCompareSession,
+  compareMemory,
+  loadCompareSession,
+  resetCompareMemory,
+  saveCompareSession,
+  type CompareOutcome,
+  type PendingCompare,
+} from "@/lib/compare-session";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const ACCEPTED = ".xlsx,.xlsm,.xls";
@@ -219,29 +228,14 @@ function SideCard({ title, side }: { title: string; side: FileSide }) {
 
 // ─── Page ──────────────────────────────────────────────────────────────────────
 
-export default function ComparePage() {
-  const [source, setSource] = useState<File | null>(null);
-  const [comparison, setComparison] = useState<File | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<CompareResult | null>(null);
-  const [downloading, setDownloading] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
-
-  const sameFile =
-    !!source && !!comparison && source.name === comparison.name && source.size === comparison.size;
-  const ready = !!source && !!comparison && !sameFile && !loading;
-
-  const handleCompare = useCallback(async () => {
-    if (!source || !comparison) return;
-    setLoading(true);
-    setError(null);
-    setResult(null);
-    const controller = new AbortController();
-    abortRef.current = controller;
-    const form = new FormData();
-    form.append("source_file", source);
-    form.append("comparison_file", comparison);
+// Runs the request outside the component so it keeps going (and its result is
+// saved) even if the user navigates to another tab while it is in flight.
+function startCompare(source: File, comparison: File): PendingCompare {
+  const controller = new AbortController();
+  const form = new FormData();
+  form.append("source_file", source);
+  form.append("comparison_file", comparison);
+  const promise = (async (): Promise<CompareOutcome> => {
     try {
       const res = await fetch(`${API_URL}/api/compare`, {
         method: "POST",
@@ -249,28 +243,93 @@ export default function ComparePage() {
         body: form,
         signal: controller.signal,
       });
-      if (res.status === 401) {
-        setError("Session expired. Please log in again.");
-        return;
-      }
+      if (res.status === 401) return { kind: "error", message: "Session expired. Please log in again." };
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(typeof body.detail === "string" ? body.detail : `Comparison failed (${res.status})`);
-        return;
+        return {
+          kind: "error",
+          message: typeof body.detail === "string" ? body.detail : `Comparison failed (${res.status})`,
+        };
       }
-      setResult(body as CompareResult);
+      // Only persist if this run was not cancelled / replaced meanwhile.
+      if (compareMemory.pending?.controller === controller) saveCompareSession(body);
+      return { kind: "result", result: body };
     } catch (err) {
-      if ((err as Error)?.name !== "AbortError") {
-        setError("Could not reach the server. Is the backend running?");
-      }
-    } finally {
-      if (abortRef.current === controller) abortRef.current = null;
-      setLoading(false);
+      if ((err as Error)?.name === "AbortError") return { kind: "aborted" };
+      return { kind: "error", message: "Could not reach the server. Is the backend running?" };
     }
-  }, [source, comparison]);
+  })();
+  return { controller, promise };
+}
+
+export default function ComparePage() {
+  const [source, setSourceState] = useState<File | null>(null);
+  const [comparison, setComparisonState] = useState<File | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<CompareResult | null>(null);
+  const [downloading, setDownloading] = useState(false);
+
+  // Mirror picked files into module memory so they survive tab navigation.
+  const setSource = useCallback((f: File | null) => {
+    compareMemory.source = f;
+    setSourceState(f);
+  }, []);
+  const setComparison = useCallback((f: File | null) => {
+    compareMemory.comparison = f;
+    setComparisonState(f);
+  }, []);
+
+  // Wait for a run and apply its outcome — unless the page unmounted or a
+  // newer run replaced it, in which case the outcome stays with the module.
+  const attach = useCallback((run: PendingCompare, alive: { current: boolean }) => {
+    setLoading(true);
+    run.promise.then((outcome) => {
+      if (!alive.current || compareMemory.pending !== run) return;
+      compareMemory.pending = null;
+      setLoading(false);
+      if (outcome.kind === "result") setResult(outcome.result as CompareResult);
+      else if (outcome.kind === "error") setError(outcome.message);
+    });
+  }, []);
+
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    // Restore after mount (not in useState) to avoid an SSR hydration mismatch.
+    aliveRef.current = true;
+    setSourceState(compareMemory.source);
+    setComparisonState(compareMemory.comparison);
+    if (compareMemory.pending) {
+      attach(compareMemory.pending, aliveRef);
+    } else {
+      const saved = loadCompareSession();
+      if (saved) setResult(saved.result as CompareResult);
+    }
+    return () => {
+      aliveRef.current = false;
+    };
+  }, [attach]);
+
+  const sameFile =
+    !!source && !!comparison && source.name === comparison.name && source.size === comparison.size;
+  const ready = !!source && !!comparison && !sameFile && !loading;
+
+  const handleCompare = useCallback(() => {
+    if (!source || !comparison) return;
+    setError(null);
+    setResult(null);
+    clearCompareSession();
+    const run = startCompare(source, comparison);
+    compareMemory.pending = run;
+    attach(run, aliveRef);
+  }, [source, comparison, attach]);
 
   const handleCancel = useCallback(() => {
-    abortRef.current?.abort();
+    const run = compareMemory.pending;
+    if (!run) return;
+    compareMemory.pending = null;
+    run.controller.abort();
+    setLoading(false);
   }, []);
 
   const handleDownload = useCallback(async () => {
@@ -297,8 +356,10 @@ export default function ComparePage() {
   }, [result]);
 
   const handleReset = useCallback(() => {
-    setSource(null);
-    setComparison(null);
+    resetCompareMemory();
+    clearCompareSession();
+    setSourceState(null);
+    setComparisonState(null);
     setResult(null);
     setError(null);
   }, []);

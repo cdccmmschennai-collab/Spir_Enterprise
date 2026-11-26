@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { saveToken, saveRole, saveBranchId } from "@/lib/auth";
 import { clearSession } from "@/lib/extraction-session";
+import { clearCompareSession, resetCompareMemory } from "@/lib/compare-session";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL!;
 
@@ -529,6 +530,8 @@ export default function LoginPage() {
 
       const { access_token } = await res.json();
       clearSession();
+      clearCompareSession();
+      resetCompareMemory();
       saveToken(access_token);
 
       try {
