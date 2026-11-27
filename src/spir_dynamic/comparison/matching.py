@@ -168,10 +168,12 @@ def compare(cols, prev_rows, curr_rows) -> dict:
             row_diffs.append([])
             continue
         tag, spare = key[0], key[1]
-        if key not in P.by_key and spare == EQPT and (tag, EQPT) in P.by_key:
-            # the same tag listed on several main sheets (different spares on each)
-            # repeats its equipment row -> compare with that tag's equipment row
-            key = (tag, EQPT)
+        if key not in P.by_key and (tag, spare) in P.by_key and (spare == EQPT or len(key) == 3):
+            # The same tag listed again on another sheet (main + continuation,
+            # several main sheets): its equipment row repeats, and a spare can be
+            # listed under it again. That tag already had the spare in the source
+            # file, so compare with that row - it is not ADDED / ADDED TO TAG.
+            key = (tag, spare)
         if key not in P.by_key:
             if spare == EQPT:
                 st = "ADDED" if tag in tags_added else "CHECK MANUALLY"
@@ -209,8 +211,8 @@ def compare(cols, prev_rows, curr_rows) -> dict:
         if key in N.by_key:
             continue
         tag, spare = key[0], key[1]
-        if spare == EQPT and (tag, EQPT) in N.by_key:
-            continue                      # repeated equipment row of a tag still present
+        if (spare == EQPT or len(key) == 3) and (tag, spare) in N.by_key:
+            continue                      # repeat of a row the tag still has (see above)
         if tag in tags_deleted:
             st = "TAG DELETED"
         elif spare == EQPT:
